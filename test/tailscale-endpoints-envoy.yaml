@@ -1,0 +1,90 @@
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleEndpoints
+metadata:
+  name: production-endpoints
+  namespace: default
+spec:
+  tailnet: "-"  # Use default tailnet
+  endpoints:
+  - name: web-service
+    tailscaleIP: "100.64.0.10"
+    tailscaleFQDN: "web-service.tail12345.ts.net"
+    port: 80
+    protocol: "HTTP"
+    externalTarget: "httpbin.org:80"
+    tags: ["tag:web", "tag:service"]
+    weight: 1
+  - name: api-service
+    tailscaleIP: "100.64.0.11"  
+    tailscaleFQDN: "api-service.tail12345.ts.net"
+    port: 443
+    protocol: "HTTPS"
+    externalTarget: "jsonplaceholder.typicode.com:443"
+    tags: ["tag:api", "tag:service"]
+    weight: 1
+  - name: test-service
+    tailscaleIP: "100.64.0.12"
+    tailscaleFQDN: "test-service.tail12345.ts.net"
+    port: 80
+    protocol: "HTTP"
+    externalTarget: "example.com:80"
+    tags: ["tag:test", "tag:service"] 
+    weight: 1
+  autoDiscovery:
+    enabled: true
+    includePatterns: ["tag:web", "tag:api", "tag:test"]
+    requiredTags: ["tag:service"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-backend
+  namespace: default
+spec:
+  ports:
+  - port: 80
+    targetPort: 80
+  selector:
+    app: test-backend
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-backend
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-backend
+  template:
+    metadata:
+      labels:
+        app: test-backend
+    spec:
+      containers:
+      - name: backend
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        command: ["/bin/sh"]
+        args:
+        - -c
+        - |
+          cat > /etc/nginx/nginx.conf << 'EOF'
+          events {}
+          http {
+            server {
+              listen 80;
+              location / {
+                return 200 'Tailscale Gateway Test Backend - Service Working!\n';
+                add_header Content-Type text/plain;
+              }
+              location /api/ {
+                return 200 'API endpoint working via Tailscale Gateway\n';
+                add_header Content-Type text/plain;
+              }
+            }
+          }
+          EOF
+          nginx -g 'daemon off;'

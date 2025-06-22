@@ -1,0 +1,34 @@
+{{- if and .Values.extensionServer.enabled .Values.extensionServer.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "tailscale-gateway-operator.fullname" . }}-extension-server
+  labels:
+    {{- include "tailscale-gateway-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: extension-server
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+- apiGroups:
+  - gateway.tailscale.com
+  resources:
+  - tailscaleendpoints
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - gateway.tailscale.com
+  resources:
+  - tailscalegateways
+  - tailscaleroutepolicies
+  - tailscaletailnets
+  verbs:
+  - get
+  - list
+  - watch
+{{- end }}

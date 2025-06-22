@@ -14,13 +14,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package extension
+package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
 
 	pb "github.com/envoyproxy/gateway/proto/extension"
 	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
@@ -29,31 +34,36 @@ import (
 	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	gatewayv1alpha1 "github.com/rajsinghtech/tailscale-gateway/api/v1alpha1"
-	"github.com/rajsinghtech/tailscale-gateway/internal/tailscale"
 )
+
+var (
+	scheme   = runtime.NewScheme()
+	setupLog = ctrl.Log.WithName("setup")
+)
+
+func init() {
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(gatewayv1alpha1.AddToScheme(scheme))
+}
 
 // TailscaleExtensionServer implements the Envoy Gateway extension server for Tailscale integration
 type TailscaleExtensionServer struct {
 	pb.UnimplementedEnvoyGatewayExtensionServer
-
-	client           client.Client
-	tailscaleManager *TailscaleManager
-	logger           *slog.Logger
-}
-
-// TailscaleManager manages multiple Tailscale client connections for service discovery
-type TailscaleManager struct {
-	clients map[string]tailscale.Client
+	client client.Client
+	logger *slog.Logger
 }
 
 // TailscaleServiceMapping represents a mapping from Tailscale egress services to external backends
 type TailscaleServiceMapping struct {
 	ServiceName     string // e.g., "web-service"
 	ClusterName     string // e.g., "external-backend-web-service"
-	EgressService   string // e.g., "test-endpoints-web-service-egress.default.svc.cluster.local"
 	ExternalBackend string // The actual backend service this egress connects to
 	Port            uint32 // e.g., 80
 	Protocol        string // e.g., "HTTP"
@@ -63,9 +73,6 @@ type TailscaleServiceMapping struct {
 func NewTailscaleExtensionServer(client client.Client, logger *slog.Logger) *TailscaleExtensionServer {
 	return &TailscaleExtensionServer{
 		client: client,
-		tailscaleManager: &TailscaleManager{
-			clients: make(map[string]tailscale.Client),
-		},
 		logger: logger,
 	}
 }
@@ -73,12 +80,7 @@ func NewTailscaleExtensionServer(client client.Client, logger *slog.Logger) *Tai
 // PostRouteModify modifies individual routes after Envoy Gateway generates them
 func (s *TailscaleExtensionServer) PostRouteModify(ctx context.Context, req *pb.PostRouteModifyRequest) (*pb.PostRouteModifyResponse, error) {
 	s.logger.Info("PostRouteModify called", "route", req.Route.Name)
-
-	// For now, pass through without modification
-	// In the future, we could modify specific routes based on Tailscale configuration
-	return &pb.PostRouteModifyResponse{
-		Route: req.Route,
-	}, nil
+	return &pb.PostRouteModifyResponse{Route: req.Route}, nil
 }
 
 // PostVirtualHostModify modifies virtual hosts and injects new routes for Tailscale services
@@ -103,20 +105,13 @@ func (s *TailscaleExtensionServer) PostVirtualHostModify(ctx context.Context, re
 	}
 
 	s.logger.Info("PostVirtualHostModify completed", "totalRoutes", len(modifiedVH.Routes), "injectedRoutes", len(serviceMappings))
-
-	return &pb.PostVirtualHostModifyResponse{
-		VirtualHost: modifiedVH,
-	}, nil
+	return &pb.PostVirtualHostModifyResponse{VirtualHost: modifiedVH}, nil
 }
 
 // PostHTTPListenerModify modifies HTTP listeners
 func (s *TailscaleExtensionServer) PostHTTPListenerModify(ctx context.Context, req *pb.PostHTTPListenerModifyRequest) (*pb.PostHTTPListenerModifyResponse, error) {
 	s.logger.Info("PostHTTPListenerModify called", "listener", req.Listener.Name)
-
-	// For now, pass through without modification
-	return &pb.PostHTTPListenerModifyResponse{
-		Listener: req.Listener,
-	}, nil
+	return &pb.PostHTTPListenerModifyResponse{Listener: req.Listener}, nil
 }
 
 // PostTranslateModify modifies clusters and secrets in the final xDS configuration
@@ -131,21 +126,14 @@ func (s *TailscaleExtensionServer) PostTranslateModify(ctx context.Context, req 
 	externalClusters, err := s.generateExternalBackendClusters(ctx)
 	if err != nil {
 		s.logger.Error("Failed to generate external backend clusters", "error", err)
-		return &pb.PostTranslateModifyResponse{
-			Clusters: clusters,
-			Secrets:  req.Secrets,
-		}, nil
+		return &pb.PostTranslateModifyResponse{Clusters: clusters, Secrets: req.Secrets}, nil
 	}
 
 	// Add external backend clusters
 	clusters = append(clusters, externalClusters...)
 
 	s.logger.Info("PostTranslateModify completed", "totalClusters", len(clusters), "injectedClusters", len(externalClusters))
-
-	return &pb.PostTranslateModifyResponse{
-		Clusters: clusters,
-		Secrets:  req.Secrets,
-	}, nil
+	return &pb.PostTranslateModifyResponse{Clusters: clusters, Secrets: req.Secrets}, nil
 }
 
 // getTailscaleEgressMappings discovers Tailscale egress services that should route to external backends
@@ -162,12 +150,10 @@ func (s *TailscaleExtensionServer) getTailscaleEgressMappings(ctx context.Contex
 	for _, endpoints := range endpointsList.Items {
 		for _, endpoint := range endpoints.Spec.Endpoints {
 			// Map egress services that route from Tailscale to external backends
-			// The egress service connects Tailscale clients to external services
 			mapping := TailscaleServiceMapping{
 				ServiceName:     endpoint.Name,
 				ClusterName:     fmt.Sprintf("external-backend-%s", endpoint.Name),
-				EgressService:   fmt.Sprintf("%s-%s-egress.%s.svc.cluster.local", endpoints.Name, endpoint.Name, endpoints.Namespace),
-				ExternalBackend: endpoint.ExternalTarget, // This should be defined in the CRD
+				ExternalBackend: endpoint.ExternalTarget,
 				Port:            uint32(endpoint.Port),
 				Protocol:        endpoint.Protocol,
 			}
@@ -264,4 +250,74 @@ func (s *TailscaleExtensionServer) StartGRPCServer(addr string) error {
 
 	s.logger.Info("Starting Tailscale extension server", "address", addr)
 	return grpcServer.Serve(lis)
+}
+
+func main() {
+	var grpcPort int
+
+	flag.IntVar(&grpcPort, "grpc-port", 5005, "The port for the gRPC extension server.")
+	flag.Parse()
+
+	// Create structured logger
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	// Override gRPC port from environment if set
+	if envPort := os.Getenv("GRPC_PORT"); envPort != "" {
+		if port, err := strconv.Atoi(envPort); err == nil {
+			grpcPort = port
+		}
+	}
+
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+		Scheme: scheme,
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to start manager")
+		os.Exit(1)
+	}
+
+	// Create the Tailscale Extension Server
+	server := NewTailscaleExtensionServer(mgr.GetClient(), logger)
+
+	// Set up context for graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle shutdown signals
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Start the Extension Server in a goroutine
+	go func() {
+		addr := fmt.Sprintf(":%d", grpcPort)
+		setupLog.Info("Starting Tailscale Gateway Extension Server", "address", addr)
+		if err := server.StartGRPCServer(addr); err != nil {
+			setupLog.Error(err, "Extension Server failed to start")
+			cancel()
+		}
+	}()
+
+	// Start the manager in a goroutine
+	go func() {
+		setupLog.Info("Starting manager")
+		if err := mgr.Start(ctx); err != nil {
+			setupLog.Error(err, "Manager failed to start")
+			cancel()
+		}
+	}()
+
+	// Wait for shutdown signal
+	select {
+	case sig := <-sigChan:
+		setupLog.Info("Received shutdown signal", "signal", sig)
+	case <-ctx.Done():
+		setupLog.Info("Context cancelled")
+	}
+
+	// Cancel context to trigger graceful shutdown
+	cancel()
+
+	setupLog.Info("Tailscale Gateway Extension Server shutting down")
 }

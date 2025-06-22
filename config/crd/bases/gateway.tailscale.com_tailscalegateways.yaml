@@ -508,6 +508,35 @@ spec:
                 - egressRoutes
                 - ingressRoutes
                 type: object
+              services:
+                description: Services tracks VIP services managed by this gateway
+                items:
+                  description: ServiceInfo provides information about a VIP service
+                    managed by this gateway
+                  properties:
+                    consumerCount:
+                      description: ConsumerCount is the number of clusters consuming
+                        this service
+                      type: integer
+                    name:
+                      description: Name is the service name
+                      type: string
+                    ownerCluster:
+                      description: OwnerCluster indicates which cluster/operator owns
+                        this service
+                      type: string
+                    vipAddresses:
+                      description: VIPAddresses are the VIP addresses allocated to
+                        this service
+                      items:
+                        type: string
+                      type: array
+                  required:
+                  - consumerCount
+                  - name
+                  - ownerCluster
+                  type: object
+                type: array
               tailnetStatus:
                 description: TailnetStatus provides status for each configured tailnet
                 items:

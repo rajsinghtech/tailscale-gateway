@@ -105,6 +105,11 @@ spec:
                   description: TailscaleEndpoint represents a service accessible via
                     Tailscale
                   properties:
+                    externalTarget:
+                      description: |-
+                        ExternalTarget defines the external service this endpoint should route to (for Envoy Gateway integration)
+                        Format: "hostname:port" or "service-name.namespace.svc.cluster.local:port"
+                      type: string
                     healthCheck:
                       description: HealthCheck defines health checking configuration
                         for this endpoint

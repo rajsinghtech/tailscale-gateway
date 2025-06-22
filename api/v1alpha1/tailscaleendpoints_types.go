@@ -75,6 +75,11 @@ type TailscaleEndpoint struct {
 	// +kubebuilder:default=1
 	// +optional
 	Weight *int32 `json:"weight,omitempty"`
+
+	// ExternalTarget defines the external service this endpoint should route to (for Envoy Gateway integration)
+	// Format: "hostname:port" or "service-name.namespace.svc.cluster.local:port"
+	// +optional
+	ExternalTarget string `json:"externalTarget,omitempty"`
 }
 
 // EndpointAutoDiscovery configures automatic endpoint discovery

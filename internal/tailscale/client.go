@@ -10,7 +10,24 @@ import (
 	"strings"
 
 	"golang.org/x/oauth2/clientcredentials"
-	"tailscale.com/client/tailscale/v2"
+	tailscaleclient "tailscale.com/client/tailscale/v2"
+)
+
+// VIP Service types - placeholder until official Tailscale API supports them
+type (
+	// ServiceName represents a Tailscale service name
+	ServiceName string
+
+	// VIPService represents a Tailscale VIP service
+	VIPService struct {
+		ID          string            `json:"id,omitempty"`
+		Name        ServiceName       `json:"name"`
+		Tags        []string          `json:"tags,omitempty"`
+		Comment     string            `json:"comment,omitempty"`
+		Annotations map[string]string `json:"annotations,omitempty"`
+		Ports       []string          `json:"ports,omitempty"`
+		Addrs       []string          `json:"addrs,omitempty"`
+	}
 )
 
 const (
@@ -23,12 +40,17 @@ const (
 // Client interface for Tailscale API operations
 type Client interface {
 	// Device operations
-	Devices(ctx context.Context) ([]tailscale.Device, error)
+	Devices(ctx context.Context) ([]tailscaleclient.Device, error)
 	// Auth key operations
-	CreateKey(ctx context.Context, caps tailscale.KeyCapabilities) (*tailscale.Key, error)
+	CreateKey(ctx context.Context, caps tailscaleclient.KeyCapabilities) (*tailscaleclient.Key, error)
 	DeleteKey(ctx context.Context, id string) error
 	// Tailnet metadata operations
 	DiscoverTailnetInfo(ctx context.Context) (*TailnetMetadata, error)
+	// VIP service operations
+	GetVIPService(ctx context.Context, serviceName ServiceName) (*VIPService, error)
+	GetVIPServices(ctx context.Context) ([]*VIPService, error)
+	CreateOrUpdateVIPService(ctx context.Context, service *VIPService) error
+	DeleteVIPService(ctx context.Context, serviceName ServiceName) error
 }
 
 // TailnetMetadata contains essential information about a tailnet
@@ -52,7 +74,7 @@ type ClientConfig struct {
 
 // clientImpl implements the Client interface
 type clientImpl struct {
-	*tailscale.Client
+	*tailscaleclient.Client
 	tailnet string
 }
 
@@ -77,7 +99,7 @@ func NewClient(ctx context.Context, config ClientConfig) (Client, error) {
 	}
 
 	// Create the Tailscale v2 client
-	c := &tailscale.Client{
+	c := &tailscaleclient.Client{
 		Tailnet:   config.Tailnet,
 		UserAgent: "tailscale-gateway-operator",
 		HTTP:      credentials.Client(ctx),
@@ -109,13 +131,13 @@ func NewClientFromSecretFiles(ctx context.Context, tailnet, apiBaseURL, clientID
 }
 
 // Devices returns all devices in the tailnet
-func (c *clientImpl) Devices(ctx context.Context) ([]tailscale.Device, error) {
+func (c *clientImpl) Devices(ctx context.Context) ([]tailscaleclient.Device, error) {
 	return c.Client.Devices().List(ctx)
 }
 
 // CreateKey creates a new auth key with the specified capabilities
-func (c *clientImpl) CreateKey(ctx context.Context, caps tailscale.KeyCapabilities) (*tailscale.Key, error) {
-	req := tailscale.CreateKeyRequest{
+func (c *clientImpl) CreateKey(ctx context.Context, caps tailscaleclient.KeyCapabilities) (*tailscaleclient.Key, error) {
+	req := tailscaleclient.CreateKeyRequest{
 		Capabilities: caps,
 		Description:  "tailscale-gateway-operator",
 	}
@@ -163,22 +185,55 @@ func (c *clientImpl) DiscoverTailnetInfo(ctx context.Context) (*TailnetMetadata,
 	return metadata, nil
 }
 
-// MockClient provides a mock implementation for testing
-type MockClient struct {
-	DevicesFunc         func(ctx context.Context) ([]tailscale.Device, error)
-	CreateKeyFunc       func(ctx context.Context, caps tailscale.KeyCapabilities) (*tailscale.Key, error)
-	DeleteKeyFunc       func(ctx context.Context, id string) error
-	DiscoverTailnetFunc func(ctx context.Context) (*TailnetMetadata, error)
+// GetVIPService gets a VIP service by name
+func (c *clientImpl) GetVIPService(ctx context.Context, serviceName ServiceName) (*VIPService, error) {
+	// TODO: Implement when Tailscale API supports VIP services
+	// For now, return a mock implementation
+	return nil, fmt.Errorf("VIP service %s not found", serviceName)
 }
 
-func (m *MockClient) Devices(ctx context.Context) ([]tailscale.Device, error) {
+// GetVIPServices gets all VIP services in the tailnet
+func (c *clientImpl) GetVIPServices(ctx context.Context) ([]*VIPService, error) {
+	// TODO: Implement when Tailscale API supports VIP services
+	// For now, return empty list
+	return []*VIPService{}, nil
+}
+
+// CreateOrUpdateVIPService creates or updates a VIP service
+func (c *clientImpl) CreateOrUpdateVIPService(ctx context.Context, service *VIPService) error {
+	// TODO: Implement when Tailscale API supports VIP services
+	// For now, simulate success
+	fmt.Printf("Mock VIP service created/updated: %s\n", service.Name)
+	return nil
+}
+
+// DeleteVIPService deletes a VIP service by name
+func (c *clientImpl) DeleteVIPService(ctx context.Context, serviceName ServiceName) error {
+	// TODO: Implement when Tailscale API supports VIP services
+	// For now, simulate success
+	return nil
+}
+
+// MockClient provides a mock implementation for testing
+type MockClient struct {
+	DevicesFunc                  func(ctx context.Context) ([]tailscaleclient.Device, error)
+	CreateKeyFunc                func(ctx context.Context, caps tailscaleclient.KeyCapabilities) (*tailscaleclient.Key, error)
+	DeleteKeyFunc                func(ctx context.Context, id string) error
+	DiscoverTailnetFunc          func(ctx context.Context) (*TailnetMetadata, error)
+	GetVIPServiceFunc            func(ctx context.Context, serviceName ServiceName) (*VIPService, error)
+	GetVIPServicesFunc           func(ctx context.Context) ([]*VIPService, error)
+	CreateOrUpdateVIPServiceFunc func(ctx context.Context, service *VIPService) error
+	DeleteVIPServiceFunc         func(ctx context.Context, serviceName ServiceName) error
+}
+
+func (m *MockClient) Devices(ctx context.Context) ([]tailscaleclient.Device, error) {
 	if m.DevicesFunc != nil {
 		return m.DevicesFunc(ctx)
 	}
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (m *MockClient) CreateKey(ctx context.Context, caps tailscale.KeyCapabilities) (*tailscale.Key, error) {
+func (m *MockClient) CreateKey(ctx context.Context, caps tailscaleclient.KeyCapabilities) (*tailscaleclient.Key, error) {
 	if m.CreateKeyFunc != nil {
 		return m.CreateKeyFunc(ctx, caps)
 	}
@@ -197,4 +252,32 @@ func (m *MockClient) DiscoverTailnetInfo(ctx context.Context) (*TailnetMetadata,
 		return m.DiscoverTailnetFunc(ctx)
 	}
 	return nil, fmt.Errorf("not implemented")
+}
+
+func (m *MockClient) GetVIPService(ctx context.Context, serviceName ServiceName) (*VIPService, error) {
+	if m.GetVIPServiceFunc != nil {
+		return m.GetVIPServiceFunc(ctx, serviceName)
+	}
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (m *MockClient) GetVIPServices(ctx context.Context) ([]*VIPService, error) {
+	if m.GetVIPServicesFunc != nil {
+		return m.GetVIPServicesFunc(ctx)
+	}
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (m *MockClient) CreateOrUpdateVIPService(ctx context.Context, service *VIPService) error {
+	if m.CreateOrUpdateVIPServiceFunc != nil {
+		return m.CreateOrUpdateVIPServiceFunc(ctx, service)
+	}
+	return fmt.Errorf("not implemented")
+}
+
+func (m *MockClient) DeleteVIPService(ctx context.Context, serviceName ServiceName) error {
+	if m.DeleteVIPServiceFunc != nil {
+		return m.DeleteVIPServiceFunc(ctx, serviceName)
+	}
+	return fmt.Errorf("not implemented")
 }

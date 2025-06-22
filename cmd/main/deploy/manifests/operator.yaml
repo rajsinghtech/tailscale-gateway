@@ -1378,3 +1378,163 @@ spec:
       volumes:
       - name: temp
         emptyDir: {}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tailscale-gateway-extension-server
+  namespace: tailscale-gateway-system
+  labels:
+    app.kubernetes.io/name: tailscale-gateway-extension-server
+    app.kubernetes.io/component: extension-server
+    app.kubernetes.io/part-of: tailscale-gateway
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tailscale-gateway-extension-server
+  labels:
+    app.kubernetes.io/name: tailscale-gateway-extension-server
+    app.kubernetes.io/component: extension-server
+    app.kubernetes.io/part-of: tailscale-gateway
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+- apiGroups:
+  - gateway.tailscale.com
+  resources:
+  - tailscaleendpoints
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - gateway.tailscale.com
+  resources:
+  - tailscalegateways
+  - tailscaleroutepolicies
+  - tailscaletailnets
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tailscale-gateway-extension-server
+  labels:
+    app.kubernetes.io/name: tailscale-gateway-extension-server
+    app.kubernetes.io/component: extension-server
+    app.kubernetes.io/part-of: tailscale-gateway
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tailscale-gateway-extension-server
+subjects:
+- kind: ServiceAccount
+  name: tailscale-gateway-extension-server
+  namespace: tailscale-gateway-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tailscale-gateway-extension-server
+  namespace: tailscale-gateway-system
+  labels:
+    app.kubernetes.io/name: tailscale-gateway-extension-server
+    app.kubernetes.io/component: extension-server
+    app.kubernetes.io/part-of: tailscale-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tailscale-gateway-extension-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tailscale-gateway-extension-server
+        app.kubernetes.io/component: extension-server
+        app.kubernetes.io/part-of: tailscale-gateway
+    spec:
+      serviceAccountName: tailscale-gateway-extension-server
+      containers:
+      - name: extension-server
+        image: ghcr.io/rajsinghtech/tailscale-gateway-extension-server:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        - --grpc-port=5005
+        - --health-probe-bind-address=:8081
+        - --metrics-bind-address=:8080
+        - --leader-elect=false
+        ports:
+        - name: grpc
+          containerPort: 5005
+          protocol: TCP
+        - name: metrics
+          containerPort: 8080
+          protocol: TCP
+        - name: health
+          containerPort: 8081
+          protocol: TCP
+        env:
+        - name: GRPC_PORT
+          value: "5005"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          limits:
+            cpu: 500m
+            memory: 128Mi
+          requests:
+            cpu: 100m
+            memory: 64Mi
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tailscale-gateway-extension-server
+  namespace: tailscale-gateway-system
+  labels:
+    app.kubernetes.io/name: tailscale-gateway-extension-server
+    app.kubernetes.io/component: extension-server
+    app.kubernetes.io/part-of: tailscale-gateway
+spec:
+  type: ClusterIP
+  ports:
+  - name: grpc
+    port: 5005
+    targetPort: grpc
+    protocol: TCP
+  - name: metrics
+    port: 8080
+    targetPort: metrics
+    protocol: TCP
+  selector:
+    app.kubernetes.io/name: tailscale-gateway-extension-server

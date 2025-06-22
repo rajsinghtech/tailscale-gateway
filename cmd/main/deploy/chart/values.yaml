@@ -101,4 +101,43 @@ affinity: {}
 priorityClassName: ""
 
 # Image pull secrets
-imagePullSecrets: [] 
+imagePullSecrets: []
+
+# Extension Server configuration
+extensionServer:
+  # Enable the extension server deployment
+  enabled: true
+  
+  # Replica count for the extension server deployment
+  replicaCount: 1
+  
+  # Image configuration
+  image:
+    repository: ghcr.io/rajsinghtech/tailscale-gateway-extension-server
+    pullPolicy: IfNotPresent
+    tag: "latest"
+  
+  # gRPC and probe port configuration
+  grpcPort: 5005
+  healthProbePort: 8081
+  metricsPort: 8080
+  
+  # Resources for the extension server pod
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 100m
+      memory: 64Mi
+  
+  # Service configuration
+  service:
+    type: ClusterIP
+    ports:
+      grpc: 5005
+      metrics: 8080
+  
+  # RBAC configuration for extension server
+  rbac:
+    create: true 

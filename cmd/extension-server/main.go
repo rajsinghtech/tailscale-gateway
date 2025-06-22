@@ -19,6 +19,8 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strconv"
@@ -51,7 +53,7 @@ func main() {
 	var enableLeaderElection bool
 	var probeAddr string
 
-	flag.IntVar(&grpcPort, "grpc-port", 8443, "The port for the gRPC extension server.")
+	flag.IntVar(&grpcPort, "grpc-port", 5005, "The port for the gRPC extension server.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
@@ -94,8 +96,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create and start the Extension Server
-	server := extension.NewServer(mgr.GetClient())
+	// Create structured logger
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	// Create the Tailscale Extension Server
+	server := extension.NewTailscaleExtensionServer(mgr.GetClient(), logger)
 
 	// Set up context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -107,8 +114,9 @@ func main() {
 
 	// Start the Extension Server in a goroutine
 	go func() {
-		setupLog.Info("Starting Tailscale Gateway Extension Server", "port", grpcPort)
-		if err := server.Start(ctx, grpcPort); err != nil {
+		addr := fmt.Sprintf(":%d", grpcPort)
+		setupLog.Info("Starting Tailscale Gateway Extension Server", "address", addr)
+		if err := server.StartGRPCServer(addr); err != nil {
 			setupLog.Error(err, "Extension Server failed to start")
 			cancel()
 		}

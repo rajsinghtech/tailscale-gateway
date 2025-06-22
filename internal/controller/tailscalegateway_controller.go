@@ -21,19 +21,24 @@ import (
 	"fmt"
 	"time"
 
+	"go.uber.org/zap"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	gatewayv1alpha1 "github.com/rajsinghtech/tailscale-gateway/api/v1alpha1"
+	"github.com/rajsinghtech/tailscale-gateway/internal/service"
 	"github.com/rajsinghtech/tailscale-gateway/internal/tailscale"
 )
 
@@ -45,15 +50,27 @@ const (
 	defaultExtensionServerImage = "tailscale-gateway-extension:latest"
 	defaultExtensionServerPort  = 8443
 	defaultExtensionReplicas    = 2
+
+	// Event reasons
+	ReasonGatewayConfigured   = "GatewayConfigured"
+	ReasonGatewayConfigFailed = "GatewayConfigFailed"
+	ReasonServiceCreated      = "ServiceCreated"
+	ReasonServiceAttached     = "ServiceAttached"
+	ReasonServiceError        = "ServiceError"
 )
 
 // TailscaleGatewayReconciler reconciles a TailscaleGateway object
 type TailscaleGatewayReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Logger   *zap.SugaredLogger
+	Recorder record.EventRecorder
 
 	// TailscaleClient provides access to Tailscale APIs
 	TailscaleClient tailscale.Client
+
+	// ServiceCoordinator manages multi-operator service coordination
+	ServiceCoordinator *service.ServiceCoordinator
 }
 
 //+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscalegateways,verbs=get;list;watch;create;update;patch;delete
@@ -61,10 +78,12 @@ type TailscaleGatewayReconciler struct {
 //+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscalegateways/finalizers,verbs=update
 //+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscaletailnets,verbs=get;list;watch
 //+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscaleendpoints,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch
 //+kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=gateways,verbs=get;list;watch
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -148,6 +167,15 @@ func (r *TailscaleGatewayReconciler) reconcileGateway(ctx context.Context, gatew
 		return ctrl.Result{RequeueAfter: time.Minute}, err
 	}
 	r.updateCondition(gateway, "EndpointsReady", metav1.ConditionTrue, "EndpointsManaged", "TailscaleEndpoints are managed")
+
+	// Process HTTPRoutes and ensure VIP services if ServiceCoordinator is available
+	if r.ServiceCoordinator != nil {
+		if err := r.reconcileServiceCoordination(ctx, gateway); err != nil {
+			r.updateCondition(gateway, "ServicesReady", metav1.ConditionFalse, "ServiceError", err.Error())
+			return ctrl.Result{RequeueAfter: time.Minute}, err
+		}
+		r.updateCondition(gateway, "ServicesReady", metav1.ConditionTrue, "ServicesConfigured", "VIP services are configured")
+	}
 
 	// Update overall ready condition
 	r.updateCondition(gateway, "Ready", metav1.ConditionTrue, "GatewayReady", "TailscaleGateway is ready")
@@ -296,6 +324,133 @@ func (r *TailscaleGatewayReconciler) reconcileTailnetEndpoints(ctx context.Conte
 	return nil
 }
 
+// reconcileServiceCoordination processes HTTPRoutes and ensures VIP services
+func (r *TailscaleGatewayReconciler) reconcileServiceCoordination(ctx context.Context, gateway *gatewayv1alpha1.TailscaleGateway) error {
+	logger := log.FromContext(ctx)
+
+	// Get all HTTPRoutes that reference this TailscaleGateway
+	httpRoutes, err := r.getRelatedHTTPRoutes(ctx, gateway)
+	if err != nil {
+		return fmt.Errorf("failed to get related HTTPRoutes: %w", err)
+	}
+
+	// Process each HTTPRoute and ensure services
+	var serviceRegistrations []*service.ServiceRegistration
+	for _, httpRoute := range httpRoutes {
+		registration, err := r.processHTTPRoute(ctx, gateway, &httpRoute)
+		if err != nil {
+			logger.Error(err, "Failed to process HTTPRoute", "httpRoute", httpRoute.Name, "namespace", httpRoute.Namespace)
+			r.Recorder.Event(gateway, "Warning", ReasonServiceError, fmt.Sprintf("Failed to process HTTPRoute %s: %v", httpRoute.Name, err))
+			continue
+		}
+		if registration != nil {
+			serviceRegistrations = append(serviceRegistrations, registration)
+		}
+	}
+
+	// Update gateway status with service information
+	if err := r.updateGatewayServiceStatus(ctx, gateway, serviceRegistrations); err != nil {
+		return fmt.Errorf("failed to update gateway service status: %w", err)
+	}
+
+	if len(serviceRegistrations) > 0 {
+		r.Recorder.Event(gateway, "Normal", ReasonGatewayConfigured, fmt.Sprintf("Successfully configured %d VIP services", len(serviceRegistrations)))
+	}
+
+	return nil
+}
+
+// processHTTPRoute processes an HTTPRoute and ensures the corresponding VIP service
+func (r *TailscaleGatewayReconciler) processHTTPRoute(ctx context.Context, gateway *gatewayv1alpha1.TailscaleGateway, httpRoute *gwapiv1.HTTPRoute) (*service.ServiceRegistration, error) {
+	logger := log.FromContext(ctx)
+
+	// Extract backend service from HTTPRoute
+	targetBackend, err := r.extractTargetBackend(httpRoute)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract target backend: %w", err)
+	}
+
+	// Generate route identifier
+	routeName := fmt.Sprintf("%s/%s", httpRoute.Namespace, httpRoute.Name)
+
+	// Ensure service exists or attach to existing one
+	registration, err := r.ServiceCoordinator.EnsureServiceForRoute(ctx, routeName, targetBackend)
+	if err != nil {
+		return nil, fmt.Errorf("failed to ensure service for route: %w", err)
+	}
+
+	logger.Info("Successfully processed HTTPRoute", "httpRoute", routeName, "service", registration.ServiceName, "vips", registration.VIPAddresses)
+
+	return registration, nil
+}
+
+// extractTargetBackend extracts the target backend from an HTTPRoute
+func (r *TailscaleGatewayReconciler) extractTargetBackend(httpRoute *gwapiv1.HTTPRoute) (string, error) {
+	// For now, use a simple heuristic based on the HTTPRoute name
+	// In a real implementation, this would analyze the HTTPRoute rules and backends
+	if len(httpRoute.Spec.Rules) == 0 {
+		return "", fmt.Errorf("HTTPRoute has no rules")
+	}
+
+	rule := httpRoute.Spec.Rules[0]
+	if len(rule.BackendRefs) == 0 {
+		return "", fmt.Errorf("HTTPRoute rule has no backend refs")
+	}
+
+	backend := rule.BackendRefs[0]
+	serviceName := string(backend.Name)
+
+	// Generate a normalized backend identifier
+	targetBackend := fmt.Sprintf("%s.%s", serviceName, httpRoute.Namespace)
+
+	return targetBackend, nil
+}
+
+// getRelatedHTTPRoutes finds all HTTPRoutes that use this TailscaleGateway as an extension
+func (r *TailscaleGatewayReconciler) getRelatedHTTPRoutes(ctx context.Context, gateway *gatewayv1alpha1.TailscaleGateway) ([]gwapiv1.HTTPRoute, error) {
+	// List all HTTPRoutes in the same namespace
+	httpRouteList := &gwapiv1.HTTPRouteList{}
+	if err := r.List(ctx, httpRouteList, client.InNamespace(gateway.Namespace)); err != nil {
+		return nil, fmt.Errorf("failed to list HTTPRoutes: %w", err)
+	}
+
+	var relatedRoutes []gwapiv1.HTTPRoute
+	for _, httpRoute := range httpRouteList.Items {
+		// Check if this HTTPRoute references our TailscaleGateway
+		if r.httpRouteReferencesGateway(&httpRoute, gateway) {
+			relatedRoutes = append(relatedRoutes, httpRoute)
+		}
+	}
+
+	return relatedRoutes, nil
+}
+
+// httpRouteReferencesGateway checks if an HTTPRoute references a TailscaleGateway
+func (r *TailscaleGatewayReconciler) httpRouteReferencesGateway(httpRoute *gwapiv1.HTTPRoute, gateway *gatewayv1alpha1.TailscaleGateway) bool {
+	// Check annotations for TailscaleGateway reference
+	// This is a simplified check - in practice, this would be more sophisticated
+	if gatewayRef, exists := httpRoute.Annotations["gateway.tailscale.com/gateway"]; exists {
+		return gatewayRef == gateway.Name
+	}
+	return false
+}
+
+// updateGatewayServiceStatus updates the gateway status with service information
+func (r *TailscaleGatewayReconciler) updateGatewayServiceStatus(ctx context.Context, gateway *gatewayv1alpha1.TailscaleGateway, registrations []*service.ServiceRegistration) error {
+	// Update service information in status
+	gateway.Status.Services = make([]gatewayv1alpha1.ServiceInfo, len(registrations))
+	for i, reg := range registrations {
+		gateway.Status.Services[i] = gatewayv1alpha1.ServiceInfo{
+			Name:          string(reg.ServiceName),
+			VIPAddresses:  reg.VIPAddresses,
+			OwnerCluster:  reg.OwnerOperator,
+			ConsumerCount: len(reg.ConsumerClusters),
+		}
+	}
+
+	return nil
+}
+
 // handleDeletion handles cleanup when TailscaleGateway is being deleted
 func (r *TailscaleGatewayReconciler) handleDeletion(ctx context.Context, gateway *gatewayv1alpha1.TailscaleGateway) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -303,6 +458,14 @@ func (r *TailscaleGatewayReconciler) handleDeletion(ctx context.Context, gateway
 	if controllerutil.ContainsFinalizer(gateway, TailscaleGatewayFinalizer) {
 		// Perform cleanup
 		logger.Info("Cleaning up TailscaleGateway resources", "gateway", gateway.Name)
+
+		// Cleanup VIP services if ServiceCoordinator is available
+		if r.ServiceCoordinator != nil {
+			if err := r.cleanupServices(ctx, gateway); err != nil {
+				logger.Error(err, "Failed to cleanup services during deletion")
+				// Continue with deletion anyway
+			}
+		}
 
 		// Remove finalizer
 		controllerutil.RemoveFinalizer(gateway, TailscaleGatewayFinalizer)
@@ -312,6 +475,34 @@ func (r *TailscaleGatewayReconciler) handleDeletion(ctx context.Context, gateway
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// cleanupServices detaches from all VIP services during gateway deletion
+func (r *TailscaleGatewayReconciler) cleanupServices(ctx context.Context, gateway *gatewayv1alpha1.TailscaleGateway) error {
+	// Get all HTTPRoutes that were managed by this gateway
+	httpRoutes, err := r.getRelatedHTTPRoutes(ctx, gateway)
+	if err != nil {
+		return fmt.Errorf("failed to get related HTTPRoutes during cleanup: %w", err)
+	}
+
+	// Detach from services for each HTTPRoute
+	for _, httpRoute := range httpRoutes {
+		targetBackend, err := r.extractTargetBackend(&httpRoute)
+		if err != nil {
+			log.FromContext(ctx).Error(err, "Failed to extract target backend for HTTPRoute during cleanup", "httpRoute", httpRoute.Name)
+			continue
+		}
+
+		serviceName := r.generateServiceName(targetBackend)
+		routeName := fmt.Sprintf("%s/%s", httpRoute.Namespace, httpRoute.Name)
+
+		if err := r.ServiceCoordinator.DetachFromService(ctx, serviceName, routeName); err != nil {
+			log.FromContext(ctx).Error(err, "Failed to detach from service during cleanup", "service", serviceName, "route", routeName)
+			// Continue with other cleanups
+		}
+	}
+
+	return nil
 }
 
 // Helper functions for building Kubernetes resources
@@ -514,6 +705,11 @@ func (r *TailscaleGatewayReconciler) labelsForExtensionServer(gateway *gatewayv1
 	}
 }
 
+// generateServiceName generates a service name from target backend (matching ServiceCoordinator logic)
+func (r *TailscaleGatewayReconciler) generateServiceName(targetBackend string) tailscale.ServiceName {
+	return r.ServiceCoordinator.GenerateServiceName(targetBackend)
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *TailscaleGatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
@@ -521,5 +717,69 @@ func (r *TailscaleGatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&gatewayv1alpha1.TailscaleEndpoints{}).
+		Watches(
+			&gwapiv1.HTTPRoute{},
+			handler.EnqueueRequestsFromMapFunc(r.mapHTTPRouteToTailscaleGateway),
+		).
+		Watches(
+			&gatewayv1alpha1.TailscaleTailnet{},
+			handler.EnqueueRequestsFromMapFunc(r.mapTailnetToTailscaleGateway),
+		).
 		Complete(r)
+}
+
+// mapHTTPRouteToTailscaleGateway maps HTTPRoute changes to TailscaleGateway reconciliation requests
+func (r *TailscaleGatewayReconciler) mapHTTPRouteToTailscaleGateway(ctx context.Context, obj client.Object) []ctrl.Request {
+	httpRoute := obj.(*gwapiv1.HTTPRoute)
+
+	// Check if this HTTPRoute references a TailscaleGateway
+	if gatewayRef, exists := httpRoute.Annotations["gateway.tailscale.com/gateway"]; exists {
+		return []ctrl.Request{
+			{
+				NamespacedName: types.NamespacedName{
+					Name:      gatewayRef,
+					Namespace: httpRoute.Namespace,
+				},
+			},
+		}
+	}
+
+	return nil
+}
+
+// mapTailnetToTailscaleGateway maps TailscaleTailnet changes to TailscaleGateway reconciliation requests
+func (r *TailscaleGatewayReconciler) mapTailnetToTailscaleGateway(ctx context.Context, obj client.Object) []ctrl.Request {
+	tailnet := obj.(*gatewayv1alpha1.TailscaleTailnet)
+
+	// Find all TailscaleGateways that reference this tailnet
+	gatewayList := &gatewayv1alpha1.TailscaleGatewayList{}
+	if err := r.List(context.Background(), gatewayList, client.InNamespace(tailnet.Namespace)); err != nil {
+		if r.Logger != nil {
+			r.Logger.Errorf("Failed to list TailscaleGateways for tailnet mapping: %v", err)
+		}
+		return nil
+	}
+
+	var requests []ctrl.Request
+	for _, gateway := range gatewayList.Items {
+		for _, tailnetConfig := range gateway.Spec.Tailnets {
+			tailnetRef := tailnetConfig.TailscaleTailnetRef
+			refNamespace := tailnet.Namespace
+			if tailnetRef.Namespace != nil {
+				refNamespace = string(*tailnetRef.Namespace)
+			}
+
+			if string(tailnetRef.Name) == tailnet.Name && refNamespace == tailnet.Namespace {
+				requests = append(requests, ctrl.Request{
+					NamespacedName: types.NamespacedName{
+						Name:      gateway.Name,
+						Namespace: gateway.Namespace,
+					},
+				})
+				break
+			}
+		}
+	}
+
+	return requests
 }
