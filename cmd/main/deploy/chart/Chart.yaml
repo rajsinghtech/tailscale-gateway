@@ -1,0 +1,17 @@
+apiVersion: v2
+name: tailscale-gateway-operator
+description: A Helm chart for the Tailscale Gateway Kubernetes operator
+type: application
+version: 0.1.0
+appVersion: "v0.1.0"
+keywords:
+  - tailscale
+  - gateway
+  - operator
+  - kubernetes
+home: https://github.com/rajsinghtech/tailscale-gateway
+sources:
+  - https://github.com/rajsinghtech/tailscale-gateway
+maintainers:
+  - name: Raj Singh
+    email: raj@example.com 

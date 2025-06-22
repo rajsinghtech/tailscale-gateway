@@ -1,0 +1,104 @@
+# Default values for tailscale-gateway-operator.
+
+# Operator configuration
+operator:
+  # Replica count for the operator deployment
+  replicaCount: 1
+  
+  # Image configuration
+  image:
+    repository: ghcr.io/rajsinghtech/tailscale-gateway-operator
+    pullPolicy: IfNotPresent
+    # Overrides the image tag whose default is the chart appVersion.
+    tag: ""
+  
+  # Resources for the operator pod
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+
+# Namespace to deploy the operator
+namespace: tailscale-gateway-system
+
+# Whether to install CRDs
+installCRDs: true
+
+# Service account configuration
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+# Proxy configuration for Tailscale devices
+proxy:
+  # Default image for Tailscale proxy containers
+  image: tailscale/tailscale:stable
+  # Default resources for proxy containers
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+# RBAC configuration
+rbac:
+  # Create RBAC resources
+  create: true
+
+# Security contexts
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Monitoring configuration
+metrics:
+  enabled: true
+  service:
+    port: 8080
+
+# Health probe configuration
+healthProbe:
+  enabled: true
+  service:
+    port: 8081
+
+# Leader election
+leaderElection:
+  enabled: true
+
+# Log level
+logLevel: info
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity
+affinity: {}
+
+# Priority class name
+priorityClassName: ""
+
+# Image pull secrets
+imagePullSecrets: [] 

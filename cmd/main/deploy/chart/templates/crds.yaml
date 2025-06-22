@@ -1,0 +1,1235 @@
+{{- if .Values.installCRDs }}
+# CRDs are inserted here by the generate tool
+# PLACEHOLDER_CRDS_START
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: tailscalegateways.gateway.tailscale.com
+spec:
+  group: gateway.tailscale.com
+  names:
+    kind: TailscaleGateway
+    listKind: TailscaleGatewayList
+    plural: tailscalegateways
+    singular: tailscalegateway
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - description: Status of the Tailscale Gateway.
+      jsonPath: .status.conditions[?(@.type == "Ready")].reason
+      name: Status
+      type: string
+    - description: Associated Envoy Gateway.
+      jsonPath: .spec.gatewayRef.name
+      name: Gateway
+      type: string
+    - description: Associated Tailnet.
+      jsonPath: .spec.tailnetRef.name
+      name: Tailnet
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          TailscaleGateway integrates Envoy Gateway with Tailscale networking,
+          enabling dynamic route injection based on tailnet topology.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: TailscaleGatewaySpec defines the desired state of TailscaleGateway
+            properties:
+              extensionServer:
+                description: |-
+                  ExtensionServer configures the gRPC extension server that implements
+                  Envoy Gateway xDS hooks for dynamic route injection.
+                properties:
+                  port:
+                    description: |-
+                      Port is the port number for the gRPC extension server.
+                      Defaults to 8443.
+                    format: int32
+                    type: integer
+                  tls:
+                    description: TLS configures TLS settings for the extension server.
+                    properties:
+                      certificateRef:
+                        description: CertificateRef is a reference to a Secret containing
+                          TLS certificates.
+                        properties:
+                          group:
+                            default: ""
+                            description: |-
+                              Group is the group of the referent. For example, "gateway.networking.k8s.io".
+                              When unspecified or empty string, core API group is inferred.
+                            maxLength: 253
+                            pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                            type: string
+                          kind:
+                            default: Secret
+                            description: Kind is kind of the referent. For example
+                              "Secret".
+                            maxLength: 63
+                            minLength: 1
+                            pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+                            type: string
+                          name:
+                            description: Name is the name of the referent.
+                            maxLength: 253
+                            minLength: 1
+                            type: string
+                          namespace:
+                            description: |-
+                              Namespace is the namespace of the referenced object. When unspecified, the local
+                              namespace is inferred.
+
+                              Note that when a namespace different than the local namespace is specified,
+                              a ReferenceGrant object is required in the referent namespace to allow that
+                              namespace's owner to accept the reference. See the ReferenceGrant
+                              documentation for details.
+
+                              Support: Core
+                            maxLength: 63
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      insecureSkipVerify:
+                        description: |-
+                          InsecureSkipVerify disables TLS certificate verification.
+                          Should only be used for development/testing.
+                        type: boolean
+                    type: object
+                type: object
+              gatewayRef:
+                description: |-
+                  GatewayRef is a reference to the Envoy Gateway that this
+                  TailscaleGateway should integrate with.
+                properties:
+                  group:
+                    default: gateway.networking.k8s.io
+                    description: |-
+                      Group is the group of the referent.
+                      When unspecified, "gateway.networking.k8s.io" is inferred.
+                      To set the core API group (such as for a "Service" kind referent),
+                      Group must be explicitly set to "" (empty string).
+
+                      Support: Core
+                    maxLength: 253
+                    pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                  kind:
+                    default: Gateway
+                    description: |-
+                      Kind is kind of the referent.
+
+                      There are two kinds of parent resources with "Core" support:
+
+                      * Gateway (Gateway conformance profile)
+                      * Service (Mesh conformance profile, experimental, ClusterIP Services only)
+
+                      Support for other resources is Implementation-Specific.
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+                    type: string
+                  name:
+                    description: |-
+                      Name is the name of the referent.
+
+                      Support: Core
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace is the namespace of the referent. When unspecified, this refers
+                      to the local namespace of the Route.
+
+                      Note that there are specific rules for ParentRefs which cross namespace
+                      boundaries. Cross-namespace references are only valid if they are explicitly
+                      allowed by something in the namespace they are referring to. For example:
+                      Gateway has the AllowedRoutes field, and ReferenceGrant provides a
+                      generic way to enable any other kind of cross-namespace reference.
+
+                      <gateway:experimental:description>
+                      ParentRefs from a Route to a Service in the same namespace are "producer"
+                      routes, which apply default routing rules to inbound connections from
+                      any namespace to the Service.
+
+                      ParentRefs from a Route to a Service in a different namespace are
+                      "consumer" routes, and these routing rules are only applied to outbound
+                      connections originating from the same namespace as the Route, for which
+                      the intended destination of the connections are a Service targeted as a
+                      ParentRef of the Route.
+                      </gateway:experimental:description>
+
+                      Support: Core
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
+                  port:
+                    description: |-
+                      Port is the network port this Route targets. It can be interpreted
+                      differently based on the type of parent resource.
+
+                      When the parent resource is a Gateway, this targets all listeners
+                      listening on the specified port that also support this kind of Route(and
+                      select this Route). It's not recommended to set `Port` unless the
+                      networking behaviors specified in a Route must apply to a specific port
+                      as opposed to a listener(s) whose port(s) may be changed. When both Port
+                      and SectionName are specified, the name and port of the selected listener
+                      must match both specified values.
+
+                      <gateway:experimental:description>
+                      When the parent resource is a Service, this targets a specific port in the
+                      Service spec. When both Port (experimental) and SectionName are specified,
+                      the name and port of the selected port must match both specified values.
+                      </gateway:experimental:description>
+
+                      Implementations MAY choose to support other parent resources.
+                      Implementations supporting other types of parent resources MUST clearly
+                      document how/if Port is interpreted.
+
+                      For the purpose of status, an attachment is considered successful as
+                      long as the parent resource accepts it partially. For example, Gateway
+                      listeners can restrict which Routes can attach to them by Route kind,
+                      namespace, or hostname. If 1 of 2 Gateway listeners accept attachment
+                      from the referencing Route, the Route MUST be considered successfully
+                      attached. If no Gateway listeners accept attachment from this Route,
+                      the Route MUST be considered detached from the Gateway.
+
+                      Support: Extended
+
+                      <gateway:experimental>
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  sectionName:
+                    description: |-
+                      SectionName is the name of a section within the target resource. In the
+                      following resources, SectionName is interpreted as the following:
+
+                      * Gateway: Listener Name. When both Port (experimental) and SectionName
+                      are specified, the name and port of the selected listener must match
+                      both specified values.
+                      * Service: Port Name. When both Port (experimental) and SectionName
+                      are specified, the name and port of the selected listener must match
+                      both specified values. Note that attaching Routes to Services as Parents
+                      is part of experimental Mesh support and is not supported for any other
+                      purpose.
+
+                      Implementations MAY choose to support attaching Routes to other resources.
+                      If that is the case, they MUST clearly document how SectionName is
+                      interpreted.
+
+                      When unspecified (empty string), this will reference the entire resource.
+                      For the purpose of status, an attachment is considered successful if at
+                      least one section in the parent resource accepts it. For example, Gateway
+                      listeners can restrict which Routes can attach to them by Route kind,
+                      namespace, or hostname. If 1 of 2 Gateway listeners accept attachment from
+                      the referencing Route, the Route MUST be considered successfully
+                      attached. If no Gateway listeners accept attachment from this Route, the
+                      Route MUST be considered detached from the Gateway.
+
+                      Support: Core
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                required:
+                - name
+                type: object
+              routeDiscovery:
+                description: |-
+                  RouteDiscovery configures how routes from the tailnet should be
+                  discovered and injected into the gateway.
+                properties:
+                  deviceSelector:
+                    description: |-
+                      DeviceSelector selects which tailnet devices should have their
+                      routes discovered and injected.
+                    properties:
+                      excludeTags:
+                        description: ExcludeTags excludes devices that have any of
+                          the specified tags.
+                        items:
+                          type: string
+                        type: array
+                      hostnames:
+                        description: |-
+                          Hostnames selects devices by hostname patterns.
+                          Supports wildcards (*) for pattern matching.
+                        items:
+                          type: string
+                        type: array
+                      tags:
+                        description: Tags selects devices that have any of the specified
+                          tags.
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                  enabled:
+                    description: Enabled determines if route discovery is active.
+                    type: boolean
+                  routeFilters:
+                    description: RouteFilters define which discovered routes should
+                      be included/excluded.
+                    items:
+                      description: RouteFilter defines include/exclude rules for discovered
+                        routes
+                      properties:
+                        cidrs:
+                          description: CIDRs are network ranges to include or exclude.
+                          items:
+                            type: string
+                          type: array
+                        hostnames:
+                          description: |-
+                            Hostnames are hostname patterns to include or exclude.
+                            Supports wildcards (*) for pattern matching.
+                          items:
+                            type: string
+                          type: array
+                        type:
+                          description: Type specifies whether this is an include or
+                            exclude filter.
+                          enum:
+                          - include
+                          - exclude
+                          type: string
+                      required:
+                      - type
+                      type: object
+                    type: array
+                  syncInterval:
+                    description: |-
+                      SyncInterval is how often to refresh route discovery.
+                      Defaults to 30s.
+                    type: string
+                type: object
+              tailnetRef:
+                description: |-
+                  TailnetRef is a reference to the TailscaleTailnet that provides
+                  the tailnet connection and credentials.
+                properties:
+                  name:
+                    description: Name is the name of the TailscaleTailnet resource.
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace is the namespace of the TailscaleTailnet resource.
+                      If not specified, defaults to the same namespace as the TailscaleGateway.
+                    type: string
+                required:
+                - name
+                type: object
+            required:
+            - gatewayRef
+            - tailnetRef
+            type: object
+          status:
+            description: TailscaleGatewayStatus defines the observed state of TailscaleGateway
+            properties:
+              conditions:
+                description: Conditions represent the current state of the TailscaleGateway.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              discoveredRoutes:
+                description: |-
+                  DiscoveredRoutes contains information about routes discovered
+                  from the tailnet and injected into the gateway.
+                properties:
+                  count:
+                    description: Count is the number of routes currently discovered
+                      and active.
+                    format: int32
+                    type: integer
+                  lastDiscoveryTime:
+                    description: LastDiscoveryTime is when routes were last discovered.
+                    format: date-time
+                    type: string
+                  routes:
+                    description: Routes contains details about discovered routes.
+                    items:
+                      description: DiscoveredRoute represents a route discovered from
+                        a tailnet device
+                      properties:
+                        deviceHostname:
+                          description: DeviceHostname is the hostname of the tailnet
+                            device.
+                          type: string
+                        deviceIP:
+                          description: DeviceIP is the tailnet IP of the device.
+                          type: string
+                        routes:
+                          description: Routes are the network routes advertised by
+                            this device.
+                          items:
+                            type: string
+                          type: array
+                        tags:
+                          description: Tags are the tags associated with the device.
+                          items:
+                            type: string
+                          type: array
+                      required:
+                      - deviceHostname
+                      - deviceIP
+                      - routes
+                      type: object
+                    type: array
+                required:
+                - count
+                type: object
+              extensionServerStatus:
+                description: ExtensionServerStatus contains information about the
+                  extension server.
+                properties:
+                  address:
+                    description: Address is the address the extension server is listening
+                      on.
+                    type: string
+                  lastHookCall:
+                    description: LastHookCall is the timestamp of the last successful
+                      hook call.
+                    format: date-time
+                    type: string
+                  ready:
+                    description: Ready indicates if the extension server is ready
+                      to accept connections.
+                    type: boolean
+                required:
+                - ready
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: tailscaleroutepolicies.gateway.tailscale.com
+spec:
+  group: gateway.tailscale.com
+  names:
+    kind: TailscaleRoutePolicy
+    listKind: TailscaleRoutePolicyList
+    plural: tailscaleroutepolicies
+    singular: tailscaleroutepolicy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - description: Status of the route policy.
+      jsonPath: .status.conditions[?(@.type == "Ready")].reason
+      name: Status
+      type: string
+    - description: Target gateway.
+      jsonPath: .spec.targetRefs[0].name
+      name: Gateway
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          TailscaleRoutePolicy defines advanced routing policies for tailnet traffic
+          through Envoy Gateway, supporting conditions, transformations, and actions.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: TailscaleRoutePolicySpec defines the desired routing policy
+            properties:
+              rules:
+                description: Rules define the routing policy rules to apply.
+                items:
+                  description: PolicyRule defines a single routing policy rule
+                  properties:
+                    actions:
+                      description: Actions define what should happen when this rule
+                        matches.
+                      items:
+                        description: PolicyAction defines an action to take when a
+                          rule matches
+                        properties:
+                          redirect:
+                            description: Redirect configures HTTP redirect responses.
+                            properties:
+                              hostname:
+                                description: Hostname is the hostname to redirect
+                                  to.
+                                type: string
+                              path:
+                                description: Path configures path replacement for
+                                  redirects.
+                                properties:
+                                  type:
+                                    description: Type specifies how to replace the
+                                      path.
+                                    enum:
+                                    - ReplaceFullPath
+                                    - ReplacePrefixMatch
+                                    type: string
+                                  value:
+                                    description: Value is the replacement value.
+                                    type: string
+                                required:
+                                - type
+                                - value
+                                type: object
+                              port:
+                                description: Port is the port to redirect to.
+                                format: int32
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                              scheme:
+                                description: Scheme is the scheme to redirect to.
+                                type: string
+                              statusCode:
+                                description: StatusCode is the HTTP status code for
+                                  the redirect.
+                                enum:
+                                - 301
+                                - 302
+                                format: int32
+                                type: integer
+                            type: object
+                          requestHeaderModifier:
+                            description: RequestHeaderModifier configures request
+                              header modifications.
+                            properties:
+                              add:
+                                description: Add configures headers to add, preserving
+                                  existing values.
+                                items:
+                                  description: Header represents an HTTP header
+                                  properties:
+                                    name:
+                                      description: Name is the header name.
+                                      type: string
+                                    value:
+                                      description: Value is the header value.
+                                      type: string
+                                  required:
+                                  - name
+                                  - value
+                                  type: object
+                                type: array
+                              remove:
+                                description: Remove configures headers to remove.
+                                items:
+                                  type: string
+                                type: array
+                              set:
+                                description: Set configures headers to set, overwriting
+                                  existing values.
+                                items:
+                                  description: Header represents an HTTP header
+                                  properties:
+                                    name:
+                                      description: Name is the header name.
+                                      type: string
+                                    value:
+                                      description: Value is the header value.
+                                      type: string
+                                  required:
+                                  - name
+                                  - value
+                                  type: object
+                                type: array
+                            type: object
+                          responseHeaderModifier:
+                            description: ResponseHeaderModifier configures response
+                              header modifications.
+                            properties:
+                              add:
+                                description: Add configures headers to add, preserving
+                                  existing values.
+                                items:
+                                  description: Header represents an HTTP header
+                                  properties:
+                                    name:
+                                      description: Name is the header name.
+                                      type: string
+                                    value:
+                                      description: Value is the header value.
+                                      type: string
+                                  required:
+                                  - name
+                                  - value
+                                  type: object
+                                type: array
+                              remove:
+                                description: Remove configures headers to remove.
+                                items:
+                                  type: string
+                                type: array
+                              set:
+                                description: Set configures headers to set, overwriting
+                                  existing values.
+                                items:
+                                  description: Header represents an HTTP header
+                                  properties:
+                                    name:
+                                      description: Name is the header name.
+                                      type: string
+                                    value:
+                                      description: Value is the header value.
+                                      type: string
+                                  required:
+                                  - name
+                                  - value
+                                  type: object
+                                type: array
+                            type: object
+                          route:
+                            description: Route configures routing to a specific backend.
+                            properties:
+                              backendRefs:
+                                description: BackendRefs are the backends to route
+                                  traffic to.
+                                items:
+                                  description: BackendRef references a backend service
+                                  properties:
+                                    group:
+                                      default: ""
+                                      description: |-
+                                        Group is the group of the referent. For example, "gateway.networking.k8s.io".
+                                        When unspecified or empty string, core API group is inferred.
+                                      maxLength: 253
+                                      pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                      type: string
+                                    kind:
+                                      default: Service
+                                      description: |-
+                                        Kind is the Kubernetes resource kind of the referent. For example
+                                        "Service".
+
+                                        Defaults to "Service" when not specified.
+
+                                        ExternalName services can refer to CNAME DNS records that may live
+                                        outside of the cluster and as such are difficult to reason about in
+                                        terms of conformance. They also may not be safe to forward to (see
+                                        CVE-2021-25740 for more information). Implementations SHOULD NOT
+                                        support ExternalName Services.
+
+                                        Support: Core (Services with a type other than ExternalName)
+
+                                        Support: Implementation-specific (Services with type ExternalName)
+                                      maxLength: 63
+                                      minLength: 1
+                                      pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+                                      type: string
+                                    name:
+                                      description: Name is the name of the referent.
+                                      maxLength: 253
+                                      minLength: 1
+                                      type: string
+                                    namespace:
+                                      description: |-
+                                        Namespace is the namespace of the backend. When unspecified, the local
+                                        namespace is inferred.
+
+                                        Note that when a namespace different than the local namespace is specified,
+                                        a ReferenceGrant object is required in the referent namespace to allow that
+                                        namespace's owner to accept the reference. See the ReferenceGrant
+                                        documentation for details.
+
+                                        Support: Core
+                                      maxLength: 63
+                                      minLength: 1
+                                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                      type: string
+                                    port:
+                                      description: |-
+                                        Port specifies the destination port number to use for this resource.
+                                        Port is required when the referent is a Kubernetes Service. In this
+                                        case, the port number is the service port number, not the target port.
+                                        For other resources, destination port might be derived from the referent
+                                        resource or this field.
+                                      format: int32
+                                      maximum: 65535
+                                      minimum: 1
+                                      type: integer
+                                    weight:
+                                      description: Weight configures the weight for
+                                        load balancing.
+                                      format: int32
+                                      type: integer
+                                  required:
+                                  - name
+                                  type: object
+                                  x-kubernetes-validations:
+                                  - message: Must have port for Service reference
+                                    rule: '(size(self.group) == 0 && self.kind ==
+                                      ''Service'') ? has(self.port) : true'
+                                type: array
+                              timeout:
+                                description: Timeout configures timeouts for this
+                                  route.
+                                properties:
+                                  backendRequest:
+                                    description: BackendRequest is the timeout for
+                                      backend requests.
+                                    type: string
+                                  request:
+                                    description: Request is the timeout for the entire
+                                      request.
+                                    type: string
+                                type: object
+                            required:
+                            - backendRefs
+                            type: object
+                          type:
+                            description: Type specifies the type of action to take.
+                            enum:
+                            - Route
+                            - Redirect
+                            - Deny
+                            - RequestHeaderModifier
+                            - ResponseHeaderModifier
+                            type: string
+                        required:
+                        - type
+                        type: object
+                      type: array
+                    matches:
+                      description: Matches define when this rule should be applied.
+                      items:
+                        description: PolicyMatch defines conditions for when a rule
+                          should apply
+                        properties:
+                          headers:
+                            description: Headers matches based on request headers.
+                            items:
+                              description: HeaderMatch matches based on request headers
+                              properties:
+                                name:
+                                  description: Name is the header name to match.
+                                  type: string
+                                type:
+                                  description: Type specifies how to match the header.
+                                  enum:
+                                  - Exact
+                                  - RegularExpression
+                                  type: string
+                                value:
+                                  description: Value is the header value to match
+                                    against.
+                                  type: string
+                              required:
+                              - name
+                              - type
+                              - value
+                              type: object
+                            type: array
+                          method:
+                            description: Method matches based on HTTP method.
+                            properties:
+                              methods:
+                                description: Methods are the HTTP methods to match.
+                                enum:
+                                - GET
+                                - HEAD
+                                - POST
+                                - PUT
+                                - DELETE
+                                - CONNECT
+                                - OPTIONS
+                                - TRACE
+                                - PATCH
+                                items:
+                                  description: HTTPMethod represents an HTTP method
+                                  type: string
+                                type: array
+                            required:
+                            - methods
+                            type: object
+                          path:
+                            description: Path matches based on the request path.
+                            properties:
+                              type:
+                                description: Type specifies how to match the path.
+                                enum:
+                                - Exact
+                                - PathPrefix
+                                - RegularExpression
+                                type: string
+                              value:
+                                description: Value is the path value to match against.
+                                type: string
+                            required:
+                            - type
+                            - value
+                            type: object
+                          tailnetDevice:
+                            description: TailnetDevice matches based on characteristics
+                              of the source tailnet device.
+                            properties:
+                              hostnames:
+                                description: |-
+                                  Hostnames matches devices by hostname patterns.
+                                  Supports wildcards (*) for pattern matching.
+                                items:
+                                  type: string
+                                type: array
+                              ips:
+                                description: |-
+                                  IPs matches devices by their tailnet IP addresses.
+                                  Supports CIDR notation for network ranges.
+                                items:
+                                  type: string
+                                type: array
+                              tags:
+                                description: Tags matches devices that have any of
+                                  the specified tags.
+                                items:
+                                  type: string
+                                type: array
+                              users:
+                                description: Users matches devices owned by specific
+                                  users.
+                                items:
+                                  type: string
+                                type: array
+                            type: object
+                        type: object
+                      type: array
+                    name:
+                      description: Name is an optional name for this rule for debugging
+                        purposes.
+                      type: string
+                  required:
+                  - actions
+                  type: object
+                type: array
+              targetRefs:
+                description: |-
+                  TargetRefs identifies the targets that this policy applies to.
+                  Can target Gateways, HTTPRoutes, or TailscaleGateways.
+                items:
+                  description: LocalPolicyTargetReference identifies a target for
+                    policy attachment
+                  properties:
+                    group:
+                      description: Group is the group of the target resource.
+                      maxLength: 253
+                      pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                      type: string
+                    kind:
+                      description: Kind is the kind of the target resource.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+                      type: string
+                    name:
+                      description: Name is the name of the target resource.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    namespace:
+                      description: Namespace is the namespace of the target resource.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    sectionName:
+                      description: SectionName is the name of a section within the
+                        target resource.
+                      maxLength: 253
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                      type: string
+                  required:
+                  - group
+                  - kind
+                  - name
+                  type: object
+                type: array
+            required:
+            - rules
+            - targetRefs
+            type: object
+          status:
+            description: TailscaleRoutePolicyStatus defines the observed state of
+              TailscaleRoutePolicy
+            properties:
+              appliedTo:
+                description: AppliedTo indicates which targets this policy has been
+                  successfully applied to.
+                items:
+                  description: PolicyTargetStatus represents the status of policy
+                    application to a target
+                  properties:
+                    applied:
+                      description: Applied indicates if the policy was successfully
+                        applied.
+                      type: boolean
+                    message:
+                      description: Message contains additional information about the
+                        application status.
+                      type: string
+                    targetRef:
+                      description: TargetRef is the reference to the target.
+                      properties:
+                        group:
+                          description: Group is the group of the target resource.
+                          maxLength: 253
+                          pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                          type: string
+                        kind:
+                          description: Kind is the kind of the target resource.
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+                          type: string
+                        name:
+                          description: Name is the name of the target resource.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        namespace:
+                          description: Namespace is the namespace of the target resource.
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                        sectionName:
+                          description: SectionName is the name of a section within
+                            the target resource.
+                          maxLength: 253
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                          type: string
+                      required:
+                      - group
+                      - kind
+                      - name
+                      type: object
+                  required:
+                  - applied
+                  - targetRef
+                  type: object
+                type: array
+              conditions:
+                description: Conditions represent the current state of the policy.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: tailscaletailnets.gateway.tailscale.com
+spec:
+  group: gateway.tailscale.com
+  names:
+    kind: TailscaleTailnet
+    listKind: TailscaleTailnetList
+    plural: tailscaletailnets
+    singular: tailscaletailnet
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - description: Status of the tailnet connection.
+      jsonPath: .status.conditions[?(@.type == "Ready")].reason
+      name: Status
+      type: string
+    - description: Tailnet name or organization.
+      jsonPath: .spec.tailnet
+      name: Tailnet
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          TailscaleTailnet defines a connection to a specific Tailscale tailnet
+          with associated credentials and configuration.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: TailscaleTailnetSpec defines the desired state of a tailnet
+              connection
+            properties:
+              apiKeySecretName:
+                description: |-
+                  APIKeySecretName is the name of the secret containing the Tailscale API key.
+                  The secret must contain the key `apiKey`.
+                type: string
+              apiKeySecretNamespace:
+                description: |-
+                  APIKeySecretNamespace is the namespace of the secret containing the Tailscale API key.
+                  If not specified, it will look for the secret in the "default" namespace.
+                type: string
+            required:
+            - apiKeySecretName
+            type: object
+          status:
+            description: TailscaleTailnetStatus defines the observed state of a tailnet
+              connection
+            properties:
+              conditions:
+                description: Conditions represent the current state of the tailnet
+                  connection.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              lastSyncTime:
+                description: |-
+                  LastSyncTime is the last time the operator successfully
+                  communicated with the Tailscale API for this tailnet.
+                format: date-time
+                type: string
+              tailnetInfo:
+                description: TailnetInfo contains information about the connected
+                  tailnet.
+                properties:
+                  magicDNSSuffix:
+                    description: MagicDNSSuffix is the DNS suffix used for MagicDNS
+                      in this tailnet.
+                    type: string
+                  name:
+                    description: Name is the tailnet name.
+                    type: string
+                  organization:
+                    description: Organization is the organization name if applicable.
+                    type: string
+                required:
+                - name
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+
+# PLACEHOLDER_CRDS_END
+{{- end }} 

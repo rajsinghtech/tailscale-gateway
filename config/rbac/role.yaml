@@ -1,0 +1,47 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - gateway.tailscale.com
+  resources:
+  - tailscaletailnets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - gateway.tailscale.com
+  resources:
+  - tailscaletailnets/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - gateway.tailscale.com
+  resources:
+  - tailscaletailnets/status
+  verbs:
+  - get
+  - patch
+  - update

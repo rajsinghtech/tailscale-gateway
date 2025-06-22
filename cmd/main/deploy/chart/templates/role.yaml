@@ -1,0 +1,37 @@
+{{- if .Values.rbac.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "tailscale-gateway-operator.fullname" . }}-proxies-role
+  namespace: {{ include "tailscale-gateway-operator.namespace" . }}
+  labels:
+    {{- include "tailscale-gateway-operator.labels" . | nindent 4 }}
+rules:
+# Allow management of proxy pods and services in the operator namespace
+- apiGroups: [""]
+  resources:
+  - pods
+  - pods/log
+  - services
+  - endpoints
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups: ["apps"]
+  resources:
+  - deployments
+  - statefulsets
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+{{- end }} 

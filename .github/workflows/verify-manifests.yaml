@@ -1,0 +1,34 @@
+name: Verify Manifests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  verify-manifests:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: 'go.mod'
+    
+    - name: Generate manifests
+      run: |
+        make manifests
+        make generate-deploy
+    
+    - name: Check if manifests are up-to-date
+      run: |
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "Error: Manifests are not up-to-date!"
+          echo "Please run 'make manifests generate-deploy' and commit the changes."
+          git diff
+          exit 1
+        fi
+        echo "Manifests are up-to-date ✓" 

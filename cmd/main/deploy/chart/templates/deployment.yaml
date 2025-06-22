@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tailscale-gateway-operator.fullname" . }}
+  namespace: {{ include "tailscale-gateway-operator.namespace" . }}
+  labels:
+    {{- include "tailscale-gateway-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+spec:
+  replicas: {{ .Values.operator.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "tailscale-gateway-operator.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: operator
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+      labels:
+        {{- include "tailscale-gateway-operator.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: operator
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "tailscale-gateway-operator.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: manager
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 12 }}
+        image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+        args:
+        - --health-probe-bind-address=:{{ .Values.healthProbe.service.port }}
+        - --metrics-bind-address=:{{ .Values.metrics.service.port }}
+        {{- if .Values.leaderElection.enabled }}
+        - --leader-elect
+        {{- end }}
+        - --log-level={{ .Values.logLevel }}
+        env:
+        - name: OPERATOR_NAMESPACE
+          value: {{ include "tailscale-gateway-operator.namespace" . }}
+        - name: PROXY_IMAGE
+          value: {{ .Values.proxy.image }}
+        - name: PROXY_RESOURCES_LIMITS_CPU
+          value: {{ .Values.proxy.resources.limits.cpu }}
+        - name: PROXY_RESOURCES_LIMITS_MEMORY
+          value: {{ .Values.proxy.resources.limits.memory }}
+        - name: PROXY_RESOURCES_REQUESTS_CPU
+          value: {{ .Values.proxy.resources.requests.cpu }}
+        - name: PROXY_RESOURCES_REQUESTS_MEMORY
+          value: {{ .Values.proxy.resources.requests.memory }}
+        ports:
+        {{- if .Values.metrics.enabled }}
+        - name: metrics
+          containerPort: {{ .Values.metrics.service.port }}
+          protocol: TCP
+        {{- end }}
+        {{- if .Values.healthProbe.enabled }}
+        - name: health
+          containerPort: {{ .Values.healthProbe.service.port }}
+          protocol: TCP
+        {{- end }}
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          {{- toYaml .Values.operator.resources | nindent 12 }}
+        volumeMounts:
+        - mountPath: /tmp
+          name: temp
+      volumes:
+      - name: temp
+        emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.priorityClassName }}
+      priorityClassName: {{ .Values.priorityClassName }}
+      {{- end }} 

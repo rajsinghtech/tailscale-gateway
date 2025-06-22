@@ -1,0 +1,53 @@
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleRoutePolicy
+metadata:
+  name: test-route-policy
+  namespace: default
+spec:
+  targetRefs:
+    - group: gateway.tailscale.com
+      kind: TailscaleGateway
+      name: test-gateway
+  rules:
+    - name: admin-devices-full-access
+      matches:
+        - tailnetDevice:
+            tags:
+              - tag:admin
+      actions:
+        - type: Route
+          route:
+            backendRefs:
+              - name: admin-service
+                port: 80
+    - name: dev-devices-limited-access
+      matches:
+        - tailnetDevice:
+            tags:
+              - tag:dev
+        - path:
+            type: PathPrefix
+            value: "/api/v1/"
+      actions:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            add:
+              - name: X-User-Role
+                value: developer
+        - type: Route
+          route:
+            backendRefs:
+              - name: api-service
+                port: 8080
+                weight: 100
+    - name: public-redirect
+      matches:
+        - path:
+            type: PathPrefix
+            value: "/public"
+      actions:
+        - type: Redirect
+          redirect:
+            scheme: https
+            hostname: public.example.com
+            statusCode: 302 

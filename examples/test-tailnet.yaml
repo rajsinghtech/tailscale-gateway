@@ -1,0 +1,11 @@
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleTailnet
+metadata:
+  name: test-tailnet
+  namespace: default
+spec:
+  tailnet: "-"  # Use default tailnet
+  oauthSecretName: tailscale-oauth
+  oauthSecretNamespace: default
+  tags:
+    - "tag:k8s-operator" 
