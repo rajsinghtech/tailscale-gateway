@@ -382,3 +382,61 @@ Response: {"message":"API token invalid"}
 - ✅ **Resource Management**: CPU/memory limits and requests configured
 
 The TailscaleTailnet OAuth validation system is production-ready and successfully tested in a real Kubernetes environment.
+
+## Automatic Tailnet Discovery
+
+### Dynamic Metadata Collection
+The operator now automatically discovers essential tailnet metadata instead of requiring manual configuration:
+
+#### ✅ **Tailnet Domain Discovery**
+```yaml
+status:
+  tailnetInfo:
+    name: tail8eff9.ts.net        # Automatically discovered from device names
+    organization: Personal        # Inferred from domain structure  
+  conditions:
+  - type: Validated
+    status: "True"
+    reason: Ready
+    message: "Tailnet metadata discovered successfully"
+```
+
+#### **Discovery Process**
+1. **OAuth Validation**: Validates credentials by creating ephemeral auth keys
+2. **Device Enumeration**: Lists devices to extract tailnet domain from device names  
+3. **Domain Extraction**: Parses MagicDNS domain from device hostnames (e.g., `hostname.tail8eff9.ts.net`)
+4. **Organization Inference**: Determines if tailnet is Personal (`tail*`) or Organization (custom domain)
+5. **Status Update**: Populates `tailnetInfo` with discovered metadata
+
+#### **API Pattern**
+```go
+// Extract tailnet domain from device names
+devices, err := client.Devices().List(ctx)
+parts := strings.SplitN(devices[0].Name, ".", 2)
+tailnetDomain := parts[1] // "tail8eff9.ts.net"
+```
+
+#### **Benefits**
+- ✅ **Eliminates Manual Configuration**: No need to specify tailnet name in CRD spec
+- ✅ **Uses Real Domain**: Gets actual `*.ts.net` domain instead of generic `-`
+- ✅ **Organization Detection**: Automatically identifies Personal vs Organization tailnets
+- ✅ **Status Visibility**: Provides tailnet metadata for operators and users
+- ✅ **Gateway Integration Ready**: Real domain names enable proper route configuration
+
+This automatic discovery ensures the operator works with any valid OAuth credentials without requiring users to know or configure their tailnet domain manually.
+
+#### **Enhanced kubectl Output**
+The CRD printer columns now display discovered tailnet information instead of spec values:
+
+```bash
+$ kubectl get tailscaletailnet
+NAME           STATUS   TAILNET            ORGANIZATION
+test-tailnet   Ready    tail8eff9.ts.net   Personal
+```
+
+**Columns:**
+- **Status**: Ready condition status (`Ready`, `Pending`, `Failed`)
+- **Tailnet**: Auto-discovered tailnet domain (e.g., `tail8eff9.ts.net`)
+- **Organization**: Auto-inferred organization type (`Personal`, `Organization`)
+
+This provides immediate visibility into the discovered tailnet metadata without needing to inspect the full resource status.

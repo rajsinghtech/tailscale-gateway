@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"golang.org/x/oauth2/clientcredentials"
 	"tailscale.com/client/tailscale/v2"
@@ -26,6 +27,15 @@ type Client interface {
 	// Auth key operations
 	CreateKey(ctx context.Context, caps tailscale.KeyCapabilities) (*tailscale.Key, error)
 	DeleteKey(ctx context.Context, id string) error
+	// Tailnet metadata operations
+	DiscoverTailnetInfo(ctx context.Context) (*TailnetMetadata, error)
+}
+
+// TailnetMetadata contains essential information about a tailnet
+type TailnetMetadata struct {
+	Name           string
+	MagicDNSSuffix string
+	Organization   string
 }
 
 // ClientConfig holds configuration for creating a Tailscale client
@@ -117,11 +127,48 @@ func (c *clientImpl) DeleteKey(ctx context.Context, id string) error {
 	return c.Client.Keys().Delete(ctx, id)
 }
 
+// DiscoverTailnetInfo gathers essential metadata about the tailnet
+func (c *clientImpl) DiscoverTailnetInfo(ctx context.Context) (*TailnetMetadata, error) {
+	// Get devices to extract the tailnet domain
+	devices, err := c.Client.Devices().List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list devices: %w", err)
+	}
+
+	if len(devices) == 0 {
+		return nil, fmt.Errorf("no devices found in tailnet")
+	}
+
+	metadata := &TailnetMetadata{}
+
+	// Extract MagicDNS domain from first device name
+	if devices[0].Name != "" {
+		parts := strings.SplitN(devices[0].Name, ".", 2)
+		if len(parts) == 2 {
+			metadata.Name = parts[1]           // e.g., "tail123abc.ts.net"
+			metadata.MagicDNSSuffix = parts[1] // Same as name for most tailnets
+		}
+	}
+
+	// Infer organization type from domain structure
+	if metadata.Name != "" && strings.HasSuffix(metadata.Name, ".ts.net") {
+		orgPart := strings.TrimSuffix(metadata.Name, ".ts.net")
+		if strings.HasPrefix(orgPart, "tail") {
+			metadata.Organization = "Personal" // Personal tailnets start with "tail"
+		} else {
+			metadata.Organization = "Organization" // Custom org domains
+		}
+	}
+
+	return metadata, nil
+}
+
 // MockClient provides a mock implementation for testing
 type MockClient struct {
-	DevicesFunc   func(ctx context.Context) ([]tailscale.Device, error)
-	CreateKeyFunc func(ctx context.Context, caps tailscale.KeyCapabilities) (*tailscale.Key, error)
-	DeleteKeyFunc func(ctx context.Context, id string) error
+	DevicesFunc           func(ctx context.Context) ([]tailscale.Device, error)
+	CreateKeyFunc         func(ctx context.Context, caps tailscale.KeyCapabilities) (*tailscale.Key, error)
+	DeleteKeyFunc         func(ctx context.Context, id string) error
+	DiscoverTailnetFunc   func(ctx context.Context) (*TailnetMetadata, error)
 }
 
 func (m *MockClient) Devices(ctx context.Context) ([]tailscale.Device, error) {
@@ -143,4 +190,11 @@ func (m *MockClient) DeleteKey(ctx context.Context, id string) error {
 		return m.DeleteKeyFunc(ctx, id)
 	}
 	return fmt.Errorf("not implemented")
+}
+
+func (m *MockClient) DiscoverTailnetInfo(ctx context.Context) (*TailnetMetadata, error) {
+	if m.DiscoverTailnetFunc != nil {
+		return m.DiscoverTailnetFunc(ctx)
+	}
+	return nil, fmt.Errorf("not implemented")
 }

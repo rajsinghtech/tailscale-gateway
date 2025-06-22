@@ -69,9 +69,9 @@ type TailscaleTailnetStatus struct {
 	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
 }
 
-// TailnetInfo contains metadata about a connected tailnet
+// TailnetInfo contains essential metadata about a connected tailnet
 type TailnetInfo struct {
-	// Name is the tailnet name.
+	// Name is the tailnet domain (e.g., "tail123abc.ts.net").
 	Name string `json:"name"`
 
 	// MagicDNSSuffix is the DNS suffix used for MagicDNS in this tailnet.

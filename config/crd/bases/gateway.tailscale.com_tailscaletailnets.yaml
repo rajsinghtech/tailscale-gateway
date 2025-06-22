@@ -19,9 +19,13 @@ spec:
       jsonPath: .status.conditions[?(@.type == "Ready")].reason
       name: Status
       type: string
-    - description: Tailnet name or organization.
-      jsonPath: .spec.tailnet
+    - description: Discovered tailnet domain name.
+      jsonPath: .status.tailnetInfo.name
       name: Tailnet
+      type: string
+    - description: Organization type of the tailnet.
+      jsonPath: .status.tailnetInfo.organization
+      name: Organization
       type: string
     name: v1alpha1
     schema:
@@ -151,7 +155,7 @@ spec:
                       in this tailnet.
                     type: string
                   name:
-                    description: Name is the tailnet name.
+                    description: Name is the tailnet domain (e.g., "tail123abc.ts.net").
                     type: string
                   organization:
                     description: Organization is the organization name if applicable.

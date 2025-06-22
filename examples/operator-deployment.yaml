@@ -56,7 +56,7 @@ spec:
       serviceAccountName: tailscale-gateway-operator
       containers:
       - name: manager
-        image: tailscale-gateway:test
+        image: tailscale-gateway:test-metadata
         imagePullPolicy: Never
         args:
         - --log-level=debug

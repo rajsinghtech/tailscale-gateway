@@ -104,6 +104,16 @@ func (r *TailscaleTailnetReconciler) reconcileTailnet(ctx context.Context, tailn
 
 	// Update status to authenticated
 	r.updateStatus(ctx, tailnet, gatewayv1alpha1.TailnetAuthenticated, metav1.ConditionTrue, gatewayv1alpha1.ReasonReady, "OAuth credentials validated successfully")
+
+	// Discover comprehensive tailnet metadata
+	if err := r.discoverAndUpdateTailnetInfo(ctx, tailnet, tsClient); err != nil {
+		// Log error but don't fail reconciliation - this is supplementary information
+		logger.Warnf("Failed to discover tailnet metadata: %v", err)
+		r.updateStatus(ctx, tailnet, gatewayv1alpha1.TailnetValidated, metav1.ConditionFalse, gatewayv1alpha1.ReasonAPIError, fmt.Sprintf("Failed to discover tailnet metadata: %v", err))
+	} else {
+		r.updateStatus(ctx, tailnet, gatewayv1alpha1.TailnetValidated, metav1.ConditionTrue, gatewayv1alpha1.ReasonReady, "Tailnet metadata discovered successfully")
+	}
+
 	r.updateStatus(ctx, tailnet, gatewayv1alpha1.TailnetReady, metav1.ConditionTrue, gatewayv1alpha1.ReasonReady, "Tailnet connection is ready")
 
 	// Set last sync time
@@ -140,15 +150,10 @@ func (r *TailscaleTailnetReconciler) createTailscaleClient(ctx context.Context, 
 		return nil, fmt.Errorf("secret must contain both 'client_id' and 'client_secret' keys")
 	}
 
-	// Determine tailnet name
-	tailnetName := tailnet.Spec.Tailnet
-	if tailnetName == "" {
-		tailnetName = tailscale.DefaultTailnet
-	}
-
-	// Create Tailscale client config
+	// Always use default tailnet ("-") for OAuth client creation
+	// The actual tailnet domain will be discovered after authentication
 	config := tailscale.ClientConfig{
-		Tailnet:      tailnetName,
+		Tailnet:      tailscale.DefaultTailnet,
 		APIBaseURL:   tailscale.DefaultAPIBaseURL,
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
@@ -203,6 +208,28 @@ func (r *TailscaleTailnetReconciler) validateOAuthCredentials(ctx context.Contex
 	}
 
 
+	return nil
+}
+
+// discoverAndUpdateTailnetInfo discovers tailnet metadata and updates the status
+func (r *TailscaleTailnetReconciler) discoverAndUpdateTailnetInfo(ctx context.Context, tailnet *gatewayv1alpha1.TailscaleTailnet, tsClient tailscale.Client) error {
+	metadata, err := tsClient.DiscoverTailnetInfo(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to discover tailnet info: %w", err)
+	}
+
+	// Update TailnetInfo in status
+	tailnet.Status.TailnetInfo = &gatewayv1alpha1.TailnetInfo{
+		Name:         metadata.Name,
+		Organization: &metadata.Organization,
+	}
+
+	// Set MagicDNSSuffix if different from Name
+	if metadata.MagicDNSSuffix != metadata.Name {
+		tailnet.Status.TailnetInfo.MagicDNSSuffix = &metadata.MagicDNSSuffix
+	}
+
+	r.Logger.Infof("Discovered tailnet info: name=%s, org=%s", metadata.Name, metadata.Organization)
 	return nil
 }
 
