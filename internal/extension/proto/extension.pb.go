@@ -6,7 +6,7 @@ package proto
 
 import (
 	"context"
-	
+
 	clusterv3 "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	listenerv3 "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
@@ -19,8 +19,8 @@ import (
 // Stub protobuf message types
 
 type PostRouteModifyRequest struct {
-	Route             *routev3.Route
-	PostRouteContext  *PostRouteExtensionContext
+	Route            *routev3.Route
+	PostRouteContext *PostRouteExtensionContext
 }
 
 type PostRouteModifyResponse struct {
@@ -28,8 +28,8 @@ type PostRouteModifyResponse struct {
 }
 
 type PostVirtualHostModifyRequest struct {
-	VirtualHost               *routev3.VirtualHost
-	PostVirtualHostContext    *PostVirtualHostExtensionContext
+	VirtualHost            *routev3.VirtualHost
+	PostVirtualHostContext *PostVirtualHostExtensionContext
 }
 
 type PostVirtualHostModifyResponse struct {
@@ -37,8 +37,8 @@ type PostVirtualHostModifyResponse struct {
 }
 
 type PostHTTPListenerModifyRequest struct {
-	Listener               *listenerv3.Listener
-	PostListenerContext    *PostHTTPListenerExtensionContext
+	Listener            *listenerv3.Listener
+	PostListenerContext *PostHTTPListenerExtensionContext
 }
 
 type PostHTTPListenerModifyResponse struct {
@@ -46,9 +46,9 @@ type PostHTTPListenerModifyResponse struct {
 }
 
 type PostTranslateModifyRequest struct {
-	PostTranslateContext   *PostTranslateExtensionContext
-	Clusters               []*clusterv3.Cluster
-	Secrets                []*tlsv3.Secret
+	PostTranslateContext *PostTranslateExtensionContext
+	Clusters             []*clusterv3.Cluster
+	Secrets              []*tlsv3.Secret
 }
 
 type PostTranslateModifyResponse struct {

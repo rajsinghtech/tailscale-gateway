@@ -95,6 +95,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Setup TailscaleEndpoints controller
+	if err = (&controller.TailscaleEndpointsReconciler{
+		Client:                 mgr.GetClient(),
+		Scheme:                 mgr.GetScheme(),
+		TailscaleClientManager: controller.NewMultiTailnetManager(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error("unable to create controller", "controller", "TailscaleEndpoints", "error", err)
+		os.Exit(1)
+	}
+
 	// TODO: Implement TailscaleGateway controller
 	/*
 		if err = (&controller.TailscaleGatewayReconciler{

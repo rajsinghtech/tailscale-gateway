@@ -1,0 +1,13 @@
+# Kustomization for CRDs
+resources:
+- bases/gateway.tailscale.com_tailscalegateways.yaml
+- bases/gateway.tailscale.com_tailscaleendpoints.yaml
+- bases/gateway.tailscale.com_tailscaletailnets.yaml
+- bases/gateway.tailscale.com_tailscaleroutepolicies.yaml
+
+# Patches for CRDs
+patchesStrategicMerge: []
+
+# Generate CRD patches
+configurations:
+- kustomizeconfig.yaml

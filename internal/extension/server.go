@@ -113,9 +113,9 @@ func (s *Server) PostVirtualHostModify(ctx context.Context, req *extensionpb.Pos
 		}
 		vHost.Routes = append(vHost.Routes, egressRoutes...)
 
-		logger.Info("Injected routes for gateway", 
-			"gateway", gateway.Name, 
-			"ingressRoutes", len(ingressRoutes), 
+		logger.Info("Injected routes for gateway",
+			"gateway", gateway.Name,
+			"ingressRoutes", len(ingressRoutes),
 			"egressRoutes", len(egressRoutes))
 	}
 
@@ -222,7 +222,7 @@ func (s *Server) buildTLSTransportSocket(endpoint gatewayv1alpha1.TailscaleEndpo
 	// TODO: Implement proper TLS configuration
 	// This is a placeholder implementation
 	return &corev3.TransportSocket{
-		Name: "envoy.transport_sockets.tls",
+		Name:       "envoy.transport_sockets.tls",
 		ConfigType: &corev3.TransportSocket_TypedConfig{
 			// Would need to implement actual TLS configuration here
 		},
@@ -344,7 +344,7 @@ func (rg *RouteGenerator) generateIngressRoutesForTailnet(ctx context.Context, g
 
 	// This would typically get endpoints from TailscaleEndpoints resources
 	// For now, create example routes based on the patterns
-	
+
 	// Example route for the pattern
 	route := &routev3.Route{
 		Name: fmt.Sprintf("ingress-%s-%s", gateway.Name, tailnetConfig.Name),
@@ -434,7 +434,7 @@ func (rg *RouteGenerator) generateEgressRoutesForTailnet(ctx context.Context, ga
 
 	// This would typically get endpoints from TailscaleEndpoints resources
 	// For now, create example routes based on the patterns
-	
+
 	// Example route for egress pattern
 	route := &routev3.Route{
 		Name: fmt.Sprintf("egress-%s-%s", gateway.Name, tailnetConfig.Name),
@@ -520,7 +520,7 @@ func (gc *GatewayController) GetGatewaysForVirtualHost(ctx context.Context, doma
 	var matchingGateways []*gatewayv1alpha1.TailscaleGateway
 	for i := range gatewayList.Items {
 		gateway := &gatewayList.Items[i]
-		
+
 		// TODO: Implement domain matching logic
 		// For now, include all gateways
 		matchingGateways = append(matchingGateways, gateway)

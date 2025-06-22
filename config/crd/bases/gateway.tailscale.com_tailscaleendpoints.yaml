@@ -29,9 +29,9 @@ spec:
       jsonPath: .status.healthyEndpoints
       name: Healthy
       type: integer
-    - description: Auto-discovered endpoints
-      jsonPath: .status.discoveredEndpoints
-      name: Discovered
+    - description: Created StatefulSets
+      jsonPath: .status.statefulSetRefs[*].name
+      name: StatefulSets
       type: integer
     - description: Last discovery sync
       jsonPath: .status.lastSync
@@ -322,6 +322,37 @@ spec:
                 description: LastSync indicates when endpoint discovery last succeeded
                 format: date-time
                 type: string
+              statefulSetRefs:
+                description: StatefulSetRefs tracks the StatefulSets created for endpoint
+                  connections
+                items:
+                  description: StatefulSetReference tracks a StatefulSet created for
+                    an endpoint connection
+                  properties:
+                    connectionType:
+                      description: ConnectionType indicates whether this is an ingress
+                        or egress connection
+                      enum:
+                      - ingress
+                      - egress
+                      type: string
+                    endpointName:
+                      description: EndpointName identifies which endpoint this StatefulSet
+                        serves
+                      type: string
+                    name:
+                      description: Name of the StatefulSet
+                      type: string
+                    namespace:
+                      description: Namespace of the StatefulSet
+                      type: string
+                  required:
+                  - connectionType
+                  - endpointName
+                  - name
+                  - namespace
+                  type: object
+                type: array
               totalEndpoints:
                 description: TotalEndpoints is the total count of endpoints (discovered
                   + manually configured)

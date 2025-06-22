@@ -159,7 +159,7 @@ func (r *TailscaleGatewayReconciler) reconcileGateway(ctx context.Context, gatew
 // validateGatewayRef validates that the referenced Gateway exists
 func (r *TailscaleGatewayReconciler) validateGatewayRef(ctx context.Context, gateway *gatewayv1alpha1.TailscaleGateway) error {
 	gatewayRef := gateway.Spec.GatewayRef
-	
+
 	// Default namespace to the same as TailscaleGateway if not specified
 	namespace := gatewayRef.Namespace
 	var namespaceStr string
@@ -175,7 +175,7 @@ func (r *TailscaleGatewayReconciler) validateGatewayRef(ctx context.Context, gat
 		Name:      string(gatewayRef.Name),
 		Namespace: namespaceStr,
 	}
-	
+
 	if err := r.Get(ctx, key, envoyGateway); err != nil {
 		return fmt.Errorf("referenced Gateway %s/%s not found: %w", namespaceStr, gatewayRef.Name, err)
 	}
@@ -187,7 +187,7 @@ func (r *TailscaleGatewayReconciler) validateGatewayRef(ctx context.Context, gat
 func (r *TailscaleGatewayReconciler) validateTailnetRefs(ctx context.Context, gateway *gatewayv1alpha1.TailscaleGateway) error {
 	for _, tailnetConfig := range gateway.Spec.Tailnets {
 		tailnetRef := tailnetConfig.TailscaleTailnetRef
-		
+
 		// Default namespace to the same as TailscaleGateway if not specified
 		namespace := tailnetRef.Namespace
 		var namespaceStr string
@@ -203,7 +203,7 @@ func (r *TailscaleGatewayReconciler) validateTailnetRefs(ctx context.Context, ga
 			Name:      string(tailnetRef.Name),
 			Namespace: namespaceStr,
 		}
-		
+
 		if err := r.Get(ctx, key, tailnet); err != nil {
 			return fmt.Errorf("referenced TailscaleTailnet %s/%s not found: %w", namespaceStr, tailnetRef.Name, err)
 		}
@@ -452,7 +452,7 @@ func (r *TailscaleGatewayReconciler) buildTailscaleEndpoints(gateway *gatewayv1a
 func (r *TailscaleGatewayReconciler) reconcileResource(ctx context.Context, obj client.Object) error {
 	key := client.ObjectKeyFromObject(obj)
 	current := obj.DeepCopyObject().(client.Object)
-	
+
 	err := r.Get(ctx, key, current)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -506,10 +506,10 @@ func (r *TailscaleGatewayReconciler) endpointsName(gateway *gatewayv1alpha1.Tail
 
 func (r *TailscaleGatewayReconciler) labelsForExtensionServer(gateway *gatewayv1alpha1.TailscaleGateway) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":       "tailscale-gateway-extension",
-		"app.kubernetes.io/instance":   gateway.Name,
-		"app.kubernetes.io/component":  "extension-server",
-		"app.kubernetes.io/part-of":    "tailscale-gateway",
+		"app.kubernetes.io/name":        "tailscale-gateway-extension",
+		"app.kubernetes.io/instance":    gateway.Name,
+		"app.kubernetes.io/component":   "extension-server",
+		"app.kubernetes.io/part-of":     "tailscale-gateway",
 		"gateway.tailscale.com/gateway": gateway.Name,
 	}
 }

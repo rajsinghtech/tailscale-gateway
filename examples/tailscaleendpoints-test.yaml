@@ -1,0 +1,34 @@
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleEndpoints
+metadata:
+  name: test-endpoints
+  namespace: default
+spec:
+  tailnet: test-tailnet
+  autoDiscovery:
+    enabled: false  # Disable auto-discovery for this test
+  endpoints:
+    - name: web-service
+      tailscaleIP: "100.64.0.10"
+      tailscaleFQDN: "web-service.example.ts.net"
+      port: 80
+      protocol: "HTTP"
+      tags:
+        - "tag:web"
+      healthCheck:
+        enabled: true
+        path: "/health"
+        interval: "30s"
+      weight: 1
+    - name: api-service
+      tailscaleIP: "100.64.0.20"
+      tailscaleFQDN: "api-service.example.ts.net"
+      port: 8080
+      protocol: "HTTPS"
+      tags:
+        - "tag:web"
+      healthCheck:
+        enabled: true
+        path: "/health"
+        interval: "30s"
+      weight: 2

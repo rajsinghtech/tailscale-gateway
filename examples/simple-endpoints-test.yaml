@@ -1,0 +1,25 @@
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleEndpoints
+metadata:
+  name: simple-test
+  namespace: default
+spec:
+  tailnet: test-tailnet
+
+  # Manual endpoint configuration only (no auto-discovery)
+  endpoints:
+  - name: test-service
+    tailscaleIP: 100.64.0.100
+    tailscaleFQDN: test-service.test.ts.net
+    port: 8080
+    protocol: HTTP
+    tags:
+    - "tag:test"
+    - "tag:service"
+    healthCheck:
+      enabled: false  # Disable health checks for testing
+    weight: 100
+
+  # Disable auto-discovery for this test
+  autoDiscovery:
+    enabled: false

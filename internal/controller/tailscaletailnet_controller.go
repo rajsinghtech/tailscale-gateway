@@ -126,7 +126,7 @@ func (r *TailscaleTailnetReconciler) reconcileTailnet(ctx context.Context, tailn
 
 	r.Recorder.Event(tailnet, "Normal", ReasonAuthenticationSucceeded, "Successfully validated OAuth credentials and tailnet connection")
 	logger.Info("Successfully reconciled TailscaleTailnet")
-	
+
 	return ctrl.Result{RequeueAfter: DefaultSyncInterval}, nil
 }
 
@@ -172,9 +172,9 @@ func (r *TailscaleTailnetReconciler) validateOAuthCredentials(ctx context.Contex
 
 	// Create validation auth key capabilities
 	caps := tailscaleclient.KeyCapabilities{}
-	caps.Devices.Create.Reusable = false      // Single use for validation
-	caps.Devices.Create.Ephemeral = true      // Auto-cleanup
-	caps.Devices.Create.Preauthorized = true  // Skip manual approval
+	caps.Devices.Create.Reusable = false     // Single use for validation
+	caps.Devices.Create.Ephemeral = true     // Auto-cleanup
+	caps.Devices.Create.Preauthorized = true // Skip manual approval
 	caps.Devices.Create.Tags = tags
 
 	// Attempt to create auth key - this validates the OAuth credentials
@@ -206,7 +206,6 @@ func (r *TailscaleTailnetReconciler) validateOAuthCredentials(ctx context.Contex
 			r.Logger.Infof("Successfully cleaned up validation auth key: %s", keyMeta.ID)
 		}
 	}
-
 
 	return nil
 }

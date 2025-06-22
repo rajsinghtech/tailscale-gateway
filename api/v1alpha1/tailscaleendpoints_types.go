@@ -135,6 +135,22 @@ type EndpointHealthCheck struct {
 	UnhealthyThreshold *int32 `json:"unhealthyThreshold,omitempty"`
 }
 
+// StatefulSetReference tracks a StatefulSet created for an endpoint connection
+type StatefulSetReference struct {
+	// Name of the StatefulSet
+	Name string `json:"name"`
+
+	// Namespace of the StatefulSet
+	Namespace string `json:"namespace"`
+
+	// ConnectionType indicates whether this is an ingress or egress connection
+	// +kubebuilder:validation:Enum=ingress;egress
+	ConnectionType string `json:"connectionType"`
+
+	// EndpointName identifies which endpoint this StatefulSet serves
+	EndpointName string `json:"endpointName"`
+}
+
 // TailscaleEndpointsStatus defines the observed state of TailscaleEndpoints
 type TailscaleEndpointsStatus struct {
 	// Conditions represent the current state of the TailscaleEndpoints
@@ -159,6 +175,10 @@ type TailscaleEndpointsStatus struct {
 	// EndpointStatus provides detailed status for each endpoint
 	// +optional
 	EndpointStatus []EndpointStatus `json:"endpointStatus,omitempty"`
+
+	// StatefulSetRefs tracks the StatefulSets created for endpoint connections
+	// +optional
+	StatefulSetRefs []StatefulSetReference `json:"statefulSetRefs,omitempty"`
 }
 
 // EndpointStatus provides status information for a specific endpoint
@@ -192,7 +212,7 @@ type EndpointStatus struct {
 //+kubebuilder:printcolumn:name="Tailnet",type="string",JSONPath=".spec.tailnet",description="Associated tailnet"
 //+kubebuilder:printcolumn:name="Total",type="integer",JSONPath=".status.totalEndpoints",description="Total endpoints"
 //+kubebuilder:printcolumn:name="Healthy",type="integer",JSONPath=".status.healthyEndpoints",description="Healthy endpoints"
-//+kubebuilder:printcolumn:name="Discovered",type="integer",JSONPath=".status.discoveredEndpoints",description="Auto-discovered endpoints"
+//+kubebuilder:printcolumn:name="StatefulSets",type="integer",JSONPath=".status.statefulSetRefs[*].name",description="Created StatefulSets"
 //+kubebuilder:printcolumn:name="Last Sync",type="date",JSONPath=".status.lastSync",description="Last discovery sync"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 

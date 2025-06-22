@@ -690,3 +690,635 @@ func (g *TailscaleGateway) ResolveServiceEndpoints(serviceName string) ([]netip.
 ```
 
 This discovery architecture influences how the Tailscale Gateway Operator implements dynamic backend discovery for Envoy Gateway route injection.
+
+## Tailscale k8s-operator StatefulSet and Service Architecture
+
+### StatefulSet Configuration Patterns
+
+The operator follows sophisticated StatefulSet patterns from the official Tailscale k8s-operator:
+
+#### **Pod Identity and State Management**
+```go
+// Predictable hostname generation for each replica
+func pgTailscaledConfig(pg *tsapi.ProxyGroup, class *tsapi.ProxyClass, idx int32, authKey string) (tailscaledConfigs, error) {
+    conf := &ipn.ConfigVAlpha{
+        Version:      "alpha0",
+        Hostname:     ptr.To(fmt.Sprintf("%s-%d", pg.Name, idx)),  // myproxy-0, myproxy-1, etc.
+    }
+}
+
+// Per-replica state secret management
+func pgStateSecrets(pg *tsapi.ProxyGroup, namespace string) (secrets []*corev1.Secret) {
+    for i := range pgReplicas(pg) {
+        secrets = append(secrets, &corev1.Secret{
+            ObjectMeta: metav1.ObjectMeta{
+                Name:            fmt.Sprintf("%s-%d", pg.Name, i),  // myproxy-0, myproxy-1
+                Namespace:       namespace,
+                Labels:          pgSecretLabels(pg.Name, "state"),
+                OwnerReferences: pgOwnerReference(pg),
+            },
+        })
+    }
+}
+```
+
+#### **Container Environment for State Persistence**
+```go
+// State management via Kubernetes Secret backend
+c.Env = []corev1.EnvVar{
+    {
+        Name:  "TS_KUBE_SECRET",
+        Value: "$(POD_NAME)",          // References pod name for state persistence
+    },
+    {
+        Name:  "TS_STATE", 
+        Value: "kube:$(POD_NAME)",     // Kubernetes state backend
+    },
+    {
+        Name:  "TS_EXPERIMENTAL_VERSIONED_CONFIG_DIR",
+        Value: "/etc/tsconfig/$(POD_NAME)",
+    },
+}
+```
+
+### Ingress vs Egress Configuration Patterns
+
+#### **Ingress ProxyGroups (Tailscale → Kubernetes)**
+```go
+// Ingress-specific configuration
+if pg.Spec.Type == tsapi.ProxyGroupTypeIngress {
+    envs = append(envs, 
+        corev1.EnvVar{
+            Name:  "TS_EXPERIMENTAL_CERT_SHARE",  // Critical for HA
+            Value: "true",
+        },
+        corev1.EnvVar{
+            Name:  "TS_SERVE_CONFIG",
+            Value: "/etc/proxies/serve-config",
+        },
+    )
+}
+```
+
+#### **Egress ProxyGroups (Kubernetes → Tailscale)**
+```go
+// Egress-specific configuration
+if pg.Spec.Type == tsapi.ProxyGroupTypeEgress {
+    envs = append(envs,
+        corev1.EnvVar{
+            Name:  "TS_ENABLE_HEALTH_CHECK",      // Health checks for failover
+            Value: "true",
+        },
+        corev1.EnvVar{
+            Name:  "TS_EGRESS_PROXIES_CONFIG_PATH",
+            Value: "/etc/proxies",
+        },
+    )
+    
+    // Pre-stop hook for graceful shutdown
+    c.Lifecycle = &corev1.Lifecycle{
+        PreStop: &corev1.LifecycleHandler{
+            HTTPGet: &corev1.HTTPGetAction{
+                Path: "/pre-shutdown",
+                Port: intstr.FromInt(9002),  // Health check port
+            },
+        },
+    }
+}
+```
+
+### Service Type Interactions and Port Mappings
+
+#### **Headless Services for StatefulSet Management**
+```go
+// Headless service enables direct pod access for HA
+func reconcileHeadlessService(sts *tailscaleSTSConfig) *corev1.Service {
+    return &corev1.Service{
+        Spec: corev1.ServiceSpec{
+            ClusterIP: "None",                    // Headless service
+            Selector: map[string]string{
+                "app": sts.ParentResourceUID,     // Selects StatefulSet pods
+            },
+            IPFamilyPolicy: ptr.To(corev1.IPFamilyPolicyPreferDualStack),
+        },
+    }
+}
+```
+
+**Why Headless Services for HA Ingress:**
+1. **Direct Pod IP Access**: Returns all Pod IPs via DNS rather than load balancing
+2. **Health Awareness**: EndpointSlices track Pod readiness automatically  
+3. **Cert Coordination**: `TS_EXPERIMENTAL_CERT_SHARE=true` prevents multiple TLS certificates
+4. **Client-Side Load Balancing**: Allows clients to connect to individual replicas
+
+#### **ExternalName → Headless Service Port Mapping**
+```go
+// ExternalName service points to headless service FQDN
+clusterDomain := retrieveClusterDomain(a.tsNamespace, logger)
+headlessSvcName := hsvc.Name + "." + hsvc.Namespace + ".svc." + clusterDomain
+
+svc.Spec.ExternalName = headlessSvcName
+svc.Spec.Type = corev1.ServiceTypeExternalName
+```
+
+**Traffic Flow Pattern:**
+```
+ExternalName Service → Headless Service FQDN → Pod IPs (direct access)
+```
+
+#### **Dynamic Port Allocation for Egress Services**
+```go
+// Port allocation in range [10000-11000) for egress traffic
+const (
+    maxPorts = 1000                    // Maximum ports per ProxyGroup
+    defaultLocalAddrPort = 9002        // Health check and metrics port
+)
+
+// Port mapping configuration
+type PortMap struct {
+    Protocol   string `json:"protocol"`
+    MatchPort  uint16 `json:"matchPort"`   // Port on proxy (10000-11000 range)  
+    TargetPort uint16 `json:"targetPort"`  // Port on tailnet target
+}
+```
+
+#### **Container Port vs Service Port Relationships**
+```go
+// Container ports for health and metrics
+ss.Spec.Template.Spec.Containers[i].Ports = []corev1.ContainerPort{
+    {
+        Name:          "metrics",
+        Protocol:      "TCP",
+        ContainerPort: 9002,              // Health check endpoint
+    },
+    {
+        Name:          "debug", 
+        Protocol:      "TCP",
+        ContainerPort: 9001,              // Debug endpoint
+    },
+}
+
+// Environment variables for port binding
+c.Env = append(c.Env,
+    corev1.EnvVar{
+        Name:  "TS_LOCAL_ADDR_PORT",
+        Value: "$(POD_IP):9002",          // Bound to Pod IP
+    },
+)
+```
+
+### Traffic Flow Diagrams
+
+#### **Ingress Traffic Flow**
+```
+Tailscale Client → Headless Service (DNS) → ProxyGroup Pods (443/80) → ClusterIP Service → Target Pod
+```
+
+#### **Egress Traffic Flow**  
+```
+Kubernetes Pod → ExternalName Service → Headless Service → ProxyGroup Pod (10000-11000) → Tailscale Target
+```
+
+#### **Health Check Traffic Flow**
+```
+Kubernetes Probes → Pod IP:9002 → Tailscale Health Endpoint → Pre-stop Hook
+```
+
+### Graceful Failover Mechanisms
+
+#### **Health Check Endpoint Strategy**
+- **Port 9002**: Health checks and metrics endpoint
+- **Pod IP binding**: Prevents port conflicts between replicas
+- **Pre-stop hooks**: Ensures traffic drains before pod termination
+- **HEP calculation**: `replicas * 3` pings to test all backends
+
+#### **Certificate Sharing for Ingress HA**
+```go
+// Prevents multiple TLS certificate issuance for HA ingress
+envs = append(envs, corev1.EnvVar{
+    Name:  "TS_EXPERIMENTAL_CERT_SHARE",
+    Value: "true",
+})
+```
+
+### Scaling and Resource Management
+
+#### **Replica Management**
+```go
+func pgReplicas(pg *tsapi.ProxyGroup) int32 {
+    if pg.Spec.Replicas != nil {
+        return *pg.Spec.Replicas
+    }
+    return 2  // Default to 2 replicas for HA
+}
+```
+
+#### **Cleanup During Scale-Down**
+```go
+// Clean up resources when scaling down
+for _, m := range metadata {
+    if m.ordinal+1 <= int(pgReplicas(pg)) {
+        continue  // Keep replicas within desired count
+    }
+    
+    // Delete tailnet device, state secret, and config secret for excess replicas
+    if err := r.deleteTailnetDevice(ctx, m.tsID, logger); err != nil {
+        return err
+    }
+}
+```
+
+This StatefulSet and service architecture provides the foundation for implementing high-availability Tailscale proxy deployments with sophisticated traffic routing and failover capabilities.
+
+## Envoy Gateway Extension Server Implementation
+
+### Architecture Overview
+
+The Tailscale Gateway Operator implements an Envoy Gateway Extension Server to inject Tailscale-specific routes and clusters into the Envoy proxy configuration. This enables seamless integration between Envoy Gateway and Tailscale mesh networking.
+
+#### **Extension Server gRPC Service**
+```protobuf
+service EnvoyGatewayExtension {
+    rpc PostRouteModify(PostRouteModifyRequest) returns (PostRouteModifyResponse);
+    rpc PostVirtualHostModify(PostVirtualHostModifyRequest) returns (PostVirtualHostModifyResponse);
+    rpc PostHTTPListenerModify(PostHTTPListenerModifyRequest) returns (PostHTTPListenerModifyResponse);
+    rpc PostTranslateModify(PostTranslateModifyRequest) returns (PostTranslateModifyResponse);
+}
+```
+
+### Hook Implementation Patterns
+
+#### **PostVirtualHostModify: Route Injection**
+Used to inject new routes for Tailscale endpoints:
+
+```go
+func (s *TailscaleExtensionServer) PostVirtualHostModify(ctx context.Context, req *pb.PostVirtualHostModifyRequest) (*pb.PostVirtualHostModifyResponse, error) {
+    modifiedVH := proto.Clone(req.VirtualHost).(*routev3.VirtualHost)
+    
+    // Inject Tailscale service routes
+    for _, svcRoute := range s.getTailscaleServiceRoutes(ctx) {
+        modifiedVH.Routes = append(modifiedVH.Routes, &routev3.Route{
+            Name: fmt.Sprintf("tailscale-svc-%s", svcRoute.ServiceName),
+            Match: &routev3.RouteMatch{
+                PathSpecifier: &routev3.RouteMatch_Prefix{
+                    Prefix: fmt.Sprintf("/svc/%s", svcRoute.ServiceName),
+                },
+            },
+            Action: &routev3.Route_Route{
+                Route: &routev3.RouteAction{
+                    ClusterSpecifier: &routev3.RouteAction_Cluster{
+                        Cluster: fmt.Sprintf("tailscale-cluster-%s", svcRoute.ServiceName),
+                    },
+                },
+            },
+        })
+    }
+    
+    return &pb.PostVirtualHostModifyResponse{VirtualHost: modifiedVH}, nil
+}
+```
+
+#### **PostTranslateModify: Cluster Injection**
+Used to inject Tailscale proxy clusters:
+
+```go
+func (s *TailscaleExtensionServer) PostTranslateModify(ctx context.Context, req *pb.PostTranslateModifyRequest) (*pb.PostTranslateModifyResponse, error) {
+    response := &pb.PostTranslateModifyResponse{
+        Clusters: make([]*clusterV3.Cluster, len(req.Clusters)),
+    }
+    
+    // Copy existing clusters
+    copy(response.Clusters, req.Clusters)
+    
+    // Inject Tailscale proxy clusters
+    for _, tailscaleCluster := range s.generateTailscaleClusters(ctx) {
+        response.Clusters = append(response.Clusters, &clusterV3.Cluster{
+            Name: tailscaleCluster.Name,
+            LoadAssignment: &endpointV3.ClusterLoadAssignment{
+                ClusterName: tailscaleCluster.Name,
+                Endpoints: []*endpointV3.LocalityLbEndpoints{{
+                    LbEndpoints: []*endpointV3.LbEndpoint{{
+                        HostIdentifier: &endpointV3.LbEndpoint_Endpoint{
+                            Endpoint: &endpointV3.Endpoint{
+                                Address: &coreV3.Address{
+                                    Address: &coreV3.Address_SocketAddress{
+                                        SocketAddress: &coreV3.SocketAddress{
+                                            Address: tailscaleCluster.HeadlessServiceFQDN,
+                                            PortSpecifier: &coreV3.SocketAddress_PortValue{
+                                                PortValue: tailscaleCluster.Port,
+                                            },
+                                            Protocol: coreV3.SocketAddress_TCP,
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    }},
+                }},
+            },
+        })
+    }
+    
+    return response, nil
+}
+```
+
+### Tailscale Integration Patterns
+
+#### **Service Discovery to Envoy Cluster Mapping**
+The extension server maps Tailscale services to Envoy clusters:
+
+```go
+type TailscaleServiceMapping struct {
+    ServiceName     string              // svc:web-server
+    ClusterName     string              // tailscale-cluster-web-server
+    ProxyGroupName  string              // web-server-proxy-group
+    HeadlessService string              // web-server-proxy-group.tailscale-system.svc.cluster.local
+    Port           uint32              // 80
+    Protocol       string              // HTTP/TCP
+}
+
+func (s *TailscaleExtensionServer) generateTailscaleClusters(ctx context.Context) []TailscaleServiceMapping {
+    var clusters []TailscaleServiceMapping
+    
+    // Get Tailscale services from API
+    devices, err := s.tailscaleClient.Devices(ctx, tailscale.DeviceAllFields)
+    if err != nil {
+        return clusters
+    }
+    
+    // Map services by tag to ProxyGroups
+    for _, device := range devices {
+        for _, tag := range device.Tags {
+            if strings.HasPrefix(tag, "tag:svc-") {
+                serviceName := strings.TrimPrefix(tag, "tag:svc-")
+                clusters = append(clusters, TailscaleServiceMapping{
+                    ServiceName:     serviceName,
+                    ClusterName:     fmt.Sprintf("tailscale-cluster-%s", serviceName),
+                    ProxyGroupName:  fmt.Sprintf("%s-proxy-group", serviceName),
+                    HeadlessService: fmt.Sprintf("%s-proxy-group.%s.svc.cluster.local", 
+                                               serviceName, s.namespace),
+                    Port:           80,
+                    Protocol:       "HTTP",
+                })
+            }
+        }
+    }
+    
+    return clusters
+}
+```
+
+#### **Dynamic ProxyGroup Creation**
+Extension server triggers ProxyGroup creation for discovered services:
+
+```go
+func (s *TailscaleExtensionServer) ensureProxyGroupsExist(ctx context.Context, services []TailscaleServiceMapping) error {
+    for _, svc := range services {
+        proxyGroup := &v1alpha1.TailscaleProxyGroup{
+            ObjectMeta: metav1.ObjectMeta{
+                Name:      svc.ProxyGroupName,
+                Namespace: s.namespace,
+            },
+            Spec: v1alpha1.TailscaleProxyGroupSpec{
+                Type:     v1alpha1.ProxyGroupTypeEgress,
+                Replicas: ptr.To(int32(2)), // HA deployment
+                TailnetTarget: v1alpha1.TailscaleTarget{
+                    ServiceName: svc.ServiceName,
+                    Tags:        []string{fmt.Sprintf("tag:svc-%s", svc.ServiceName)},
+                },
+            },
+        }
+        
+        if err := s.kubeClient.Create(ctx, proxyGroup); err != nil && !errors.IsAlreadyExists(err) {
+            return fmt.Errorf("failed to create ProxyGroup %s: %w", svc.ProxyGroupName, err)
+        }
+    }
+    return nil
+}
+```
+
+### Extension Server Configuration
+
+#### **EnvoyGateway Configuration**
+```yaml
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyGateway
+provider:
+  type: Kubernetes
+extensionManager:
+  hooks:
+    xdsTranslator:
+      post:
+        - VirtualHost    # Route injection
+        - Translation    # Cluster injection
+  service:
+    fqdn:
+      hostname: tailscale-extension-server.tailscale-gateway-system.svc.cluster.local
+      port: 5005
+  policyResources:
+    - group: gateway.tailscale.com
+      version: v1alpha1
+      kind: TailscaleGateway
+    - group: gateway.tailscale.com
+      version: v1alpha1
+      kind: TailscaleRoutePolicy
+```
+
+#### **Extension Server Deployment**
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tailscale-extension-server
+  namespace: tailscale-gateway-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tailscale-extension-server
+  template:
+    spec:
+      serviceAccountName: tailscale-extension-server
+      containers:
+      - name: extension-server
+        image: ghcr.io/rajsinghtech/tailscale-gateway:latest
+        command: ["/extension-server"]
+        ports:
+        - containerPort: 5005
+          name: grpc
+        env:
+        - name: EXTENSION_SERVER_ADDR
+          value: ":5005"
+        - name: TAILSCALE_OAUTH_CLIENT_ID_FILE
+          value: "/oauth/client_id"
+        - name: TAILSCALE_OAUTH_CLIENT_SECRET_FILE
+          value: "/oauth/client_secret"
+        volumeMounts:
+        - name: oauth-credentials
+          mountPath: /oauth
+          readOnly: true
+      volumes:
+      - name: oauth-credentials
+        secret:
+          secretName: tailscale-oauth
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tailscale-extension-server
+  namespace: tailscale-gateway-system
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5005
+    targetPort: 5005
+    protocol: TCP
+    name: grpc
+  selector:
+    app: tailscale-extension-server
+```
+
+### Traffic Flow Architecture
+
+#### **Ingress Flow: External → Tailscale → Kubernetes**
+```
+External Client → Tailscale Device → Envoy Gateway → Extension-Injected Route → ProxyGroup Cluster → Kubernetes Service
+```
+
+#### **Egress Flow: Kubernetes → Tailscale**
+```
+Kubernetes Pod → HTTPRoute → Extension-Injected Route → ProxyGroup Cluster → Tailscale Network
+```
+
+#### **Dynamic Service Discovery Flow**
+```
+1. Extension Server discovers Tailscale services via API
+2. Creates TailscaleProxyGroup resources for services
+3. ProxyGroups spin up StatefulSet with headless service
+4. Extension Server injects Envoy clusters pointing to headless services
+5. Extension Server injects routes mapping service paths to clusters
+```
+
+### Route Policy Integration
+
+#### **TailscaleRoutePolicy Custom Resource**
+```yaml
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleRoutePolicy
+metadata:
+  name: web-service-policy
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: my-route
+  tailscaleTarget:
+    servicePattern: "svc:web-*"    # Match services by pattern
+    tags: ["tag:web-servers"]     # Or match by tags
+  routeRules:
+    - match:
+        path: "/api/*"
+      backend:
+        serviceName: "svc:api-server"
+        port: 8080
+```
+
+This extension server architecture enables seamless, dynamic integration between Envoy Gateway and Tailscale networks, automatically discovering services and creating the necessary proxy infrastructure and route configurations.
+
+# Tailscale State Management Patterns
+
+## State Storage with Kubernetes Secrets
+Following the Tailscale k8s-operator patterns, state management uses Kubernetes secrets with these key principles:
+
+### Environment Variable Configuration
+```bash
+TS_KUBE_SECRET=secret-name           # Tell tailscaled which secret to use
+TS_AUTHKEY=auth-key                  # Auth key from config secret
+TS_USERSPACE=true                    # Userspace mode for Kubernetes
+TS_AUTH_ONCE=true                    # Authenticate only once
+POD_UID=pod-uid                      # Pod UID for state tracking
+```
+
+### Secret Structure and Data Fields
+```yaml
+# Config Secret (contains auth key)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {endpoint-name}-{connection-type}-config
+data:
+  authkey: <base64-auth-key>
+
+# State Secret (managed by tailscaled/containerboot)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {endpoint-name}-{connection-type}-state
+data:
+  # Tailscale internal state (managed by tailscaled)
+  _machinekey: ""          # Machine private key
+  _profiles: ""            # Known profiles (JSON-encoded)
+  _current-profile: ""     # Current profile
+  profile-{id}: ""         # Individual profile data
+  
+  # Operator-specific metadata
+  device_id: ""            # Stable node ID
+  device_fqdn: ""          # Device's tailnet hostname
+  device_ips: ""           # Device's tailnet IPs (JSON array)
+  pod_uid: ""              # Pod UID for validation
+  tailscale_capver: ""     # Capability version
+```
+
+### Critical Implementation Details
+1. **Auth Key Delivery**: Use `TS_AUTHKEY` environment variable from config secret
+2. **State Store Pattern**: Use `TS_KUBE_SECRET` to specify state secret name
+3. **Secret Permissions**: Require PATCH/UPDATE permissions on state secrets
+4. **Atomic Updates**: Use strategic merge patches for efficient updates
+5. **State Consistency**: Validate complete state before shutdown
+6. **Cleanup**: Delete StatefulSet first (foreground), then clean up secrets and devices
+
+### RBAC Requirements for State Management
+```yaml
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list", "patch", "update", "create", "delete"]
+  resourceNames: ["{endpoint}-{type}-config", "{endpoint}-{type}-state"]
+```
+
+### State Secret Lifecycle Management
+```go
+// Container configuration for Kubernetes state backend
+c.Env = []corev1.EnvVar{
+    {
+        Name:  "TS_KUBE_SECRET",
+        Value: stateSecretName,        // State secret for persistence
+    },
+    {
+        Name: "TS_AUTHKEY",
+        ValueFrom: &corev1.EnvVarSource{
+            SecretKeyRef: &corev1.SecretKeySelector{
+                LocalObjectReference: corev1.LocalObjectReference{
+                    Name: configSecretName,
+                },
+                Key: "authkey",
+            },
+        },
+    },
+}
+```
+
+### Authentication Fix Applied
+**Original Issue**: Tailscale containers were prompting for manual authentication instead of using auth keys.
+
+**Root Cause**: 
+1. Used complex versioned config instead of simple environment variables
+2. Auth keys weren't properly delivered to containers
+3. Missing proper state management configuration
+
+**Fix Applied**:
+1. Simplified to use `TS_AUTHKEY` environment variable from config secret
+2. Proper `TS_KUBE_SECRET` configuration for state storage
+3. Following k8s-operator containerboot patterns
+4. Separate config and state secrets for proper isolation

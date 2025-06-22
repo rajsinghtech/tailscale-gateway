@@ -22,7 +22,9 @@ import (
 	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -68,7 +70,7 @@ func NewMultiTailnetManager() *MultiTailnetManager {
 // GetClient returns a Tailscale client for the specified tailnet
 func (m *MultiTailnetManager) GetClient(ctx context.Context, k8sClient client.Client, tailnetName, namespace string) (tailscale.Client, error) {
 	key := fmt.Sprintf("%s/%s", namespace, tailnetName)
-	
+
 	if client, exists := m.clients[key]; exists {
 		return client, nil
 	}
@@ -129,6 +131,11 @@ func (m *MultiTailnetManager) createClientFromTailnet(ctx context.Context, k8sCl
 //+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscaleendpoints/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscaleendpoints/finalizers,verbs=update
 //+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscaletailnets,verbs=get;list;watch
+//+kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -197,6 +204,13 @@ func (r *TailscaleEndpointsReconciler) reconcileEndpoints(ctx context.Context, e
 		}
 		r.updateCondition(endpoints, "ServiceDiscovery", metav1.ConditionTrue, "DiscoverySuccessful", "Service discovery completed")
 	}
+
+	// Create/update StatefulSets for each endpoint
+	if err := r.reconcileStatefulSets(ctx, endpoints); err != nil {
+		r.updateCondition(endpoints, "StatefulSetsReady", metav1.ConditionFalse, "StatefulSetFailed", err.Error())
+		return ctrl.Result{RequeueAfter: time.Minute}, err
+	}
+	r.updateCondition(endpoints, "StatefulSetsReady", metav1.ConditionTrue, "StatefulSetsCreated", "All StatefulSets created successfully")
 
 	// Perform health checks on all endpoints
 	if err := r.performHealthChecks(ctx, endpoints); err != nil {
@@ -345,7 +359,7 @@ func (r *TailscaleEndpointsReconciler) deviceToEndpoint(device *tailscaleclient.
 	if protocol == "HTTPS" {
 		port = 443
 	}
-	
+
 	// Check for custom port tags (e.g., "tag:port:8080")
 	for _, tag := range device.Tags {
 		if strings.HasPrefix(tag, "tag:port:") {
@@ -479,7 +493,7 @@ func (r *TailscaleEndpointsReconciler) performHealthChecks(ctx context.Context, 
 // performHealthCheck performs a health check on a single endpoint
 func (r *TailscaleEndpointsReconciler) performHealthCheck(ctx context.Context, endpoint *gatewayv1alpha1.TailscaleEndpoint) bool {
 	logger := log.FromContext(ctx)
-	
+
 	switch endpoint.Protocol {
 	case "HTTP", "HTTPS":
 		return r.performHTTPHealthCheck(ctx, endpoint)
@@ -503,7 +517,7 @@ func (r *TailscaleEndpointsReconciler) performHTTPHealthCheck(ctx context.Contex
 	// 2. Make request to health check path
 	// 3. Check response status code
 	// 4. Handle retries and circuit breaking
-	
+
 	// For now, assume healthy
 	return true
 }
@@ -515,9 +529,375 @@ func (r *TailscaleEndpointsReconciler) performTCPHealthCheck(ctx context.Context
 	// 1. Attempt to establish TCP connection to endpoint IP:port
 	// 2. Close connection immediately if successful
 	// 3. Handle timeouts and connection errors
-	
+
 	// For now, assume healthy
 	return true
+}
+
+// reconcileStatefulSets creates and manages StatefulSets for each endpoint
+// Following ProxyGroup patterns with ingress and egress connections
+func (r *TailscaleEndpointsReconciler) reconcileStatefulSets(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints) error {
+	logger := log.FromContext(ctx)
+
+	// Get Tailscale client for auth key creation
+	tsClient, err := r.TailscaleClientManager.GetClient(ctx, r.Client, endpoints.Spec.Tailnet, endpoints.Namespace)
+	if err != nil {
+		return fmt.Errorf("failed to get Tailscale client: %w", err)
+	}
+
+	var statefulSetRefs []gatewayv1alpha1.StatefulSetReference
+
+	// Create StatefulSets for each endpoint
+	for _, endpoint := range endpoints.Spec.Endpoints {
+		// Create ingress StatefulSet
+		ingressRef, err := r.reconcileEndpointStatefulSet(ctx, endpoints, &endpoint, "ingress", tsClient)
+		if err != nil {
+			return fmt.Errorf("failed to reconcile ingress StatefulSet for endpoint %s: %w", endpoint.Name, err)
+		}
+		statefulSetRefs = append(statefulSetRefs, *ingressRef)
+
+		// Create egress StatefulSet
+		egressRef, err := r.reconcileEndpointStatefulSet(ctx, endpoints, &endpoint, "egress", tsClient)
+		if err != nil {
+			return fmt.Errorf("failed to reconcile egress StatefulSet for endpoint %s: %w", endpoint.Name, err)
+		}
+		statefulSetRefs = append(statefulSetRefs, *egressRef)
+	}
+
+	// Update status with StatefulSet references
+	endpoints.Status.StatefulSetRefs = statefulSetRefs
+
+	logger.Info("Successfully reconciled StatefulSets", "endpoints", endpoints.Name, "statefulSets", len(statefulSetRefs))
+	return nil
+}
+
+// reconcileEndpointStatefulSet creates/updates a StatefulSet for an endpoint connection
+// Follows k8s-operator ProxyGroup patterns for resource creation
+func (r *TailscaleEndpointsReconciler) reconcileEndpointStatefulSet(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, endpoint *gatewayv1alpha1.TailscaleEndpoint, connectionType string, tsClient tailscale.Client) (*gatewayv1alpha1.StatefulSetReference, error) {
+	logger := log.FromContext(ctx)
+
+	// Generate StatefulSet name following k8s-operator patterns
+	ssName := fmt.Sprintf("%s-%s-%s", endpoints.Name, endpoint.Name, connectionType)
+	labels := map[string]string{
+		"app.kubernetes.io/name":         "tailscale-endpoint",
+		"app.kubernetes.io/instance":     endpoints.Name,
+		"app.kubernetes.io/component":    connectionType,
+		"app.kubernetes.io/managed-by":   "tailscale-gateway-operator",
+		"gateway.tailscale.com/endpoint": endpoint.Name,
+		"gateway.tailscale.com/type":     connectionType,
+	}
+
+	// Create RBAC resources
+	if err := r.createRBACResources(ctx, endpoints, ssName, labels); err != nil {
+		return nil, fmt.Errorf("failed to create RBAC resources: %w", err)
+	}
+
+	// Create auth key for this connection
+	authKey, err := r.createAuthKey(ctx, tsClient, endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create auth key: %w", err)
+	}
+
+	// Create config secret
+	configSecretName := ssName + "-config"
+	if err := r.createConfigSecret(ctx, endpoints, configSecretName, ssName, authKey, connectionType, labels); err != nil {
+		return nil, fmt.Errorf("failed to create config secret: %w", err)
+	}
+
+	// Create state secret
+	stateSecretName := ssName + "-state"
+	if err := r.createStateSecret(ctx, endpoints, stateSecretName, labels); err != nil {
+		return nil, fmt.Errorf("failed to create state secret: %w", err)
+	}
+
+	// Create StatefulSet
+	if err := r.createEndpointStatefulSet(ctx, endpoints, endpoint, ssName, connectionType, configSecretName, stateSecretName, labels); err != nil {
+		return nil, fmt.Errorf("failed to create StatefulSet: %w", err)
+	}
+
+	logger.Info("Successfully reconciled endpoint StatefulSet", "name", ssName, "type", connectionType)
+
+	return &gatewayv1alpha1.StatefulSetReference{
+		Name:           ssName,
+		Namespace:      endpoints.Namespace,
+		ConnectionType: connectionType,
+		EndpointName:   endpoint.Name,
+	}, nil
+}
+
+// createRBACResources creates ServiceAccount, Role, and RoleBinding
+// Following k8s-operator RBAC patterns
+func (r *TailscaleEndpointsReconciler) createRBACResources(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, name string, labels map[string]string) error {
+	// ServiceAccount
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: endpoints.Namespace,
+			Labels:    labels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(endpoints, gatewayv1alpha1.GroupVersion.WithKind("TailscaleEndpoints")),
+			},
+		},
+	}
+	if err := r.createOrUpdate(ctx, sa, func() {
+		sa.Labels = labels
+	}); err != nil {
+		return fmt.Errorf("failed to create ServiceAccount: %w", err)
+	}
+
+	// Role
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: endpoints.Namespace,
+			Labels:    labels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(endpoints, gatewayv1alpha1.GroupVersion.WithKind("TailscaleEndpoints")),
+			},
+		},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups:     []string{""},
+				Resources:     []string{"secrets"},
+				Verbs:         []string{"get", "list", "patch", "update"},
+				ResourceNames: []string{name + "-config", name + "-state"},
+			},
+			{
+				APIGroups: []string{""},
+				Resources: []string{"events"},
+				Verbs:     []string{"create", "patch"},
+			},
+		},
+	}
+	if err := r.createOrUpdate(ctx, role, func() {
+		// Role rules are already set
+	}); err != nil {
+		return fmt.Errorf("failed to create Role: %w", err)
+	}
+
+	// RoleBinding
+	roleBinding := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: endpoints.Namespace,
+			Labels:    labels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(endpoints, gatewayv1alpha1.GroupVersion.WithKind("TailscaleEndpoints")),
+			},
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      name,
+				Namespace: endpoints.Namespace,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			Kind:     "Role",
+			Name:     name,
+			APIGroup: "rbac.authorization.k8s.io",
+		},
+	}
+	if err := r.createOrUpdate(ctx, roleBinding, func() {
+		// RoleBinding subjects and roleRef are already set
+	}); err != nil {
+		return fmt.Errorf("failed to create RoleBinding: %w", err)
+	}
+
+	return nil
+}
+
+// createAuthKey creates a Tailscale auth key for the endpoint connection
+// Following k8s-operator auth key creation patterns
+func (r *TailscaleEndpointsReconciler) createAuthKey(ctx context.Context, tsClient tailscale.Client, endpoint *gatewayv1alpha1.TailscaleEndpoint) (string, error) {
+	logger := log.FromContext(ctx)
+
+	// Use endpoint tags or default to tag:web (which is valid in the current tailnet)
+	tags := endpoint.Tags
+	if len(tags) == 0 {
+		tags = []string{"tag:web"}
+	}
+
+	// Create ephemeral auth key following k8s-operator patterns
+	capabilities := tailscaleclient.KeyCapabilities{}
+	capabilities.Devices.Create.Reusable = false
+	capabilities.Devices.Create.Ephemeral = true
+	capabilities.Devices.Create.Preauthorized = true
+	capabilities.Devices.Create.Tags = tags
+
+	logger.Info("Creating auth key for endpoint", "endpoint", endpoint.Name, "tags", tags)
+	authKey, err := tsClient.CreateKey(ctx, capabilities)
+	if err != nil {
+		return "", fmt.Errorf("failed to create auth key for endpoint %s: %w", endpoint.Name, err)
+	}
+
+	logger.Info("Successfully created auth key", "endpoint", endpoint.Name, "keyID", authKey.ID)
+	return authKey.Key, nil
+}
+
+// createConfigSecret creates the Tailscale configuration secret
+// Following k8s-operator config secret patterns
+func (r *TailscaleEndpointsReconciler) createConfigSecret(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, secretName, hostname, authKey, connectionType string, labels map[string]string) error {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: endpoints.Namespace,
+			Labels:    labels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(endpoints, gatewayv1alpha1.GroupVersion.WithKind("TailscaleEndpoints")),
+			},
+		},
+		Data: map[string][]byte{
+			"authkey": []byte(authKey),
+		},
+	}
+
+	return r.createOrUpdate(ctx, secret, func() {
+		secret.Data = map[string][]byte{
+			"authkey": []byte(authKey),
+		}
+	})
+}
+
+// createStateSecret creates the Tailscale state secret
+// Following k8s-operator state secret patterns
+func (r *TailscaleEndpointsReconciler) createStateSecret(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, secretName string, labels map[string]string) error {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: endpoints.Namespace,
+			Labels:    labels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(endpoints, gatewayv1alpha1.GroupVersion.WithKind("TailscaleEndpoints")),
+			},
+		},
+		Data: map[string][]byte{},
+	}
+
+	return r.createOrUpdate(ctx, secret, func() {
+		// State secret is just a placeholder for Tailscale to store state
+	})
+}
+
+// createEndpointStatefulSet creates the StatefulSet for an endpoint connection
+// Following k8s-operator StatefulSet patterns with proper state management
+func (r *TailscaleEndpointsReconciler) createEndpointStatefulSet(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, endpoint *gatewayv1alpha1.TailscaleEndpoint, name, connectionType, configSecretName, stateSecretName string, labels map[string]string) error {
+	// Use official Tailscale image (would need to be configurable in production)
+	image := "tailscale/tailscale:v1.78.3"
+
+	// Build environment variables following containerboot patterns
+	envVars := []corev1.EnvVar{
+		// Kubernetes state management
+		{
+			Name:  "TS_KUBE_SECRET",
+			Value: stateSecretName,
+		},
+		// Auth key from config secret
+		{
+			Name: "TS_AUTHKEY",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: configSecretName,
+					},
+					Key: "authkey",
+				},
+			},
+		},
+		// Hostname
+		{
+			Name:  "TS_HOSTNAME",
+			Value: name,
+		},
+		// Userspace mode for Kubernetes
+		{
+			Name:  "TS_USERSPACE",
+			Value: "true",
+		},
+		// Auth once pattern
+		{
+			Name:  "TS_AUTH_ONCE",
+			Value: "true",
+		},
+		// Accept DNS configuration
+		{
+			Name:  "TS_ACCEPT_DNS",
+			Value: "false",
+		},
+		// Pod UID for state management
+		{
+			Name: "POD_UID",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: "metadata.uid",
+				},
+			},
+		},
+	}
+
+	// Add connection-specific configuration
+	if connectionType == "egress" {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "TS_ACCEPT_ROUTES",
+			Value: "true",
+		})
+	}
+
+	ss := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: endpoints.Namespace,
+			Labels:    labels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(endpoints, gatewayv1alpha1.GroupVersion.WithKind("TailscaleEndpoints")),
+			},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: &[]int32{1}[0], // Single replica for now
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labels,
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labels,
+				},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: name,
+					Containers: []corev1.Container{
+						{
+							Name:  "tailscale",
+							Image: image,
+							Env:   envVars,
+							SecurityContext: &corev1.SecurityContext{
+								Capabilities: &corev1.Capabilities{
+									Add: []corev1.Capability{"NET_ADMIN"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	return r.createOrUpdate(ctx, ss, func() {
+		// Update the environment variables and spec
+		ss.Spec.Template.Spec.Containers[0].Env = envVars
+	})
+}
+
+// createOrUpdate creates or updates a Kubernetes resource
+func (r *TailscaleEndpointsReconciler) createOrUpdate(ctx context.Context, obj client.Object, updateFn func()) error {
+	err := r.Get(ctx, client.ObjectKeyFromObject(obj), obj)
+	if errors.IsNotFound(err) {
+		return r.Create(ctx, obj)
+	} else if err != nil {
+		return err
+	}
+
+	// Resource exists, update it
+	updateFn()
+	return r.Update(ctx, obj)
 }
 
 // handleDeletion handles cleanup when TailscaleEndpoints is being deleted
@@ -525,8 +905,11 @@ func (r *TailscaleEndpointsReconciler) handleDeletion(ctx context.Context, endpo
 	logger := log.FromContext(ctx)
 
 	if controllerutil.ContainsFinalizer(endpoints, TailscaleEndpointsFinalizer) {
-		// Perform cleanup
+		// Perform cleanup of StatefulSets and associated resources
 		logger.Info("Cleaning up TailscaleEndpoints resources", "endpoints", endpoints.Name)
+
+		// Cleanup will be handled by owner references, but could add explicit cleanup here
+		// for Tailscale devices if needed
 
 		// Remove finalizer
 		controllerutil.RemoveFinalizer(endpoints, TailscaleEndpointsFinalizer)

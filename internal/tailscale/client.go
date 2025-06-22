@@ -165,10 +165,10 @@ func (c *clientImpl) DiscoverTailnetInfo(ctx context.Context) (*TailnetMetadata,
 
 // MockClient provides a mock implementation for testing
 type MockClient struct {
-	DevicesFunc           func(ctx context.Context) ([]tailscale.Device, error)
-	CreateKeyFunc         func(ctx context.Context, caps tailscale.KeyCapabilities) (*tailscale.Key, error)
-	DeleteKeyFunc         func(ctx context.Context, id string) error
-	DiscoverTailnetFunc   func(ctx context.Context) (*TailnetMetadata, error)
+	DevicesFunc         func(ctx context.Context) ([]tailscale.Device, error)
+	CreateKeyFunc       func(ctx context.Context, caps tailscale.KeyCapabilities) (*tailscale.Key, error)
+	DeleteKeyFunc       func(ctx context.Context, id string) error
+	DiscoverTailnetFunc func(ctx context.Context) (*TailnetMetadata, error)
 }
 
 func (m *MockClient) Devices(ctx context.Context) ([]tailscale.Device, error) {
