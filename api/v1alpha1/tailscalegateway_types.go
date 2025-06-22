@@ -4,15 +4,19 @@
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Status",type="string",JSONPath=`.status.conditions[?(@.type == "Ready")].reason`,description="Status of the Tailscale Gateway."
-// +kubebuilder:printcolumn:name="Gateway",type="string",JSONPath=`.spec.gatewayRef.name`,description="Associated Envoy Gateway."
-// +kubebuilder:printcolumn:name="Tailnet",type="string",JSONPath=`.spec.tailnetRef.name`,description="Associated Tailnet."
+// +kubebuilder:resource:categories=tailscale-gateway
+// +kubebuilder:printcolumn:name="Gateway",type="string",JSONPath=".spec.gatewayRef.name",description="Referenced Envoy Gateway"
+// +kubebuilder:printcolumn:name="Tailnets",type="integer",JSONPath=".status.tailnetStatus.length",description="Number of configured tailnets"
+// +kubebuilder:printcolumn:name="Services",type="integer",JSONPath=".status.tailnetStatus[*].discoveredServices",description="Total discovered services"
+// +kubebuilder:printcolumn:name="Extension",type="string",JSONPath=".status.conditions[?(@.type==\"ExtensionServerReady\")].status",description="Extension Server status"
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // TailscaleGateway integrates Envoy Gateway with Tailscale networking,
 // enabling dynamic route injection based on tailnet topology.
@@ -37,16 +41,12 @@ type TailscaleGatewayList struct {
 type TailscaleGatewaySpec struct {
 	// GatewayRef is a reference to the Envoy Gateway that this
 	// TailscaleGateway should integrate with.
-	GatewayRef gwapiv1.ParentReference `json:"gatewayRef"`
+	GatewayRef LocalPolicyTargetReference `json:"gatewayRef"`
 
-	// TailnetRef is a reference to the TailscaleTailnet that provides
-	// the tailnet connection and credentials.
-	TailnetRef TailnetReference `json:"tailnetRef"`
-
-	// RouteDiscovery configures how routes from the tailnet should be
-	// discovered and injected into the gateway.
-	// +optional
-	RouteDiscovery *RouteDiscoveryConfig `json:"routeDiscovery,omitempty"`
+	// Tailnets defines the Tailscale networks and their service discovery configuration
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinItems=1
+	Tailnets []TailnetConfig `json:"tailnets"`
 
 	// ExtensionServer configures the gRPC extension server that implements
 	// Envoy Gateway xDS hooks for dynamic route injection.
@@ -54,83 +54,111 @@ type TailscaleGatewaySpec struct {
 	ExtensionServer *ExtensionServerConfig `json:"extensionServer,omitempty"`
 }
 
-// TailnetReference refers to a TailscaleTailnet resource
-type TailnetReference struct {
-	// Name is the name of the TailscaleTailnet resource.
+// TailnetConfig defines configuration for a specific Tailscale network
+type TailnetConfig struct {
+	// Name is a unique identifier for this tailnet within the gateway
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
 	Name string `json:"name"`
 
-	// Namespace is the namespace of the TailscaleTailnet resource.
-	// If not specified, defaults to the same namespace as the TailscaleGateway.
+	// TailscaleTailnetRef references the TailscaleTailnet resource for this tailnet
+	// +kubebuilder:validation:Required
+	TailscaleTailnetRef LocalPolicyTargetReference `json:"tailscaleTailnetRef"`
+
+	// ServiceDiscovery configures automatic service discovery for this tailnet
 	// +optional
-	Namespace *string `json:"namespace,omitempty"`
+	ServiceDiscovery *ServiceDiscoveryConfig `json:"serviceDiscovery,omitempty"`
+
+	// RouteGeneration configures how routes are generated for this tailnet
+	// +optional
+	RouteGeneration *RouteGenerationConfig `json:"routeGeneration,omitempty"`
 }
 
-// RouteDiscoveryConfig configures automatic route discovery from tailnet devices
-type RouteDiscoveryConfig struct {
-	// Enabled determines if route discovery is active.
-	// +optional
-	Enabled *bool `json:"enabled,omitempty"`
+// ServiceDiscoveryConfig defines service discovery settings
+type ServiceDiscoveryConfig struct {
+	// Enabled controls whether service discovery is active for this tailnet
+	// +kubebuilder:default=true
+	Enabled bool `json:"enabled"`
 
-	// DeviceSelector selects which tailnet devices should have their
-	// routes discovered and injected.
+	// Patterns defines glob patterns for services to include in discovery
 	// +optional
-	DeviceSelector *DeviceSelector `json:"deviceSelector,omitempty"`
+	Patterns []string `json:"patterns,omitempty"`
 
-	// RouteFilters define which discovered routes should be included/excluded.
+	// ExcludePatterns defines glob patterns for services to exclude from discovery
 	// +optional
-	RouteFilters []RouteFilter `json:"routeFilters,omitempty"`
+	ExcludePatterns []string `json:"excludePatterns,omitempty"`
 
-	// SyncInterval is how often to refresh route discovery.
-	// Defaults to 30s.
+	// SyncInterval defines how often to sync with Tailscale API
+	// +kubebuilder:default="30s"
 	// +optional
 	SyncInterval *metav1.Duration `json:"syncInterval,omitempty"`
 }
 
-// DeviceSelector selects tailnet devices for route discovery
-type DeviceSelector struct {
-	// Tags selects devices that have any of the specified tags.
+// RouteGenerationConfig defines route generation settings
+type RouteGenerationConfig struct {
+	// Ingress configures routes for traffic from tailnet to cluster
 	// +optional
-	Tags []string `json:"tags,omitempty"`
+	Ingress *IngressRouteConfig `json:"ingress,omitempty"`
 
-	// Hostnames selects devices by hostname patterns.
-	// Supports wildcards (*) for pattern matching.
+	// Egress configures routes for traffic from cluster to tailnet
 	// +optional
-	Hostnames []string `json:"hostnames,omitempty"`
-
-	// ExcludeTags excludes devices that have any of the specified tags.
-	// +optional
-	ExcludeTags []string `json:"excludeTags,omitempty"`
+	Egress *EgressRouteConfig `json:"egress,omitempty"`
 }
 
-// RouteFilter defines include/exclude rules for discovered routes
-type RouteFilter struct {
-	// Type specifies whether this is an include or exclude filter.
-	// +kubebuilder:validation:Enum=include;exclude
-	Type FilterType `json:"type"`
+// IngressRouteConfig defines ingress route generation
+type IngressRouteConfig struct {
+	// HostPattern defines the hostname pattern for generated routes
+	// Variables: {service}, {tailnet}, {domain}
+	// +kubebuilder:default="{service}.{tailnet}.gateway.local"
+	HostPattern string `json:"hostPattern"`
 
-	// CIDRs are network ranges to include or exclude.
-	// +optional
-	CIDRs []string `json:"cidrs,omitempty"`
+	// PathPrefix defines the path prefix for generated routes
+	// +kubebuilder:default="/"
+	PathPrefix string `json:"pathPrefix"`
 
-	// Hostnames are hostname patterns to include or exclude.
-	// Supports wildcards (*) for pattern matching.
-	// +optional
-	Hostnames []string `json:"hostnames,omitempty"`
+	// Protocol defines the protocol for generated routes
+	// +kubebuilder:validation:Enum=HTTP;HTTPS
+	// +kubebuilder:default="HTTPS"
+	Protocol string `json:"protocol"`
 }
 
-// FilterType represents the type of route filter
-type FilterType string
+// EgressRouteConfig defines egress route generation
+type EgressRouteConfig struct {
+	// HostPattern defines the hostname pattern for generated routes
+	// Variables: {service}, {tailnet}, {domain}
+	// +kubebuilder:default="{service}.tailscale.local"
+	HostPattern string `json:"hostPattern"`
 
-const (
-	// FilterTypeInclude means the filter includes matching routes
-	FilterTypeInclude FilterType = "include"
+	// PathPrefix defines the path prefix for generated routes
+	// Variables: {service}, {tailnet}
+	// +kubebuilder:default="/tailscale/{service}/"
+	PathPrefix string `json:"pathPrefix"`
 
-	// FilterTypeExclude means the filter excludes matching routes
-	FilterTypeExclude FilterType = "exclude"
-)
+	// Protocol defines the protocol for generated routes
+	// +kubebuilder:validation:Enum=HTTP;HTTPS
+	// +kubebuilder:default="HTTP"
+	Protocol string `json:"protocol"`
+}
 
-// ExtensionServerConfig configures the gRPC extension server
+// ExtensionServerConfig configures the gRPC extension server deployment
 type ExtensionServerConfig struct {
+	// Image defines the container image for the Extension Server
+	// +kubebuilder:default="tailscale-gateway-extension:latest"
+	Image string `json:"image"`
+
+	// Replicas defines the number of Extension Server replicas
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=2
+	Replicas int32 `json:"replicas"`
+
+	// Resources defines resource requirements for Extension Server pods
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// ServiceAccountName defines the ServiceAccount for Extension Server pods
+	// +optional
+	ServiceAccountName string `json:"serviceAccountName,omitempty"`
+
 	// Port is the port number for the gRPC extension server.
 	// Defaults to 8443.
 	// +optional
@@ -155,55 +183,55 @@ type ExtensionServerTLS struct {
 
 // TailscaleGatewayStatus defines the observed state of TailscaleGateway
 type TailscaleGatewayStatus struct {
-	// Conditions represent the current state of the TailscaleGateway.
+	// Conditions represent the current state of the TailscaleGateway
 	// +optional
+	// +listType=map
+	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// DiscoveredRoutes contains information about routes discovered
-	// from the tailnet and injected into the gateway.
+	// TailnetStatus provides status for each configured tailnet
 	// +optional
-	DiscoveredRoutes *DiscoveredRoutesStatus `json:"discoveredRoutes,omitempty"`
+	TailnetStatus []TailnetStatus `json:"tailnetStatus,omitempty"`
 
-	// ExtensionServerStatus contains information about the extension server.
+	// ExtensionServerStatus provides status for the Extension Server
 	// +optional
 	ExtensionServerStatus *ExtensionServerStatus `json:"extensionServerStatus,omitempty"`
+
+	// GeneratedRoutes tracks the number of routes generated by this gateway
+	// +optional
+	GeneratedRoutes *GeneratedRoutesStatus `json:"generatedRoutes,omitempty"`
 }
 
-// DiscoveredRoutesStatus contains information about discovered routes
-type DiscoveredRoutesStatus struct {
-	// Count is the number of routes currently discovered and active.
-	Count int32 `json:"count"`
+// TailnetStatus provides status information for a specific tailnet
+type TailnetStatus struct {
+	// Name identifies the tailnet
+	Name string `json:"name"`
 
-	// LastDiscoveryTime is when routes were last discovered.
-	// +optional
-	LastDiscoveryTime *metav1.Time `json:"lastDiscoveryTime,omitempty"`
+	// DiscoveredServices is the count of services discovered in this tailnet
+	DiscoveredServices int `json:"discoveredServices"`
 
-	// Routes contains details about discovered routes.
+	// LastSync indicates when service discovery last succeeded
 	// +optional
-	Routes []DiscoveredRoute `json:"routes,omitempty"`
+	LastSync *metav1.Time `json:"lastSync,omitempty"`
+
+	// Conditions represent the current state of this tailnet
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
-// DiscoveredRoute represents a route discovered from a tailnet device
-type DiscoveredRoute struct {
-	// DeviceHostname is the hostname of the tailnet device.
-	DeviceHostname string `json:"deviceHostname"`
-
-	// DeviceIP is the tailnet IP of the device.
-	DeviceIP string `json:"deviceIP"`
-
-	// Routes are the network routes advertised by this device.
-	Routes []string `json:"routes"`
-
-	// Tags are the tags associated with the device.
-	// +optional
-	Tags []string `json:"tags,omitempty"`
-}
-
-// ExtensionServerStatus contains information about the extension server
+// ExtensionServerStatus provides status for the Extension Server deployment
 type ExtensionServerStatus struct {
-	// Address is the address the extension server is listening on.
+	// ReadyReplicas indicates how many Extension Server replicas are ready
+	ReadyReplicas int32 `json:"readyReplicas"`
+
+	// DesiredReplicas indicates the desired number of Extension Server replicas
+	DesiredReplicas int32 `json:"desiredReplicas"`
+
+	// ServiceEndpoint provides the gRPC endpoint for the Extension Server
 	// +optional
-	Address *string `json:"address,omitempty"`
+	ServiceEndpoint string `json:"serviceEndpoint,omitempty"`
 
 	// Ready indicates if the extension server is ready to accept connections.
 	Ready bool `json:"ready"`
@@ -211,6 +239,19 @@ type ExtensionServerStatus struct {
 	// LastHookCall is the timestamp of the last successful hook call.
 	// +optional
 	LastHookCall *metav1.Time `json:"lastHookCall,omitempty"`
+}
+
+// GeneratedRoutesStatus tracks generated route metrics
+type GeneratedRoutesStatus struct {
+	// IngressRoutes is the count of ingress routes generated
+	IngressRoutes int `json:"ingressRoutes"`
+
+	// EgressRoutes is the count of egress routes generated
+	EgressRoutes int `json:"egressRoutes"`
+
+	// LastGeneration indicates when routes were last generated
+	// +optional
+	LastGeneration *metav1.Time `json:"lastGeneration,omitempty"`
 }
 
 func init() {

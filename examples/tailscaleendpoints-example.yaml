@@ -1,0 +1,105 @@
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleEndpoints
+metadata:
+  name: corp-endpoints
+  namespace: default
+  labels:
+    gateway.tailscale.com/tailnet: corp
+spec:
+  tailnet: corp
+
+  # Manual endpoint configuration
+  endpoints:
+  - name: api-server
+    tailscaleIP: 100.64.0.10
+    tailscaleFQDN: api-server.corp.ts.net
+    port: 8080
+    protocol: HTTP
+    tags:
+    - "tag:api"
+    - "tag:production"
+    healthCheck:
+      enabled: true
+      path: "/health"
+      interval: "10s"
+      timeout: "3s"
+      healthyThreshold: 2
+      unhealthyThreshold: 3
+    weight: 100
+
+  - name: database
+    tailscaleIP: 100.64.0.20
+    tailscaleFQDN: database.corp.ts.net
+    port: 5432
+    protocol: TCP
+    tags:
+    - "tag:database"
+    - "tag:production"
+    healthCheck:
+      enabled: true
+      interval: "30s"
+      timeout: "5s"
+      healthyThreshold: 2
+      unhealthyThreshold: 3
+    weight: 100
+
+  - name: web-server
+    tailscaleIP: 100.64.0.30
+    tailscaleFQDN: web-server.corp.ts.net
+    port: 443
+    protocol: HTTPS
+    tags:
+    - "tag:web"
+    - "tag:production"
+    healthCheck:
+      enabled: true
+      path: "/health"
+      interval: "15s"
+      timeout: "5s"
+      healthyThreshold: 2
+      unhealthyThreshold: 3
+    weight: 100
+
+  # Auto-discovery configuration with tag-based filtering
+  autoDiscovery:
+    enabled: true
+    includePatterns:
+    - "api-*"
+    - "web-*"
+    - "service-*"
+    - "svc:*"  # Include Tailscale service names
+    excludePatterns:
+    - "proxy-*"
+    - "gateway-*"
+    - "*-backup"
+    syncInterval: "30s"
+    requiredTags:
+    - "tag:production"
+    - "tag:web-servers"  # Tag-based device discovery
+
+---
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleEndpoints
+metadata:
+  name: dev-endpoints
+  namespace: default
+  labels:
+    gateway.tailscale.com/tailnet: dev
+spec:
+  tailnet: dev
+
+  # Auto-discovery only for dev environment
+  autoDiscovery:
+    enabled: true
+    includePatterns:
+    - "dev-*"
+    - "test-*"
+    - "staging-*"
+    - "svc:dev-*"  # Service name resolution patterns
+    excludePatterns:
+    - "*-old"
+    - "*-deprecated"
+    syncInterval: "60s"
+    requiredTags:
+    - "tag:development"
+    - "tag:api-servers"  # Tag-based filtering for dev services

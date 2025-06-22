@@ -6,6 +6,169 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The Tailscale Gateway Operator combines the power of [Tailscale](https://tailscale.com/) mesh networking with [Envoy Gateway](https://gateway.envoyproxy.io/) to provide a tailscale envoy control plane
 
+## Prerequisites and Dependencies
+
+### Envoy Gateway Installation
+
+The Tailscale Gateway Operator requires Envoy Gateway to be installed and configured in your Kubernetes cluster before deploying the operator.
+
+#### Recommended Installation Methods
+
+**1. Helm Installation (Recommended for Production)**
+```bash
+# Install Envoy Gateway with Gateway API CRDs
+helm install eg oci://docker.io/envoyproxy/gateway-helm \
+  --version v1.2.0 \
+  -n envoy-gateway-system \
+  --create-namespace
+
+# Verify deployment
+kubectl wait --timeout=5m -n envoy-gateway-system \
+  deployment/envoy-gateway --for=condition=Available
+```
+
+**2. YAML Manifest Installation (Quick Start)**
+```bash
+# Install via direct YAML manifests
+kubectl apply --server-side \
+  -f https://github.com/envoyproxy/gateway/releases/download/v1.2.0/install.yaml
+
+# Verify installation
+kubectl get pods -n envoy-gateway-system
+```
+
+#### Envoy Gateway Configuration for Extensions
+
+To enable the Tailscale Gateway Operator extension, Envoy Gateway must be configured to support extension servers:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: envoy-gateway-config
+  namespace: envoy-gateway-system
+data:
+  envoy-gateway.yaml: |
+    apiVersion: config.gateway.envoyproxy.io/v1alpha1
+    kind: EnvoyGateway
+    provider:
+      type: Kubernetes
+    extensionApis:
+      - group: gateway.tailscale.com
+        version: v1alpha1
+        resource: tailscalegateways
+      - group: gateway.tailscale.com  
+        version: v1alpha1
+        resource: tailscaleroutepolicies
+    extensionManager:
+      hooks:
+        xdsTranslator:
+          post:
+            - HTTPListener
+            - VirtualHost
+            - Route
+      service:
+        host: tailscale-gateway-extension.tailscale-gateway-system.svc.cluster.local
+        port: 443
+```
+
+#### Extension Server Integration Points
+
+The Tailscale Gateway Operator integrates with Envoy Gateway through several extension hooks:
+
+**xDS Translation Hooks:**
+- **PostRouteModify**: Inject Tailscale backend clusters for specific routes
+- **PostVirtualHostModify**: Add tailnet-specific virtual hosts and routes  
+- **PostHTTPListenerModify**: Configure authentication and authorization filters
+- **PostTranslateModify**: Modify clusters and secrets for Tailscale endpoints
+
+**gRPC Extension Service:**
+```protobuf
+service EnvoyGatewayExtension {
+    rpc PostRouteModify(PostRouteModifyRequest) returns (PostRouteModifyResponse);
+    rpc PostVirtualHostModify(PostVirtualHostModifyRequest) returns (PostVirtualHostModifyResponse);
+    rpc PostHTTPListenerModify(PostHTTPListenerModifyRequest) returns (PostHTTPListenerModifyResponse);
+    rpc PostTranslateModify(PostTranslateModifyRequest) returns (PostTranslateModifyResponse);
+}
+```
+
+#### Required RBAC Permissions
+
+Envoy Gateway requires additional RBAC permissions to watch Tailscale Gateway CRDs:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: envoy-gateway-tailscale-extension
+rules:
+- apiGroups: ["gateway.tailscale.com"]
+  resources: ["tailscalegateways", "tailscaleroutepolicies"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: envoy-gateway-tailscale-extension
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: envoy-gateway-tailscale-extension
+subjects:
+- kind: ServiceAccount
+  name: envoy-gateway
+  namespace: envoy-gateway-system
+```
+
+#### Gateway API Version Compatibility
+
+- **Minimum Envoy Gateway**: v1.1.0+
+- **Gateway API**: v1.1.0+ (standard channel)
+- **Kubernetes**: v1.28+
+
+#### Extension Server Deployment Architecture
+
+The extension server runs as a sidecar or separate deployment within the cluster:
+
+```yaml
+# Low-latency sidecar deployment (recommended)
+spec:
+  template:
+    spec:
+      containers:
+      - name: envoy-gateway
+        # ... envoy gateway container
+      - name: tailscale-extension
+        image: ghcr.io/rajsinghtech/tailscale-gateway:latest
+        ports:
+        - containerPort: 443
+          name: grpc-extension
+        env:
+        - name: EXTENSION_SERVER_ADDR
+          value: "unix:///tmp/extension.sock"  # UDS for low latency
+```
+
+#### Installation Verification
+
+Verify the extension integration is working:
+
+```bash
+# Check Envoy Gateway recognizes the extension
+kubectl logs -n envoy-gateway-system deployment/envoy-gateway | grep -i extension
+
+# Verify extension CRDs are watched
+kubectl get crd | grep gateway.tailscale.com
+
+# Test extension server connectivity
+kubectl port-forward -n tailscale-gateway-system \
+  deployment/tailscale-gateway-operator 8443:443
+
+# Expected extension endpoints should be accessible
+grpcurl -plaintext localhost:8443 list
+```
+
+This installation provides the foundation for the Tailscale Gateway Operator to dynamically inject Tailscale backend routes into Envoy Gateway configurations.
+
 ## Architecture Overview
 
 The operator follows a multi-layered architecture:
@@ -440,3 +603,90 @@ test-tailnet   Ready    tail8eff9.ts.net   Personal
 - **Organization**: Auto-inferred organization type (`Personal`, `Organization`)
 
 This provides immediate visibility into the discovered tailnet metadata without needing to inspect the full resource status.
+
+## Tailscale Service Discovery Patterns
+
+### Tag-based Device Discovery
+The Tailscale API requires client-side filtering for tag-based device queries:
+
+```go
+// No direct GetDevicesByTag() API - must filter client-side
+devices, err := client.Devices(ctx, tailscale.DeviceAllFields)
+if err != nil {
+    return err
+}
+
+var taggedDevices []*tailscale.Device
+for _, device := range devices {
+    for _, tag := range device.Tags {
+        if tag == "tag:web-servers" {
+            taggedDevices = append(taggedDevices, device)
+            break
+        }
+    }
+}
+```
+
+**Key API Patterns:**
+- **Device struct includes** `Tags []string` field with tag: prefixed values
+- **Client-side filtering required**: No server-side tag filtering API available
+- **Device discovery**: `client.Devices()` returns all devices with addresses and tags
+
+### Service Name Resolution (svc:)
+Service name resolution uses VIP Service mappings via NetworkMap:
+
+```go
+// ServiceName type handles svc: prefixed names
+type ServiceName string // format: "svc:dns-label"
+
+// VIP Service IP resolution pattern
+serviceMap := networkMap.GetVIPServiceIPMap()
+webServiceIPs := serviceMap["svc:web"] // Returns []netip.Addr
+```
+
+**Service Resolution Architecture:**
+- **ServiceName validation**: `tailcfg.ServiceName` validates svc: prefix format
+- **NetworkMap integration**: `GetVIPServiceIPMap()` resolves service names to IPs
+- **Local client requirement**: Service resolution typically requires NetworkMap access
+
+### API Discovery Limitations
+- **No direct tag filtering**: Public API lacks `GetDevicesByTag()` methods
+- **Client-side filtering pattern**: Fetch all devices, filter locally by tags
+- **Service resolution scope**: Advanced service resolution limited to local clients
+- **Policy-driven queries**: Complex tag/service queries exist in corp codebase for ACL evaluation
+
+### Recommended Gateway Integration Patterns
+```go
+// Tag-based backend discovery for gateway routing
+func (g *TailscaleGateway) DiscoverBackendsByTag(ctx context.Context, tag string) ([]Backend, error) {
+    devices, err := g.client.Devices(ctx, tailscale.DeviceAllFields)
+    if err != nil {
+        return nil, err
+    }
+    
+    var backends []Backend
+    for _, device := range devices {
+        if containsTag(device.Tags, tag) {
+            backends = append(backends, Backend{
+                Name: device.Name,
+                IPs:  device.Addresses,
+                Tags: device.Tags,
+            })
+        }
+    }
+    return backends, nil
+}
+
+// Service name resolution for dynamic routing
+func (g *TailscaleGateway) ResolveServiceEndpoints(serviceName string) ([]netip.Addr, error) {
+    if !strings.HasPrefix(serviceName, "svc:") {
+        return nil, fmt.Errorf("invalid service name format: %s", serviceName)
+    }
+    
+    // Requires NetworkMap access or VIP Service API integration
+    serviceMap := g.networkMap.GetVIPServiceIPMap()
+    return serviceMap[tailcfg.ServiceName(serviceName)], nil
+}
+```
+
+This discovery architecture influences how the Tailscale Gateway Operator implements dynamic backend discovery for Envoy Gateway route injection.
