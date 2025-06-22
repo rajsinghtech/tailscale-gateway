@@ -30,4 +30,9 @@ WORKDIR /
 COPY --from=builder /workspace/manager .
 USER 65532:65532
 
+# Add labels for better GitHub Container Registry integration
+LABEL org.opencontainers.image.source="https://github.com/rajsinghtech/tailscale-gateway"
+LABEL org.opencontainers.image.description="Tailscale Gateway Operator for Kubernetes"
+LABEL org.opencontainers.image.licenses="MIT"
+
 ENTRYPOINT ["/manager"]
