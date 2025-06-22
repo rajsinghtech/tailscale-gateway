@@ -1096,9 +1096,13 @@ spec:
       jsonPath: .status.conditions[?(@.type == "Ready")].reason
       name: Status
       type: string
-    - description: Tailnet name or organization.
-      jsonPath: .spec.tailnet
+    - description: Discovered tailnet domain name.
+      jsonPath: .status.tailnetInfo.name
       name: Tailnet
+      type: string
+    - description: Organization type of the tailnet.
+      jsonPath: .status.tailnetInfo.organization
+      name: Organization
       type: string
     name: v1alpha1
     schema:
@@ -1128,18 +1132,28 @@ spec:
             description: TailscaleTailnetSpec defines the desired state of a tailnet
               connection
             properties:
-              apiKeySecretName:
+              oauthSecretName:
                 description: |-
-                  APIKeySecretName is the name of the secret containing the Tailscale API key.
-                  The secret must contain the key `apiKey`.
+                  OAuthSecretName is the name of the secret containing OAuth credentials.
+                  The secret must contain keys `client_id` and `client_secret`.
                 type: string
-              apiKeySecretNamespace:
+              oauthSecretNamespace:
                 description: |-
-                  APIKeySecretNamespace is the namespace of the secret containing the Tailscale API key.
-                  If not specified, it will look for the secret in the "default" namespace.
+                  OAuthSecretNamespace is the namespace of the secret containing OAuth credentials.
+                  If not specified, it will look for the secret in the same namespace as the TailscaleTailnet.
+                type: string
+              tags:
+                description: Tags to apply to auth keys created for this tailnet.
+                items:
+                  type: string
+                type: array
+              tailnet:
+                description: |-
+                  Tailnet is the tailnet name or organization.
+                  If not specified, uses the default tailnet ("-").
                 type: string
             required:
-            - apiKeySecretName
+            - oauthSecretName
             type: object
           status:
             description: TailscaleTailnetStatus defines the observed state of a tailnet
@@ -1218,7 +1232,7 @@ spec:
                       in this tailnet.
                     type: string
                   name:
-                    description: Name is the tailnet name.
+                    description: Name is the tailnet domain (e.g., "tail123abc.ts.net").
                     type: string
                   organization:
                     description: Organization is the organization name if applicable.

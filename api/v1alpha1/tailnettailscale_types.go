@@ -11,7 +11,8 @@ import (
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:printcolumn:name="Status",type="string",JSONPath=`.status.conditions[?(@.type == "Ready")].reason`,description="Status of the tailnet connection."
-// +kubebuilder:printcolumn:name="Tailnet",type="string",JSONPath=`.spec.tailnet`,description="Tailnet name or organization."
+// +kubebuilder:printcolumn:name="Tailnet",type="string",JSONPath=`.status.tailnetInfo.name`,description="Discovered tailnet domain name."
+// +kubebuilder:printcolumn:name="Organization",type="string",JSONPath=`.status.tailnetInfo.organization`,description="Organization type of the tailnet."
 
 // TailscaleTailnet defines a connection to a specific Tailscale tailnet
 // with associated credentials and configuration.

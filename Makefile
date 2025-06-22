@@ -183,8 +183,10 @@ $(KUSTOMIZE): $(LOCALBIN)
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
 $(CONTROLLER_GEN): $(LOCALBIN)
-	test -s $(LOCALBIN)/controller-gen-$(CONTROLLER_GEN_VERSION) || GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
-	mv $(LOCALBIN)/controller-gen $(LOCALBIN)/controller-gen-$(CONTROLLER_GEN_VERSION)
+	test -s $(LOCALBIN)/controller-gen-$(CONTROLLER_GEN_VERSION) || { \
+		GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION) && \
+		mv $(LOCALBIN)/controller-gen $(LOCALBIN)/controller-gen-$(CONTROLLER_GEN_VERSION); \
+	}
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
