@@ -46,13 +46,8 @@ jobs:
           type=semver,pattern={{major}}.{{minor}}
           type=semver,pattern={{major}}
 
-    - name: Verify generated files exist
-      run: |
-        if [ ! -f "api/v1alpha1/zz_generated.deepcopy.go" ]; then
-          echo "Error: Generated deepcopy file missing. Please run 'make generate' and commit."
-          exit 1
-        fi
-        echo "Generated files verification passed ✓"
+    - name: Generate manifests and charts
+      run: make generate-all
 
     - name: Build and push Docker image (main operator)
       id: push

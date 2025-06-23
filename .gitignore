@@ -1,1 +1,22 @@
 examples/test-oauth-secret.yaml
+
+# Build artifacts
+bin/
+dist/
+
+# Go build cache
+.cache/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+coverage.out
+*.test
