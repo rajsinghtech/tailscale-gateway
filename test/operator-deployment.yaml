@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tailscale-gateway-operator
+  namespace: tailscale-gateway-system
+  labels:
+    app.kubernetes.io/name: tailscale-gateway-operator
+    app.kubernetes.io/managed-by: tailscale-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tailscale-gateway-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tailscale-gateway-operator
+    spec:
+      serviceAccountName: tailscale-gateway-operator
+      containers:
+      - name: manager
+        image: tailscale-gateway-operator:test-reconcile-fix
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+          name: metrics
+        - containerPort: 8081
+          name: health
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 500m
+            memory: 128Mi
+          requests:
+            cpu: 10m
+            memory: 64Mi
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tailscale-gateway-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tailscale-gateway-operator
+  namespace: tailscale-gateway-system

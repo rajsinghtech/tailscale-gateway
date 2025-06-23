@@ -89,10 +89,12 @@ type EndpointAutoDiscovery struct {
 	Enabled bool `json:"enabled"`
 
 	// IncludePatterns defines patterns for services to include in discovery
+	// DEPRECATED: Use TagSelectors or ServiceDiscovery instead
 	// +optional
 	IncludePatterns []string `json:"includePatterns,omitempty"`
 
 	// ExcludePatterns defines patterns for services to exclude from discovery
+	// DEPRECATED: Use TagSelectors or ServiceDiscovery instead
 	// +optional
 	ExcludePatterns []string `json:"excludePatterns,omitempty"`
 
@@ -102,8 +104,51 @@ type EndpointAutoDiscovery struct {
 	SyncInterval *metav1.Duration `json:"syncInterval,omitempty"`
 
 	// RequiredTags filters discovery to devices with specific tags
+	// DEPRECATED: Use TagSelectors instead
 	// +optional
 	RequiredTags []string `json:"requiredTags,omitempty"`
+
+	// TagSelectors define advanced tag-based discovery rules
+	// +optional
+	TagSelectors []TagSelector `json:"tagSelectors,omitempty"`
+
+	// ServiceDiscovery configures VIP service discovery
+	// +optional
+	ServiceDiscovery *VIPServiceDiscoveryConfig `json:"serviceDiscovery,omitempty"`
+}
+
+// TagSelector defines a tag-based selection rule
+type TagSelector struct {
+	// Tag is the full tag key (e.g., "tag:service", "tag:environment")
+	// +kubebuilder:validation:Required
+	Tag string `json:"tag"`
+
+	// Operator defines the selection operator
+	// +kubebuilder:validation:Enum=In;NotIn;Exists;DoesNotExist
+	// +kubebuilder:default="Exists"
+	// +optional
+	Operator string `json:"operator,omitempty"`
+
+	// Values are the tag values to match (for In/NotIn operators)
+	// For "tag:environment", values might be ["production", "staging"]
+	// +optional
+	Values []string `json:"values,omitempty"`
+}
+
+// VIPServiceDiscoveryConfig configures Tailscale VIP service discovery
+type VIPServiceDiscoveryConfig struct {
+	// Enabled controls whether to discover Tailscale VIP services
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled"`
+
+	// ServiceNames are specific VIP service names to discover
+	// Format: ["svc:web-service", "svc:api-service"]
+	// +optional
+	ServiceNames []string `json:"serviceNames,omitempty"`
+
+	// ServiceTags filter VIP services by ACL tags
+	// +optional
+	ServiceTags []string `json:"serviceTags,omitempty"`
 }
 
 // EndpointHealthCheck defines health checking for an endpoint

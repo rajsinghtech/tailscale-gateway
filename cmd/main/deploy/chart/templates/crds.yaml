@@ -76,28 +76,84 @@ spec:
                     description: Enabled controls whether auto-discovery is active
                     type: boolean
                   excludePatterns:
-                    description: ExcludePatterns defines patterns for services to
-                      exclude from discovery
+                    description: |-
+                      ExcludePatterns defines patterns for services to exclude from discovery
+                      DEPRECATED: Use TagSelectors or ServiceDiscovery instead
                     items:
                       type: string
                     type: array
                   includePatterns:
-                    description: IncludePatterns defines patterns for services to
-                      include in discovery
+                    description: |-
+                      IncludePatterns defines patterns for services to include in discovery
+                      DEPRECATED: Use TagSelectors or ServiceDiscovery instead
                     items:
                       type: string
                     type: array
                   requiredTags:
-                    description: RequiredTags filters discovery to devices with specific
-                      tags
+                    description: |-
+                      RequiredTags filters discovery to devices with specific tags
+                      DEPRECATED: Use TagSelectors instead
                     items:
                       type: string
                     type: array
+                  serviceDiscovery:
+                    description: ServiceDiscovery configures VIP service discovery
+                    properties:
+                      enabled:
+                        default: false
+                        description: Enabled controls whether to discover Tailscale
+                          VIP services
+                        type: boolean
+                      serviceNames:
+                        description: |-
+                          ServiceNames are specific VIP service names to discover
+                          Format: ["svc:web-service", "svc:api-service"]
+                        items:
+                          type: string
+                        type: array
+                      serviceTags:
+                        description: ServiceTags filter VIP services by ACL tags
+                        items:
+                          type: string
+                        type: array
+                    required:
+                    - enabled
+                    type: object
                   syncInterval:
                     default: 30s
                     description: SyncInterval defines how often to sync with Tailscale
                       API
                     type: string
+                  tagSelectors:
+                    description: TagSelectors define advanced tag-based discovery
+                      rules
+                    items:
+                      description: TagSelector defines a tag-based selection rule
+                      properties:
+                        operator:
+                          default: Exists
+                          description: Operator defines the selection operator
+                          enum:
+                          - In
+                          - NotIn
+                          - Exists
+                          - DoesNotExist
+                          type: string
+                        tag:
+                          description: Tag is the full tag key (e.g., "tag:service",
+                            "tag:environment")
+                          type: string
+                        values:
+                          description: |-
+                            Values are the tag values to match (for In/NotIn operators)
+                            For "tag:environment", values might be ["production", "staging"]
+                          items:
+                            type: string
+                          type: array
+                      required:
+                      - tag
+                      type: object
+                    type: array
                 required:
                 - enabled
                 type: object
@@ -375,7 +431,6 @@ spec:
     storage: true
     subresources:
       status: {}
----
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -1007,7 +1062,6 @@ spec:
     subresources:
       status: {}
 ---
----
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -1594,7 +1648,6 @@ spec:
     storage: true
     subresources:
       status: {}
----
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition

@@ -67,6 +67,7 @@ rules:
   - tailscaletailnets
   - tailscalegateways
   - tailscaleroutepolicies
+  - tailscaleendpoints
   verbs:
   - create
   - delete
@@ -80,6 +81,7 @@ rules:
   - tailscaletailnets/finalizers
   - tailscalegateways/finalizers
   - tailscaleroutepolicies/finalizers
+  - tailscaleendpoints/finalizers
   verbs:
   - update
 - apiGroups: ["gateway.tailscale.com"]
@@ -87,6 +89,7 @@ rules:
   - tailscaletailnets/status
   - tailscalegateways/status
   - tailscaleroutepolicies/status
+  - tailscaleendpoints/status
   verbs:
   - get
   - patch

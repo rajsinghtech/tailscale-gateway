@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -263,13 +264,50 @@ func (r *TailscaleEndpointsReconciler) discoverEndpointsFromTailscale(ctx contex
 	logger := log.FromContext(ctx)
 	var discoveredEndpoints []gatewayv1alpha1.TailscaleEndpoint
 
+	// Perform tag-based discovery if TagSelectors are configured
+	if endpoints.Spec.AutoDiscovery != nil && len(endpoints.Spec.AutoDiscovery.TagSelectors) > 0 {
+		tagBasedEndpoints, err := r.discoverEndpointsByTags(ctx, tsClient, endpoints)
+		if err != nil {
+			return nil, fmt.Errorf("failed to discover endpoints by tags: %w", err)
+		}
+		discoveredEndpoints = append(discoveredEndpoints, tagBasedEndpoints...)
+	}
+
+	// Perform VIP service discovery if ServiceDiscovery is enabled
+	if endpoints.Spec.AutoDiscovery != nil && endpoints.Spec.AutoDiscovery.ServiceDiscovery != nil && endpoints.Spec.AutoDiscovery.ServiceDiscovery.Enabled {
+		serviceBasedEndpoints, err := r.discoverEndpointsByServices(ctx, tsClient, endpoints)
+		if err != nil {
+			return nil, fmt.Errorf("failed to discover VIP services: %w", err)
+		}
+		discoveredEndpoints = append(discoveredEndpoints, serviceBasedEndpoints...)
+	}
+
+	// Fall back to legacy pattern-based discovery if no new discovery methods are configured
+	if endpoints.Spec.AutoDiscovery != nil && len(endpoints.Spec.AutoDiscovery.TagSelectors) == 0 && 
+		(endpoints.Spec.AutoDiscovery.ServiceDiscovery == nil || !endpoints.Spec.AutoDiscovery.ServiceDiscovery.Enabled) {
+		patternBasedEndpoints, err := r.discoverEndpointsByPatterns(ctx, tsClient, endpoints)
+		if err != nil {
+			return nil, fmt.Errorf("failed to discover endpoints by patterns: %w", err)
+		}
+		discoveredEndpoints = append(discoveredEndpoints, patternBasedEndpoints...)
+	}
+
+	logger.Info("Discovered endpoints", "count", len(discoveredEndpoints), "tailnet", endpoints.Spec.Tailnet)
+	return discoveredEndpoints, nil
+}
+
+// discoverEndpointsByTags discovers endpoints using TagSelector rules
+func (r *TailscaleEndpointsReconciler) discoverEndpointsByTags(ctx context.Context, tsClient tailscale.Client, endpoints *gatewayv1alpha1.TailscaleEndpoints) ([]gatewayv1alpha1.TailscaleEndpoint, error) {
+	logger := log.FromContext(ctx)
+	var discoveredEndpoints []gatewayv1alpha1.TailscaleEndpoint
+
 	// Get all devices from the Tailscale API
 	devices, err := tsClient.Devices(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list devices: %w", err)
 	}
 
-	logger.Info("Retrieved devices from Tailscale API", "count", len(devices), "tailnet", endpoints.Spec.Tailnet)
+	logger.Info("Retrieved devices for tag-based discovery", "count", len(devices), "tailnet", endpoints.Spec.Tailnet)
 
 	for _, device := range devices {
 		// Skip if device is not authorized
@@ -277,11 +315,9 @@ func (r *TailscaleEndpointsReconciler) discoverEndpointsFromTailscale(ctx contex
 			continue
 		}
 
-		// Apply include/exclude patterns if configured
-		if endpoints.Spec.AutoDiscovery != nil {
-			if !r.deviceMatchesPatterns(&device, endpoints.Spec.AutoDiscovery) {
-				continue
-			}
+		// Check if device matches any TagSelector
+		if !r.deviceMatchesTagSelectors(&device, endpoints.Spec.AutoDiscovery.TagSelectors) {
+			continue
 		}
 
 		// Extract service information from device
@@ -291,8 +327,152 @@ func (r *TailscaleEndpointsReconciler) discoverEndpointsFromTailscale(ctx contex
 		}
 	}
 
-	logger.Info("Discovered endpoints", "count", len(discoveredEndpoints), "tailnet", endpoints.Spec.Tailnet)
+	logger.Info("Discovered endpoints by tags", "count", len(discoveredEndpoints), "tailnet", endpoints.Spec.Tailnet)
 	return discoveredEndpoints, nil
+}
+
+// discoverEndpointsByServices discovers VIP services using VIPServiceDiscoveryConfig
+func (r *TailscaleEndpointsReconciler) discoverEndpointsByServices(ctx context.Context, tsClient tailscale.Client, endpoints *gatewayv1alpha1.TailscaleEndpoints) ([]gatewayv1alpha1.TailscaleEndpoint, error) {
+	logger := log.FromContext(ctx)
+	var discoveredEndpoints []gatewayv1alpha1.TailscaleEndpoint
+
+	// TODO: Get VIP services from Tailscale API
+	// Currently Tailscale VIP services don't have a dedicated API endpoint
+	// We'll implement service discovery based on naming conventions
+
+	serviceConfig := endpoints.Spec.AutoDiscovery.ServiceDiscovery
+
+	// If specific service names are configured, look for those
+	if len(serviceConfig.ServiceNames) > 0 {
+		for _, serviceName := range serviceConfig.ServiceNames {
+			// Remove "svc:" prefix if present
+			cleanName := strings.TrimPrefix(serviceName, "svc:")
+			
+			// Try to resolve the service FQDN
+			serviceFQDN := fmt.Sprintf("%s.%s", cleanName, endpoints.Spec.Tailnet)
+			
+			// Create endpoint for VIP service
+			endpoint := &gatewayv1alpha1.TailscaleEndpoint{
+				Name:          cleanName,
+				TailscaleIP:   "", // Will be resolved dynamically
+				TailscaleFQDN: serviceFQDN,
+				Port:          80, // Default, could be configurable
+				Protocol:      "HTTP",
+				Tags:          []string{"svc:" + cleanName},
+				HealthCheck: &gatewayv1alpha1.EndpointHealthCheck{
+					Enabled: true,
+				},
+				Weight: &[]int32{1}[0],
+			}
+			
+			discoveredEndpoints = append(discoveredEndpoints, *endpoint)
+		}
+	}
+
+	// TODO: Implement service discovery by tags
+	// This would query the Tailscale API for services with specific tags
+	if len(serviceConfig.ServiceTags) > 0 {
+		logger.Info("Service tag-based discovery not yet implemented", "tags", serviceConfig.ServiceTags)
+	}
+
+	logger.Info("Discovered VIP services", "count", len(discoveredEndpoints), "tailnet", endpoints.Spec.Tailnet)
+	return discoveredEndpoints, nil
+}
+
+// discoverEndpointsByPatterns discovers endpoints using legacy pattern-based approach
+func (r *TailscaleEndpointsReconciler) discoverEndpointsByPatterns(ctx context.Context, tsClient tailscale.Client, endpoints *gatewayv1alpha1.TailscaleEndpoints) ([]gatewayv1alpha1.TailscaleEndpoint, error) {
+	logger := log.FromContext(ctx)
+	var discoveredEndpoints []gatewayv1alpha1.TailscaleEndpoint
+
+	// Get all devices from the Tailscale API
+	devices, err := tsClient.Devices(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list devices: %w", err)
+	}
+
+	logger.Info("Retrieved devices for pattern-based discovery", "count", len(devices), "tailnet", endpoints.Spec.Tailnet)
+
+	for _, device := range devices {
+		// Skip if device is not authorized
+		if !device.Authorized {
+			continue
+		}
+
+		// Apply include/exclude patterns if configured
+		if !r.deviceMatchesPatterns(&device, endpoints.Spec.AutoDiscovery) {
+			continue
+		}
+
+		// Extract service information from device
+		endpoint := r.deviceToEndpoint(&device, endpoints.Spec.Tailnet)
+		if endpoint != nil {
+			discoveredEndpoints = append(discoveredEndpoints, *endpoint)
+		}
+	}
+
+	logger.Info("Discovered endpoints by patterns", "count", len(discoveredEndpoints), "tailnet", endpoints.Spec.Tailnet)
+	return discoveredEndpoints, nil
+}
+
+// deviceMatchesTagSelectors checks if a device matches TagSelector rules
+func (r *TailscaleEndpointsReconciler) deviceMatchesTagSelectors(device *tailscaleclient.Device, tagSelectors []gatewayv1alpha1.TagSelector) bool {
+	// Device must match at least one TagSelector
+	for _, selector := range tagSelectors {
+		if r.deviceMatchesTagSelector(device, selector) {
+			return true
+		}
+	}
+	return false
+}
+
+// deviceMatchesTagSelector checks if a device matches a single TagSelector
+func (r *TailscaleEndpointsReconciler) deviceMatchesTagSelector(device *tailscaleclient.Device, selector gatewayv1alpha1.TagSelector) bool {
+	deviceTags := make(map[string]bool)
+	for _, tag := range device.Tags {
+		deviceTags[tag] = true
+	}
+
+	switch selector.Operator {
+	case "In":
+		// Device must have the tag with one of the specified values
+		for _, value := range selector.Values {
+			tag := selector.Tag + ":" + value
+			if deviceTags[tag] {
+				return true
+			}
+		}
+		return false
+
+	case "NotIn":
+		// Device must not have the tag with any of the specified values
+		for _, value := range selector.Values {
+			tag := selector.Tag + ":" + value
+			if deviceTags[tag] {
+				return false
+			}
+		}
+		return true
+
+	case "DoesNotExist":
+		// Device must not have any tag starting with the specified prefix
+		for tag := range deviceTags {
+			if strings.HasPrefix(tag, selector.Tag+":") || tag == selector.Tag {
+				return false
+			}
+		}
+		return true
+
+	case "Exists":
+		fallthrough
+	default:
+		// Device must have a tag starting with the specified prefix
+		for tag := range deviceTags {
+			if strings.HasPrefix(tag, selector.Tag+":") || tag == selector.Tag {
+				return true
+			}
+		}
+		return false
+	}
 }
 
 // deviceMatchesPatterns checks if a device matches the discovery patterns
@@ -348,6 +528,16 @@ func (r *TailscaleEndpointsReconciler) deviceToEndpoint(device *tailscaleclient.
 	if idx := strings.Index(name, "."); idx != -1 {
 		name = name[:idx]
 	}
+	
+	// Skip auto-discovering our own StatefulSet-created devices to avoid recursion
+	// These will have names like "cluster1-endpoints-*" or start with "ts-"
+	if strings.Contains(name, "-endpoints-") || strings.HasPrefix(name, "ts-") {
+		return nil
+	}
+	
+	// Clean up service names to remove redundant prefixes
+	// Convert names like "cluster1-web-service" to just "web-service"
+	name = r.cleanServiceName(name)
 
 	// Determine protocol based on device tags or default to HTTP
 	protocol := "HTTP"
@@ -398,6 +588,34 @@ func (r *TailscaleEndpointsReconciler) deviceHasTag(device *tailscaleclient.Devi
 		}
 	}
 	return false
+}
+
+// cleanServiceName cleans up auto-discovered service names to remove redundant prefixes
+func (r *TailscaleEndpointsReconciler) cleanServiceName(name string) string {
+	// Remove common cluster prefixes
+	prefixes := []string{
+		"cluster1-", "cluster2-", "cluster3-",
+		"prod-", "staging-", "dev-",
+		"k8s-", "kube-",
+	}
+	
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(name, prefix) {
+			name = strings.TrimPrefix(name, prefix)
+			break // Only remove one prefix
+		}
+	}
+	
+	// Simplify common service suffixes
+	suffixes := []string{"-service", "-svc", "-app", "-api"}
+	for _, suffix := range suffixes {
+		if strings.HasSuffix(name, suffix) {
+			// Keep the suffix for clarity, but could remove if desired
+			break
+		}
+	}
+	
+	return name
 }
 
 // mergeEndpoints merges manually configured endpoints with discovered ones
@@ -582,8 +800,18 @@ func (r *TailscaleEndpointsReconciler) reconcileStatefulSets(ctx context.Context
 func (r *TailscaleEndpointsReconciler) reconcileEndpointStatefulSet(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, endpoint *gatewayv1alpha1.TailscaleEndpoint, connectionType string, tsClient tailscale.Client) (*gatewayv1alpha1.StatefulSetReference, error) {
 	logger := log.FromContext(ctx)
 
-	// Generate StatefulSet name following k8s-operator patterns
-	ssName := fmt.Sprintf("%s-%s-%s", endpoints.Name, endpoint.Name, connectionType)
+	// Generate short StatefulSet name to avoid 63-character limit
+	// Use hash-based approach for consistent short names
+	hashSource := fmt.Sprintf("%s-%s-%s", endpoints.Name, endpoint.Name, connectionType)
+	hash := fmt.Sprintf("%x", hashSource)[:8] // Use 8-char hash for uniqueness
+	
+	// Create short, predictable name
+	ssName := fmt.Sprintf("ts-%s-%s", hash, connectionType)
+	
+	// Ensure it's under 63 characters (should be ~15-20 chars)
+	if len(ssName) > 63 {
+		ssName = fmt.Sprintf("ts-%s-%s", hash[:6], connectionType)
+	}
 	labels := map[string]string{
 		"app.kubernetes.io/name":         "tailscale-endpoint",
 		"app.kubernetes.io/instance":     endpoints.Name,
@@ -724,10 +952,11 @@ func (r *TailscaleEndpointsReconciler) createAuthKey(ctx context.Context, tsClie
 		tags = []string{"tag:web"}
 	}
 
-	// Create ephemeral auth key following k8s-operator patterns
+	// Create persistent auth key for StatefulSet connections
+	// StatefulSets need persistent connections, not ephemeral ones
 	capabilities := tailscaleclient.KeyCapabilities{}
-	capabilities.Devices.Create.Reusable = false
-	capabilities.Devices.Create.Ephemeral = true
+	capabilities.Devices.Create.Reusable = true
+	capabilities.Devices.Create.Ephemeral = false
 	capabilities.Devices.Create.Preauthorized = true
 	capabilities.Devices.Create.Tags = tags
 
@@ -848,6 +1077,14 @@ func (r *TailscaleEndpointsReconciler) createEndpointStatefulSet(ctx context.Con
 			Value: "true",
 		})
 	}
+	
+	// Add VIP service publishing for ingress connections
+	if connectionType == "ingress" && r.shouldPublishVIPService(endpoint) {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "TS_SERVE_CONFIG",
+			Value: "/etc/tailscale/serve-config.json",
+		})
+	}
 
 	ss := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -879,31 +1116,251 @@ func (r *TailscaleEndpointsReconciler) createEndpointStatefulSet(ctx context.Con
 									Add: []corev1.Capability{"NET_ADMIN"},
 								},
 							},
+							VolumeMounts: r.getVolumeMounts(connectionType, endpoint),
 						},
 					},
+					Volumes: r.getVolumes(connectionType, endpoint, name),
 				},
 			},
 		},
 	}
 
+	// Create serve config ConfigMap for VIP service publishing
+	if connectionType == "ingress" && r.shouldPublishVIPService(endpoint) {
+		if err := r.createServeConfigMap(ctx, endpoints, endpoint, name, labels); err != nil {
+			return fmt.Errorf("failed to create serve config: %w", err)
+		}
+	}
+
 	return r.createOrUpdate(ctx, ss, func() {
 		// Update the environment variables and spec
 		ss.Spec.Template.Spec.Containers[0].Env = envVars
+		ss.Spec.Template.Spec.Containers[0].VolumeMounts = r.getVolumeMounts(connectionType, endpoint)
+		ss.Spec.Template.Spec.Volumes = r.getVolumes(connectionType, endpoint, name)
+	})
+}
+
+// shouldPublishVIPService determines if an endpoint should be published as a VIP service
+func (r *TailscaleEndpointsReconciler) shouldPublishVIPService(endpoint *gatewayv1alpha1.TailscaleEndpoint) bool {
+	// Check if endpoint has VIP-related tags or is configured as a service
+	for _, tag := range endpoint.Tags {
+		if strings.HasPrefix(tag, "svc:") || strings.Contains(tag, "vip") || strings.Contains(tag, "service") {
+			return true
+		}
+	}
+	
+	// Check if endpoint has an external target (indicating it's a backend service)
+	return endpoint.ExternalTarget != ""
+}
+
+// getVolumeMounts returns volume mounts for the StatefulSet container
+func (r *TailscaleEndpointsReconciler) getVolumeMounts(connectionType string, endpoint *gatewayv1alpha1.TailscaleEndpoint) []corev1.VolumeMount {
+	var mounts []corev1.VolumeMount
+	
+	// Add serve config mount for VIP services
+	if connectionType == "ingress" && r.shouldPublishVIPService(endpoint) {
+		mounts = append(mounts, corev1.VolumeMount{
+			Name:      "serve-config",
+			MountPath: "/etc/tailscale",
+			ReadOnly:  true,
+		})
+	}
+	
+	return mounts
+}
+
+// getVolumes returns volumes for the StatefulSet Pod
+func (r *TailscaleEndpointsReconciler) getVolumes(connectionType string, endpoint *gatewayv1alpha1.TailscaleEndpoint, name string) []corev1.Volume {
+	var volumes []corev1.Volume
+	
+	// Add serve config volume for VIP services
+	if connectionType == "ingress" && r.shouldPublishVIPService(endpoint) {
+		volumes = append(volumes, corev1.Volume{
+			Name: "serve-config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: name + "-serve-config",
+					},
+				},
+			},
+		})
+	}
+	
+	return volumes
+}
+
+// createServeConfigMap creates a ConfigMap with Tailscale serve configuration for VIP service publishing
+func (r *TailscaleEndpointsReconciler) createServeConfigMap(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, endpoint *gatewayv1alpha1.TailscaleEndpoint, name string, labels map[string]string) error {
+	// Generate VIP service name from endpoint
+	serviceName := endpoint.Name
+	if endpoint.ExternalTarget != "" {
+		// Use clean service name for VIP
+		serviceName = strings.Split(endpoint.ExternalTarget, ".")[0]
+	}
+	
+	// Create Tailscale serve config for VIP service publishing
+	serveConfig := map[string]interface{}{
+		"TCP": map[string]interface{}{
+			fmt.Sprintf("%d", endpoint.Port): map[string]interface{}{
+				"HTTP": endpoint.Protocol == "HTTP",
+				"HTTPS": endpoint.Protocol == "HTTPS",
+			},
+		},
+	}
+	
+	// Add web handlers for HTTP/HTTPS
+	if endpoint.Protocol == "HTTP" || endpoint.Protocol == "HTTPS" {
+		hostPort := fmt.Sprintf("%s.%s:%d", serviceName, endpoints.Spec.Tailnet, endpoint.Port)
+		if endpoint.Protocol == "HTTPS" {
+			hostPort = fmt.Sprintf("${TS_CERT_DOMAIN}:%d", endpoint.Port)
+		}
+		
+		target := endpoint.ExternalTarget
+		if target == "" {
+			target = fmt.Sprintf("http://localhost:%d", endpoint.Port)
+		} else if !strings.HasPrefix(target, "http") {
+			target = fmt.Sprintf("http://%s", target)
+		}
+		
+		serveConfig["Web"] = map[string]interface{}{
+			hostPort: map[string]interface{}{
+				"Handlers": map[string]interface{}{
+					"/": map[string]interface{}{
+						"Proxy": target,
+					},
+				},
+			},
+		}
+	}
+	
+	// Marshal to JSON
+	configJSON, err := json.Marshal(serveConfig)
+	if err != nil {
+		return fmt.Errorf("failed to marshal serve config: %w", err)
+	}
+	
+	// Create ConfigMap
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name + "-serve-config",
+			Namespace: endpoints.Namespace,
+			Labels:    labels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(endpoints, gatewayv1alpha1.GroupVersion.WithKind("TailscaleEndpoints")),
+			},
+		},
+		Data: map[string]string{
+			"serve-config.json": string(configJSON),
+		},
+	}
+	
+	return r.createOrUpdate(ctx, configMap, func() {
+		configMap.Data = map[string]string{
+			"serve-config.json": string(configJSON),
+		}
 	})
 }
 
 // createOrUpdate creates or updates a Kubernetes resource
 func (r *TailscaleEndpointsReconciler) createOrUpdate(ctx context.Context, obj client.Object, updateFn func()) error {
-	err := r.Get(ctx, client.ObjectKeyFromObject(obj), obj)
+	key := client.ObjectKeyFromObject(obj)
+	existing := obj.DeepCopyObject().(client.Object)
+	
+	err := r.Get(ctx, key, existing)
 	if errors.IsNotFound(err) {
 		return r.Create(ctx, obj)
 	} else if err != nil {
 		return err
 	}
 
-	// Resource exists, update it
+	// Resource exists, create a copy and apply updates
+	updated := existing.DeepCopyObject().(client.Object)
+	
+	// Apply the update function to the copy
+	originalObj := obj
+	defer func() {
+		// Restore original object
+		obj = originalObj
+	}()
+	obj = updated
 	updateFn()
-	return r.Update(ctx, obj)
+	
+	// Only update if something actually changed
+	if !r.objectsEqual(existing, updated) {
+		return r.Update(ctx, updated)
+	}
+	
+	return nil
+}
+
+// objectsEqual compares two Kubernetes objects for meaningful differences
+func (r *TailscaleEndpointsReconciler) objectsEqual(existing, updated client.Object) bool {
+	// For StatefulSets, compare the important spec fields
+	if existingSS, ok := existing.(*appsv1.StatefulSet); ok {
+		if updatedSS, ok := updated.(*appsv1.StatefulSet); ok {
+			return r.statefulSetsEqual(existingSS, updatedSS)
+		}
+	}
+	
+	// For other objects, use a simple approach comparing resource versions
+	return existing.GetResourceVersion() == updated.GetResourceVersion()
+}
+
+// statefulSetsEqual compares StatefulSets for meaningful spec differences
+func (r *TailscaleEndpointsReconciler) statefulSetsEqual(existing, updated *appsv1.StatefulSet) bool {
+	// Compare replicas
+	if *existing.Spec.Replicas != *updated.Spec.Replicas {
+		return false
+	}
+	
+	// Compare environment variables (main source of changes)
+	existingEnv := existing.Spec.Template.Spec.Containers[0].Env
+	updatedEnv := updated.Spec.Template.Spec.Containers[0].Env
+	
+	if len(existingEnv) != len(updatedEnv) {
+		return false
+	}
+	
+	for i, env := range existingEnv {
+		if env.Name != updatedEnv[i].Name || env.Value != updatedEnv[i].Value {
+			return false
+		}
+		// Also compare ValueFrom if present
+		if (env.ValueFrom == nil) != (updatedEnv[i].ValueFrom == nil) {
+			return false
+		}
+	}
+	
+	// Compare volumes
+	existingVolumes := existing.Spec.Template.Spec.Volumes
+	updatedVolumes := updated.Spec.Template.Spec.Volumes
+	
+	if len(existingVolumes) != len(updatedVolumes) {
+		return false
+	}
+	
+	for i, vol := range existingVolumes {
+		if vol.Name != updatedVolumes[i].Name {
+			return false
+		}
+	}
+	
+	// Compare volume mounts
+	existingMounts := existing.Spec.Template.Spec.Containers[0].VolumeMounts
+	updatedMounts := updated.Spec.Template.Spec.Containers[0].VolumeMounts
+	
+	if len(existingMounts) != len(updatedMounts) {
+		return false
+	}
+	
+	for i, mount := range existingMounts {
+		if mount.Name != updatedMounts[i].Name || mount.MountPath != updatedMounts[i].MountPath {
+			return false
+		}
+	}
+	
+	return true
 }
 
 // handleDeletion handles cleanup when TailscaleEndpoints is being deleted
