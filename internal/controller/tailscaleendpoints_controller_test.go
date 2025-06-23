@@ -166,17 +166,17 @@ func TestTailscaleEndpointsController(t *testing.T) {
 				Tailnet: "test.tailnet.ts.net",
 				AutoDiscovery: &gatewayv1alpha1.EndpointAutoDiscovery{
 					Enabled: true,
-					IncludePatterns: []string{
-						"web-*",
-						"api-*",
-					},
-					ExcludePatterns: []string{
-						"*-internal",
-					},
-					RequiredTags: []string{
-						"tag:production",
-					},
 					SyncInterval: &metav1.Duration{Duration: 30 * time.Second},
+					TagSelectors: []gatewayv1alpha1.TagSelector{
+						{
+							Tag:      "tag:service",
+							Operator: "Exists",
+						},
+						{
+							Tag:      "tag:production",
+							Operator: "Exists",
+						},
+					},
 				},
 			},
 		}
@@ -192,8 +192,8 @@ func TestTailscaleEndpointsController(t *testing.T) {
 			t.Error("expected auto-discovery to be enabled")
 		}
 
-		if len(got.Spec.AutoDiscovery.IncludePatterns) != 2 {
-			t.Errorf("expected 2 include patterns, got %d", len(got.Spec.AutoDiscovery.IncludePatterns))
+		if len(got.Spec.AutoDiscovery.TagSelectors) != 2 {
+			t.Errorf("expected 2 tag selectors, got %d", len(got.Spec.AutoDiscovery.TagSelectors))
 		}
 
 		// Check for sync condition

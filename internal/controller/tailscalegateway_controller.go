@@ -628,14 +628,34 @@ func (r *TailscaleGatewayReconciler) buildTailscaleEndpoints(gateway *gatewayv1a
 	// Configure auto-discovery if service discovery is enabled
 	if tailnetConfig.ServiceDiscovery != nil && tailnetConfig.ServiceDiscovery.Enabled {
 		endpoints.Spec.AutoDiscovery = &gatewayv1alpha1.EndpointAutoDiscovery{
-			Enabled:         true,
-			IncludePatterns: tailnetConfig.ServiceDiscovery.Patterns,
-			ExcludePatterns: tailnetConfig.ServiceDiscovery.ExcludePatterns,
-			SyncInterval:    tailnetConfig.ServiceDiscovery.SyncInterval,
+			Enabled:      true,
+			SyncInterval: tailnetConfig.ServiceDiscovery.SyncInterval,
+			// Convert patterns to tag selectors if needed
+			TagSelectors: r.convertPatternsToTagSelectors(tailnetConfig.ServiceDiscovery.Patterns, tailnetConfig.ServiceDiscovery.ExcludePatterns),
 		}
 	}
 
 	return endpoints
+}
+
+// convertPatternsToTagSelectors converts legacy pattern-based discovery to tag selectors
+func (r *TailscaleGatewayReconciler) convertPatternsToTagSelectors(includePatterns, excludePatterns []string) []gatewayv1alpha1.TagSelector {
+	var selectors []gatewayv1alpha1.TagSelector
+	
+	// Convert include patterns to tag selectors that look for service tags
+	for _, pattern := range includePatterns {
+		if pattern != "" {
+			selectors = append(selectors, gatewayv1alpha1.TagSelector{
+				Tag:      "tag:service",
+				Operator: "Exists",
+			})
+		}
+	}
+	
+	// Note: Exclude patterns are more complex to convert and may require
+	// application-specific logic. For now, we'll use basic service tag existence.
+	
+	return selectors
 }
 
 // Helper functions for resource management

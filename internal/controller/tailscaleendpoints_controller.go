@@ -18,6 +18,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -398,7 +400,7 @@ func (r *TailscaleEndpointsReconciler) discoverEndpointsByPatterns(ctx context.C
 			continue
 		}
 
-		// Apply include/exclude patterns if configured
+		// Apply tag selector filtering if configured
 		if !r.deviceMatchesPatterns(&device, endpoints.Spec.AutoDiscovery) {
 			continue
 		}
@@ -477,42 +479,9 @@ func (r *TailscaleEndpointsReconciler) deviceMatchesTagSelector(device *tailscal
 
 // deviceMatchesPatterns checks if a device matches the discovery patterns
 func (r *TailscaleEndpointsReconciler) deviceMatchesPatterns(device *tailscaleclient.Device, config *gatewayv1alpha1.EndpointAutoDiscovery) bool {
-	deviceName := device.Name
-
-	// Check include patterns
-	if len(config.IncludePatterns) > 0 {
-		if !r.matchesPattern(deviceName, config.IncludePatterns) {
-			return false
-		}
-	}
-
-	// Check exclude patterns
-	if len(config.ExcludePatterns) > 0 {
-		if r.matchesPattern(deviceName, config.ExcludePatterns) {
-			return false
-		}
-	}
-
-	// Check required tags - following Tailscale API patterns
-	if len(config.RequiredTags) > 0 {
-		if !r.deviceHasRequiredTags(device, config.RequiredTags) {
-			return false
-		}
-	}
-
-	return true
-}
-
-// deviceHasRequiredTags checks if a device has all required tags
-// Implements client-side tag filtering pattern per Tailscale API design
-func (r *TailscaleEndpointsReconciler) deviceHasRequiredTags(device *tailscaleclient.Device, requiredTags []string) bool {
-	deviceTags := make(map[string]bool)
-	for _, tag := range device.Tags {
-		deviceTags[tag] = true
-	}
-
-	for _, requiredTag := range requiredTags {
-		if !deviceTags[requiredTag] {
+	// Check tag selectors for advanced tag-based filtering
+	if len(config.TagSelectors) > 0 {
+		if !r.deviceMatchesTagSelectors(device, config.TagSelectors) {
 			return false
 		}
 	}
@@ -801,12 +770,13 @@ func (r *TailscaleEndpointsReconciler) reconcileEndpointStatefulSet(ctx context.
 	logger := log.FromContext(ctx)
 
 	// Generate short StatefulSet name to avoid 63-character limit
-	// Use hash-based approach for consistent short names
+	// Use hash-based approach for consistent short names including endpoint name
 	hashSource := fmt.Sprintf("%s-%s-%s", endpoints.Name, endpoint.Name, connectionType)
-	hash := fmt.Sprintf("%x", hashSource)[:8] // Use 8-char hash for uniqueness
+	hasher := sha256.Sum256([]byte(hashSource))
+	hash := hex.EncodeToString(hasher[:])[:8] // Use 8-char hash for uniqueness
 	
-	// Create short, predictable name
-	ssName := fmt.Sprintf("ts-%s-%s", hash, connectionType)
+	// Create short, predictable name that includes endpoint info
+	ssName := fmt.Sprintf("ts-%s", hash)
 	
 	// Ensure it's under 63 characters (should be ~15-20 chars)
 	if len(ssName) > 63 {

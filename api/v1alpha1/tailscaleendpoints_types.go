@@ -88,25 +88,10 @@ type EndpointAutoDiscovery struct {
 	// +kubebuilder:default=true
 	Enabled bool `json:"enabled"`
 
-	// IncludePatterns defines patterns for services to include in discovery
-	// DEPRECATED: Use TagSelectors or ServiceDiscovery instead
-	// +optional
-	IncludePatterns []string `json:"includePatterns,omitempty"`
-
-	// ExcludePatterns defines patterns for services to exclude from discovery
-	// DEPRECATED: Use TagSelectors or ServiceDiscovery instead
-	// +optional
-	ExcludePatterns []string `json:"excludePatterns,omitempty"`
-
 	// SyncInterval defines how often to sync with Tailscale API
 	// +kubebuilder:default="30s"
 	// +optional
 	SyncInterval *metav1.Duration `json:"syncInterval,omitempty"`
-
-	// RequiredTags filters discovery to devices with specific tags
-	// DEPRECATED: Use TagSelectors instead
-	// +optional
-	RequiredTags []string `json:"requiredTags,omitempty"`
 
 	// TagSelectors define advanced tag-based discovery rules
 	// +optional
