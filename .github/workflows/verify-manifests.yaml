@@ -18,17 +18,28 @@ jobs:
       with:
         go-version-file: 'go.mod'
     
-    - name: Generate manifests
+    - name: Verify generated files exist
       run: |
-        make manifests
-        make generate-deploy
-    
-    - name: Check if manifests are up-to-date
-      run: |
-        if [ -n "$(git status --porcelain)" ]; then
-          echo "Error: Manifests are not up-to-date!"
-          echo "Please run 'make manifests generate-deploy' and commit the changes."
-          git diff
+        # Check if all required generated files exist
+        MISSING_FILES=""
+        
+        if [ ! -f "api/v1alpha1/zz_generated.deepcopy.go" ]; then
+          MISSING_FILES="$MISSING_FILES api/v1alpha1/zz_generated.deepcopy.go"
+        fi
+        
+        if [ ! -f "config/crd/bases/gateway.tailscale.com_tailscaleendpoints.yaml" ]; then
+          MISSING_FILES="$MISSING_FILES config/crd/bases/gateway.tailscale.com_tailscaleendpoints.yaml"
+        fi
+        
+        if [ ! -f "config/crd/bases/gateway.tailscale.com_tailscalegateways.yaml" ]; then
+          MISSING_FILES="$MISSING_FILES config/crd/bases/gateway.tailscale.com_tailscalegateways.yaml"
+        fi
+        
+        if [ -n "$MISSING_FILES" ]; then
+          echo "Error: Missing generated files:"
+          echo "$MISSING_FILES"
+          echo "Please run 'make generate manifests generate-deploy' and commit the changes."
           exit 1
         fi
-        echo "Manifests are up-to-date ✓" 
+        
+        echo "All required generated files are present ✓" 

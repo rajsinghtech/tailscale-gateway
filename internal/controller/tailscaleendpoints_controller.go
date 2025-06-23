@@ -299,7 +299,7 @@ func (r *TailscaleEndpointsReconciler) discoverEndpointsFromTailscale(ctx contex
 	}
 
 	// Fall back to legacy pattern-based discovery if no new discovery methods are configured
-	if endpoints.Spec.AutoDiscovery != nil && len(endpoints.Spec.AutoDiscovery.TagSelectors) == 0 && 
+	if endpoints.Spec.AutoDiscovery != nil && len(endpoints.Spec.AutoDiscovery.TagSelectors) == 0 &&
 		(endpoints.Spec.AutoDiscovery.ServiceDiscovery == nil || !endpoints.Spec.AutoDiscovery.ServiceDiscovery.Enabled) {
 		patternBasedEndpoints, err := r.discoverEndpointsByPatterns(ctx, tsClient, endpoints)
 		if err != nil {
@@ -363,10 +363,10 @@ func (r *TailscaleEndpointsReconciler) discoverEndpointsByServices(ctx context.C
 		for _, serviceName := range serviceConfig.ServiceNames {
 			// Remove "svc:" prefix if present
 			cleanName := strings.TrimPrefix(serviceName, "svc:")
-			
+
 			// Try to resolve the service FQDN
 			serviceFQDN := fmt.Sprintf("%s.%s", cleanName, endpoints.Spec.Tailnet)
-			
+
 			// Create endpoint for VIP service
 			endpoint := &gatewayv1alpha1.TailscaleEndpoint{
 				Name:          cleanName,
@@ -380,7 +380,7 @@ func (r *TailscaleEndpointsReconciler) discoverEndpointsByServices(ctx context.C
 				},
 				Weight: &[]int32{1}[0],
 			}
-			
+
 			discoveredEndpoints = append(discoveredEndpoints, *endpoint)
 		}
 	}
@@ -511,13 +511,13 @@ func (r *TailscaleEndpointsReconciler) deviceToEndpoint(device *tailscaleclient.
 	if idx := strings.Index(name, "."); idx != -1 {
 		name = name[:idx]
 	}
-	
+
 	// Skip auto-discovering our own StatefulSet-created devices to avoid recursion
 	// These will have names like "cluster1-endpoints-*" or start with "ts-"
 	if strings.Contains(name, "-endpoints-") || strings.HasPrefix(name, "ts-") {
 		return nil
 	}
-	
+
 	// Clean up service names to remove redundant prefixes
 	// Convert names like "cluster1-web-service" to just "web-service"
 	name = r.cleanServiceName(name)
@@ -581,14 +581,14 @@ func (r *TailscaleEndpointsReconciler) cleanServiceName(name string) string {
 		"prod-", "staging-", "dev-",
 		"k8s-", "kube-",
 	}
-	
+
 	for _, prefix := range prefixes {
 		if strings.HasPrefix(name, prefix) {
 			name = strings.TrimPrefix(name, prefix)
 			break // Only remove one prefix
 		}
 	}
-	
+
 	// Simplify common service suffixes
 	suffixes := []string{"-service", "-svc", "-app", "-api"}
 	for _, suffix := range suffixes {
@@ -597,7 +597,7 @@ func (r *TailscaleEndpointsReconciler) cleanServiceName(name string) string {
 			break
 		}
 	}
-	
+
 	return name
 }
 
@@ -794,10 +794,10 @@ func (r *TailscaleEndpointsReconciler) reconcileEndpointStatefulSet(ctx context.
 	hashSource := fmt.Sprintf("%s-%s-%s", endpoints.Name, endpoint.Name, connectionType)
 	hasher := sha256.Sum256([]byte(hashSource))
 	hash := hex.EncodeToString(hasher[:])[:8] // Use 8-char hash for uniqueness
-	
+
 	// Create short, predictable name that includes endpoint info
 	ssName := fmt.Sprintf("ts-%s", hash)
-	
+
 	// Ensure it's under 63 characters (should be ~15-20 chars)
 	if len(ssName) > 63 {
 		ssName = fmt.Sprintf("ts-%s-%s", hash[:6], connectionType)
@@ -1066,7 +1066,7 @@ func (r *TailscaleEndpointsReconciler) createEndpointStatefulSet(ctx context.Con
 			Name:  "TS_ACCEPT_ROUTES",
 			Value: "true",
 		})
-		
+
 		// Add destination configuration for egress proxy
 		if endpoint.ExternalTarget != "" {
 			// Use TS_EXPERIMENTAL_DEST_DNS_NAME for DNS-based targets
@@ -1083,7 +1083,7 @@ func (r *TailscaleEndpointsReconciler) createEndpointStatefulSet(ctx context.Con
 			}
 		}
 	}
-	
+
 	// Add VIP service publishing for ingress connections
 	if connectionType == "ingress" && r.shouldPublishVIPService(endpoint) {
 		envVars = append(envVars, corev1.EnvVar{
@@ -1154,7 +1154,7 @@ func (r *TailscaleEndpointsReconciler) shouldPublishVIPService(endpoint *gateway
 			return true
 		}
 	}
-	
+
 	// Check if endpoint has an external target (indicating it's a backend service)
 	return endpoint.ExternalTarget != ""
 }
@@ -1162,7 +1162,7 @@ func (r *TailscaleEndpointsReconciler) shouldPublishVIPService(endpoint *gateway
 // getVolumeMounts returns volume mounts for the StatefulSet container
 func (r *TailscaleEndpointsReconciler) getVolumeMounts(connectionType string, endpoint *gatewayv1alpha1.TailscaleEndpoint) []corev1.VolumeMount {
 	var mounts []corev1.VolumeMount
-	
+
 	// Add serve config mount for VIP services
 	if connectionType == "ingress" && r.shouldPublishVIPService(endpoint) {
 		mounts = append(mounts, corev1.VolumeMount{
@@ -1171,14 +1171,14 @@ func (r *TailscaleEndpointsReconciler) getVolumeMounts(connectionType string, en
 			ReadOnly:  true,
 		})
 	}
-	
+
 	return mounts
 }
 
 // getVolumes returns volumes for the StatefulSet Pod
 func (r *TailscaleEndpointsReconciler) getVolumes(connectionType string, endpoint *gatewayv1alpha1.TailscaleEndpoint, name string) []corev1.Volume {
 	var volumes []corev1.Volume
-	
+
 	// Add serve config volume for VIP services
 	if connectionType == "ingress" && r.shouldPublishVIPService(endpoint) {
 		volumes = append(volumes, corev1.Volume{
@@ -1192,7 +1192,7 @@ func (r *TailscaleEndpointsReconciler) getVolumes(connectionType string, endpoin
 			},
 		})
 	}
-	
+
 	return volumes
 }
 
@@ -1204,31 +1204,31 @@ func (r *TailscaleEndpointsReconciler) createServeConfigMap(ctx context.Context,
 		// Use clean service name for VIP
 		serviceName = strings.Split(endpoint.ExternalTarget, ".")[0]
 	}
-	
+
 	// Create Tailscale serve config for VIP service publishing
 	serveConfig := map[string]interface{}{
 		"TCP": map[string]interface{}{
 			fmt.Sprintf("%d", endpoint.Port): map[string]interface{}{
-				"HTTP": endpoint.Protocol == "HTTP",
+				"HTTP":  endpoint.Protocol == "HTTP",
 				"HTTPS": endpoint.Protocol == "HTTPS",
 			},
 		},
 	}
-	
+
 	// Add web handlers for HTTP/HTTPS
 	if endpoint.Protocol == "HTTP" || endpoint.Protocol == "HTTPS" {
 		hostPort := fmt.Sprintf("%s.%s:%d", serviceName, endpoints.Spec.Tailnet, endpoint.Port)
 		if endpoint.Protocol == "HTTPS" {
 			hostPort = fmt.Sprintf("${TS_CERT_DOMAIN}:%d", endpoint.Port)
 		}
-		
+
 		target := endpoint.ExternalTarget
 		if target == "" {
 			target = fmt.Sprintf("http://localhost:%d", endpoint.Port)
 		} else if !strings.HasPrefix(target, "http") {
 			target = fmt.Sprintf("http://%s", target)
 		}
-		
+
 		serveConfig["Web"] = map[string]interface{}{
 			hostPort: map[string]interface{}{
 				"Handlers": map[string]interface{}{
@@ -1239,13 +1239,13 @@ func (r *TailscaleEndpointsReconciler) createServeConfigMap(ctx context.Context,
 			},
 		}
 	}
-	
+
 	// Marshal to JSON
 	configJSON, err := json.Marshal(serveConfig)
 	if err != nil {
 		return fmt.Errorf("failed to marshal serve config: %w", err)
 	}
-	
+
 	// Create ConfigMap
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1260,7 +1260,7 @@ func (r *TailscaleEndpointsReconciler) createServeConfigMap(ctx context.Context,
 			"serve-config.json": string(configJSON),
 		},
 	}
-	
+
 	return r.createOrUpdate(ctx, configMap, func() {
 		configMap.Data = map[string]string{
 			"serve-config.json": string(configJSON),
@@ -1272,7 +1272,7 @@ func (r *TailscaleEndpointsReconciler) createServeConfigMap(ctx context.Context,
 func (r *TailscaleEndpointsReconciler) createOrUpdate(ctx context.Context, obj client.Object, updateFn func()) error {
 	key := client.ObjectKeyFromObject(obj)
 	existing := obj.DeepCopyObject().(client.Object)
-	
+
 	err := r.Get(ctx, key, existing)
 	if errors.IsNotFound(err) {
 		return r.Create(ctx, obj)
@@ -1282,7 +1282,7 @@ func (r *TailscaleEndpointsReconciler) createOrUpdate(ctx context.Context, obj c
 
 	// Resource exists, create a copy and apply updates
 	updated := existing.DeepCopyObject().(client.Object)
-	
+
 	// Apply the update function to the copy
 	originalObj := obj
 	defer func() {
@@ -1291,12 +1291,12 @@ func (r *TailscaleEndpointsReconciler) createOrUpdate(ctx context.Context, obj c
 	}()
 	obj = updated
 	updateFn()
-	
+
 	// Only update if something actually changed
 	if !r.objectsEqual(existing, updated) {
 		return r.Update(ctx, updated)
 	}
-	
+
 	return nil
 }
 
@@ -1308,7 +1308,7 @@ func (r *TailscaleEndpointsReconciler) objectsEqual(existing, updated client.Obj
 			return r.statefulSetsEqual(existingSS, updatedSS)
 		}
 	}
-	
+
 	// For other objects, use a simple approach comparing resource versions
 	return existing.GetResourceVersion() == updated.GetResourceVersion()
 }
@@ -1319,15 +1319,15 @@ func (r *TailscaleEndpointsReconciler) statefulSetsEqual(existing, updated *apps
 	if *existing.Spec.Replicas != *updated.Spec.Replicas {
 		return false
 	}
-	
+
 	// Compare environment variables (main source of changes)
 	existingEnv := existing.Spec.Template.Spec.Containers[0].Env
 	updatedEnv := updated.Spec.Template.Spec.Containers[0].Env
-	
+
 	if len(existingEnv) != len(updatedEnv) {
 		return false
 	}
-	
+
 	for i, env := range existingEnv {
 		if env.Name != updatedEnv[i].Name || env.Value != updatedEnv[i].Value {
 			return false
@@ -1337,35 +1337,35 @@ func (r *TailscaleEndpointsReconciler) statefulSetsEqual(existing, updated *apps
 			return false
 		}
 	}
-	
+
 	// Compare volumes
 	existingVolumes := existing.Spec.Template.Spec.Volumes
 	updatedVolumes := updated.Spec.Template.Spec.Volumes
-	
+
 	if len(existingVolumes) != len(updatedVolumes) {
 		return false
 	}
-	
+
 	for i, vol := range existingVolumes {
 		if vol.Name != updatedVolumes[i].Name {
 			return false
 		}
 	}
-	
+
 	// Compare volume mounts
 	existingMounts := existing.Spec.Template.Spec.Containers[0].VolumeMounts
 	updatedMounts := updated.Spec.Template.Spec.Containers[0].VolumeMounts
-	
+
 	if len(existingMounts) != len(updatedMounts) {
 		return false
 	}
-	
+
 	for i, mount := range existingMounts {
 		if mount.Name != updatedMounts[i].Name || mount.MountPath != updatedMounts[i].MountPath {
 			return false
 		}
 	}
-	
+
 	return true
 }
 
@@ -1440,7 +1440,7 @@ func (r *TailscaleEndpointsReconciler) reconcileEndpointServices(ctx context.Con
 		return fmt.Errorf("failed to create ingress service: %w", err)
 	}
 
-	// Create service for egress StatefulSet (tailscale → external) 
+	// Create service for egress StatefulSet (tailscale → external)
 	if err := r.createEndpointService(ctx, endpoints, endpoint, egressRef, "egress"); err != nil {
 		return fmt.Errorf("failed to create egress service: %w", err)
 	}
@@ -1453,7 +1453,7 @@ func (r *TailscaleEndpointsReconciler) reconcileEndpointServices(ctx context.Con
 // Following k8s-operator service patterns with proper labeling for discovery
 func (r *TailscaleEndpointsReconciler) createEndpointService(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, endpoint *gatewayv1alpha1.TailscaleEndpoint, ssRef *gatewayv1alpha1.StatefulSetReference, connectionType string) error {
 	serviceName := ssRef.Name + "-service"
-	
+
 	// Labels for service discovery by extension server
 	labels := map[string]string{
 		"app.kubernetes.io/name":         "tailscale-endpoint-service",

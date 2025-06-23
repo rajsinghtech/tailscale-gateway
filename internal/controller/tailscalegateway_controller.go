@@ -498,7 +498,7 @@ func (r *TailscaleGatewayReconciler) ensureServiceCoordinator(ctx context.Contex
 
 	// Use the first tailnet for ServiceCoordinator initialization
 	firstTailnet := gateway.Spec.Tailnets[0]
-	
+
 	// Get the TailscaleTailnet resource
 	tailnet := &gatewayv1alpha1.TailscaleTailnet{}
 	tailnetNamespace := gateway.Namespace
@@ -535,8 +535,8 @@ func (r *TailscaleGatewayReconciler) ensureServiceCoordinator(ctx context.Contex
 	if tailnet.Status.TailnetInfo != nil {
 		tailnetName = tailnet.Status.TailnetInfo.Name
 	}
-	r.Logger.Infow("ServiceCoordinator initialized", 
-		"operatorID", operatorID, 
+	r.Logger.Infow("ServiceCoordinator initialized",
+		"operatorID", operatorID,
 		"clusterID", clusterID,
 		"tailnet", tailnetName,
 	)
@@ -573,7 +573,7 @@ func (r *TailscaleGatewayReconciler) createTailscaleClient(ctx context.Context, 
 		ClientID:     string(clientID),
 		ClientSecret: string(clientSecret),
 	}
-	
+
 	client, err := tailscale.NewClient(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Tailscale client: %w", err)
@@ -744,7 +744,7 @@ func (r *TailscaleGatewayReconciler) buildTailscaleEndpoints(gateway *gatewayv1a
 // convertPatternsToTagSelectors converts legacy pattern-based discovery to tag selectors
 func (r *TailscaleGatewayReconciler) convertPatternsToTagSelectors(includePatterns, excludePatterns []string) []gatewayv1alpha1.TagSelector {
 	var selectors []gatewayv1alpha1.TagSelector
-	
+
 	// Convert include patterns to tag selectors that look for service tags
 	for _, pattern := range includePatterns {
 		if pattern != "" {
@@ -754,10 +754,10 @@ func (r *TailscaleGatewayReconciler) convertPatternsToTagSelectors(includePatter
 			})
 		}
 	}
-	
+
 	// Note: Exclude patterns are more complex to convert and may require
 	// application-specific logic. For now, we'll use basic service tag existence.
-	
+
 	return selectors
 }
 

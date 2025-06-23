@@ -90,7 +90,7 @@ func TestServiceCoordinator(t *testing.T) {
 		}
 		_ = coordinator // Use coordinator to avoid unused variable warning
 
-		// Test creating a new service  
+		// Test creating a new service
 		serviceName := coordinator.GenerateServiceName("httpbin.org:80")
 		if serviceName != "httpbin-org-80" {
 			t.Errorf("expected service name 'httpbin-org-80', got %q", serviceName)
@@ -202,7 +202,7 @@ func TestServiceCoordinator(t *testing.T) {
 			Name: "test-service",
 			Annotations: map[string]string{
 				"gateway.tailscale.com/owner-operator": "operator-1",
-				"gateway.tailscale.com/routes": "route-1,route-2",
+				"gateway.tailscale.com/routes":         "route-1,route-2",
 			},
 		}
 
@@ -257,7 +257,7 @@ func TestServiceCoordinator(t *testing.T) {
 			Name: "test-service",
 			Annotations: map[string]string{
 				"gateway.tailscale.com/owner-operator": "operator-1",
-				"gateway.tailscale.com/routes": "last-route",
+				"gateway.tailscale.com/routes":         "last-route",
 			},
 		}
 
@@ -301,8 +301,8 @@ func TestServiceCoordinator(t *testing.T) {
 			Name: "test-service",
 			Annotations: map[string]string{
 				"gateway.tailscale.com/owner-operator": "operator-1",
-				"gateway.tailscale.com/consumers": "cluster-1,cluster-2",
-				"gateway.tailscale.com/last-cleanup": time.Now().Add(-60 * time.Minute).Format(time.RFC3339),
+				"gateway.tailscale.com/consumers":      "cluster-1,cluster-2",
+				"gateway.tailscale.com/last-cleanup":   time.Now().Add(-60 * time.Minute).Format(time.RFC3339),
 			},
 		}
 
@@ -324,7 +324,7 @@ func TestServiceCoordinator(t *testing.T) {
 		// Simulate cleanup by updating consumers
 		retrieved.Annotations["gateway.tailscale.com/consumers"] = "cluster-1"
 		retrieved.Annotations["gateway.tailscale.com/last-cleanup"] = time.Now().Format(time.RFC3339)
-		
+
 		err = mockClient.UpdateVIPService(context.Background(), retrieved)
 		if err != nil {
 			t.Fatalf("failed to update service: %v", err)

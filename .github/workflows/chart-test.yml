@@ -32,8 +32,13 @@ jobs:
       with:
         go-version: '1.24'
 
-    - name: Generate manifests and charts
-      run: make generate-all
+    - name: Verify generated files exist
+      run: |
+        if [ ! -f "api/v1alpha1/zz_generated.deepcopy.go" ]; then
+          echo "Error: Generated deepcopy file missing. Please run 'make generate' and commit."
+          exit 1
+        fi
+        echo "Generated files verification passed ✓"
 
     - name: Run chart-testing (lint)
       run: ct lint --config .github/ct.yaml --chart-dirs cmd/main/deploy

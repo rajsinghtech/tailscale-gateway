@@ -39,8 +39,8 @@ func TestTailscaleGatewayController(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: gatewayv1alpha1.TailscaleTailnetSpec{
-			Tailnet:             "test.tailnet.ts.net",
-			OAuthSecretName:     "test-oauth-secret",
+			Tailnet:              "test.tailnet.ts.net",
+			OAuthSecretName:      "test-oauth-secret",
 			OAuthSecretNamespace: "default",
 		},
 	}
@@ -230,10 +230,10 @@ func TestTailscaleGatewayController(t *testing.T) {
 
 func TestTailscaleGatewayValidation(t *testing.T) {
 	tests := []struct {
-		name     string
-		gateway  *gatewayv1alpha1.TailscaleGateway
-		wantErr  bool
-		errMsg   string
+		name    string
+		gateway *gatewayv1alpha1.TailscaleGateway
+		wantErr bool
+		errMsg  string
 	}{
 		{
 			name: "valid_gateway",
@@ -386,12 +386,12 @@ func validateTailscaleGateway(gateway *gatewayv1alpha1.TailscaleGateway) error {
 	if gateway.Spec.ExtensionServer.Replicas <= 0 {
 		return errors.NewBadRequest("extension server replicas must be greater than 0")
 	}
-	
+
 	for _, tailnet := range gateway.Spec.Tailnets {
 		if tailnet.TailscaleTailnetRef.Name == "" {
 			return errors.NewBadRequest("TailscaleTailnetRef name is required")
 		}
 	}
-	
+
 	return nil
 }

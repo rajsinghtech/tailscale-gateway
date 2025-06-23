@@ -80,11 +80,11 @@ type DiscoveredEndpoint struct {
 
 // ServiceDiscoveryContext contains comprehensive service discovery information
 type ServiceDiscoveryContext struct {
-	HTTPRoutes               []gwapiv1.HTTPRoute                    // Discovered HTTPRoutes
-	TailscaleEndpoints       []gatewayv1alpha1.TailscaleEndpoints   // Discovered TailscaleEndpoints
-	KubernetesServices       []corev1.Service                       // Discovered Kubernetes Services
-	HTTPRouteBackends        []HTTPRouteBackendMapping              // HTTPRoute backend mappings
-	TailscaleServiceMappings []TailscaleServiceMapping              // Tailscale service mappings
+	HTTPRoutes               []gwapiv1.HTTPRoute                  // Discovered HTTPRoutes
+	TailscaleEndpoints       []gatewayv1alpha1.TailscaleEndpoints // Discovered TailscaleEndpoints
+	KubernetesServices       []corev1.Service                     // Discovered Kubernetes Services
+	HTTPRouteBackends        []HTTPRouteBackendMapping            // HTTPRoute backend mappings
+	TailscaleServiceMappings []TailscaleServiceMapping            // Tailscale service mappings
 }
 
 // HTTPRouteBackendMapping represents a backend mapping from HTTPRoute to Kubernetes Service
@@ -102,10 +102,10 @@ type HTTPRouteBackendMapping struct {
 type XDSServiceDiscovery struct {
 	// Discovered endpoints from all route types (HTTP, TCP, UDP, etc.)
 	discoveredEndpoints map[string]*DiscoveredEndpoint
-	
+
 	// Tailscale endpoint mappings (from CRDs)
-	tailscaleEndpoints  map[string]*gatewayv1alpha1.TailscaleEndpoint
-	
+	tailscaleEndpoints map[string]*gatewayv1alpha1.TailscaleEndpoint
+
 	// Extension server reference for logging
 	server *TailscaleExtensionServer
 }
@@ -119,14 +119,14 @@ func NewTailscaleExtensionServer(client client.Client, logger *slog.Logger) *Tai
 		},
 		logger: logger,
 	}
-	
+
 	// Initialize xDS service discovery
 	server.xdsDiscovery = &XDSServiceDiscovery{
 		discoveredEndpoints: make(map[string]*DiscoveredEndpoint),
 		tailscaleEndpoints:  make(map[string]*gatewayv1alpha1.TailscaleEndpoint),
-		server:             server,
+		server:              server,
 	}
-	
+
 	return server
 }
 
@@ -217,8 +217,8 @@ func (s *TailscaleExtensionServer) PostTranslateModify(ctx context.Context, req 
 		s.logger.Info("Added external backend clusters", "externalClusters", len(externalClusters))
 	}
 
-	s.logger.Info("PostTranslateModify completed", 
-		"totalClusters", len(clusters), 
+	s.logger.Info("PostTranslateModify completed",
+		"totalClusters", len(clusters),
 		"originalClusters", len(req.Clusters),
 		"discoveredEndpoints", len(discoveredEndpoints),
 		"tailscaleIntegratedClusters", len(tailscaleIntegratedClusters),
@@ -305,7 +305,7 @@ func (s *TailscaleExtensionServer) discoverAllServiceMappings(ctx context.Contex
 	}
 	discoveryCtx.TailscaleServiceMappings = tailscaleMappings
 
-	s.logger.Info("Comprehensive service discovery completed", 
+	s.logger.Info("Comprehensive service discovery completed",
 		"httpRoutes", len(httpRoutes),
 		"tailscaleEndpoints", len(tailscaleEndpoints),
 		"kubernetesServices", len(kubernetesServices),
@@ -348,8 +348,8 @@ func (s *TailscaleExtensionServer) isHTTPRouteRelevant(route *gwapiv1.HTTPRoute)
 
 	// Check parent refs for extension-enabled Gateways
 	for _, parentRef := range route.Spec.ParentRefs {
-		if parentRef.Name == "tailscale-gateway" || 
-		   strings.Contains(string(parentRef.Name), "tailscale") {
+		if parentRef.Name == "tailscale-gateway" ||
+			strings.Contains(string(parentRef.Name), "tailscale") {
 			return true
 		}
 	}
@@ -398,7 +398,7 @@ func (s *TailscaleExtensionServer) discoverKubernetesServices(ctx context.Contex
 				}
 
 				if err := s.client.Get(ctx, serviceObjectKey, service); err != nil {
-					s.logger.Warn("Failed to get Service for HTTPRoute backend", 
+					s.logger.Warn("Failed to get Service for HTTPRoute backend",
 						"service", serviceKey, "error", err)
 					continue
 				}
@@ -536,7 +536,7 @@ func (s *TailscaleExtensionServer) generateExternalBackendClusters(ctx context.C
 			s.logger.Error("Failed to parse external backend", "backend", mapping.ExternalBackend, "error", err)
 			continue
 		}
-		
+
 		port, err := strconv.Atoi(portStr)
 		if err != nil {
 			s.logger.Error("Failed to parse port", "port", portStr, "error", err)
@@ -598,7 +598,7 @@ func (xds *XDSServiceDiscovery) extractEndpointsFromClusters(ctx context.Context
 		}
 	}
 
-	xds.server.logger.Info("Extracted endpoints from xDS clusters", 
+	xds.server.logger.Info("Extracted endpoints from xDS clusters",
 		"totalClusters", len(clusters),
 		"totalEndpoints", len(endpoints))
 
@@ -672,7 +672,7 @@ func (xds *XDSServiceDiscovery) extractFromEDSCluster(cluster *clusterv3.Cluster
 	// For EDS clusters, the actual endpoints are resolved separately via EDS
 	// We can capture the service reference and mark it for Tailscale integration
 	serviceName := cluster.GetEdsClusterConfig().GetServiceName()
-	
+
 	endpoint := &DiscoveredEndpoint{
 		ClusterName: cluster.Name,
 		Address:     serviceName, // This is the service name, not resolved IP
@@ -805,7 +805,7 @@ func (xds *XDSServiceDiscovery) createTailscaleCluster(discovered *DiscoveredEnd
 		},
 	}
 
-	xds.server.logger.Info("Created Tailscale cluster", 
+	xds.server.logger.Info("Created Tailscale cluster",
 		"cluster", clusterName,
 		"tailscaleIP", tsEndpoint.TailscaleIP,
 		"port", tsEndpoint.Port)

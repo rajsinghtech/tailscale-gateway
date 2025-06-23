@@ -33,8 +33,8 @@ func TestTailscaleEndpointsController(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: gatewayv1alpha1.TailscaleTailnetSpec{
-			Tailnet:             "test.tailnet.ts.net",
-			OAuthSecretName:     "test-oauth-secret",
+			Tailnet:              "test.tailnet.ts.net",
+			OAuthSecretName:      "test-oauth-secret",
 			OAuthSecretNamespace: "default",
 		},
 	}
@@ -59,8 +59,8 @@ func TestTailscaleEndpointsController(t *testing.T) {
 			Build()
 
 		reconciler := &TailscaleEndpointsReconciler{
-			Client: fc,
-			Scheme: scheme,
+			Client:                 fc,
+			Scheme:                 scheme,
 			TailscaleClientManager: nil, // Skip Tailscale API calls in tests
 		}
 
@@ -73,11 +73,11 @@ func TestTailscaleEndpointsController(t *testing.T) {
 				Tailnet: "test.tailnet.ts.net",
 				Endpoints: []gatewayv1alpha1.TailscaleEndpoint{
 					{
-						Name:          "web-service",
-						TailscaleIP:   "100.64.0.1",
-						TailscaleFQDN: "web-service.test.tailnet.ts.net",
-						Port:          80,
-						Protocol:      "HTTP",
+						Name:           "web-service",
+						TailscaleIP:    "100.64.0.1",
+						TailscaleFQDN:  "web-service.test.tailnet.ts.net",
+						Port:           80,
+						Protocol:       "HTTP",
 						ExternalTarget: "httpbin.org:80",
 					},
 				},
@@ -114,8 +114,8 @@ func TestTailscaleEndpointsController(t *testing.T) {
 			Build()
 
 		reconciler := &TailscaleEndpointsReconciler{
-			Client: fc,
-			Scheme: scheme,
+			Client:                 fc,
+			Scheme:                 scheme,
 			TailscaleClientManager: nil, // Skip Tailscale API calls in tests
 		}
 
@@ -128,11 +128,11 @@ func TestTailscaleEndpointsController(t *testing.T) {
 				Tailnet: "test.tailnet.ts.net",
 				Endpoints: []gatewayv1alpha1.TailscaleEndpoint{
 					{
-						Name:          "web-service",
-						TailscaleIP:   "100.64.0.1",
-						TailscaleFQDN: "web-service.test.tailnet.ts.net",
-						Port:          80,
-						Protocol:      "HTTP",
+						Name:           "web-service",
+						TailscaleIP:    "100.64.0.1",
+						TailscaleFQDN:  "web-service.test.tailnet.ts.net",
+						Port:           80,
+						Protocol:       "HTTP",
 						ExternalTarget: "httpbin.org:80",
 					},
 				},
@@ -184,8 +184,8 @@ func TestTailscaleEndpointsController(t *testing.T) {
 			Build()
 
 		reconciler := &TailscaleEndpointsReconciler{
-			Client: fc,
-			Scheme: scheme,
+			Client:                 fc,
+			Scheme:                 scheme,
 			TailscaleClientManager: nil, // Skip Tailscale API calls in tests
 		}
 
@@ -197,7 +197,7 @@ func TestTailscaleEndpointsController(t *testing.T) {
 			Spec: gatewayv1alpha1.TailscaleEndpointsSpec{
 				Tailnet: "test.tailnet.ts.net",
 				AutoDiscovery: &gatewayv1alpha1.EndpointAutoDiscovery{
-					Enabled: true,
+					Enabled:      true,
 					SyncInterval: &metav1.Duration{Duration: 30 * time.Second},
 					TagSelectors: []gatewayv1alpha1.TagSelector{
 						{
@@ -243,8 +243,8 @@ func TestTailscaleEndpointsController(t *testing.T) {
 			Build()
 
 		reconciler := &TailscaleEndpointsReconciler{
-			Client: fc,
-			Scheme: scheme,
+			Client:                 fc,
+			Scheme:                 scheme,
 			TailscaleClientManager: nil, // Skip Tailscale API calls in tests
 		}
 
@@ -316,8 +316,8 @@ func TestTailscaleEndpointsController(t *testing.T) {
 			Build()
 
 		reconciler := &TailscaleEndpointsReconciler{
-			Client: fc,
-			Scheme: scheme,
+			Client:                 fc,
+			Scheme:                 scheme,
 			TailscaleClientManager: nil, // Skip Tailscale API calls in tests
 		}
 
@@ -462,33 +462,33 @@ func validateTailscaleEndpoints(endpoints *gatewayv1alpha1.TailscaleEndpoints) e
 	if endpoints.Spec.Tailnet == "" {
 		return errors.NewBadRequest("tailnet is required")
 	}
-	
+
 	for _, endpoint := range endpoints.Spec.Endpoints {
 		// Validate endpoint name pattern (DNS-1123 subdomain)
 		if endpoint.Name == "" {
 			return errors.NewBadRequest("endpoint name is required")
 		}
-		
+
 		// Validate endpoint name format (no underscores, must be DNS compliant)
 		if strings.Contains(endpoint.Name, "_") {
 			return errors.NewBadRequest("endpoint name must be DNS compliant (no underscores)")
 		}
-		
+
 		// Validate port range
 		if endpoint.Port < 1 || endpoint.Port > 65535 {
 			return errors.NewBadRequest("port must be between 1 and 65535")
 		}
-		
+
 		// Validate required fields
 		if endpoint.TailscaleIP == "" {
 			return errors.NewBadRequest("tailscale IP is required")
 		}
-		
+
 		if endpoint.TailscaleFQDN == "" {
 			return errors.NewBadRequest("tailscale FQDN is required")
 		}
 	}
-	
+
 	return nil
 }
 

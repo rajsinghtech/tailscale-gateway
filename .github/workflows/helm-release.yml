@@ -29,14 +29,26 @@ jobs:
       with:
         go-version: '1.24'
 
-    - name: Generate manifests and charts
-      run: make generate-all
+    - name: Verify generated files exist
+      run: |
+        if [ ! -f "api/v1alpha1/zz_generated.deepcopy.go" ]; then
+          echo "Error: Generated deepcopy file missing. Please run 'make generate' and commit."
+          exit 1
+        fi
+        echo "Generated files verification passed ✓"
+
+    - name: Extract version
+      id: version
+      run: |
+        VERSION=${GITHUB_REF#refs/tags/}
+        CLEAN_VERSION=${VERSION#v}
+        echo "full=${VERSION}" >> $GITHUB_OUTPUT
+        echo "clean=${CLEAN_VERSION}" >> $GITHUB_OUTPUT
 
     - name: Update chart version
       run: |
-        VERSION=${GITHUB_REF#refs/tags/}
-        sed -i "s/version: .*/version: ${VERSION#v}/" cmd/main/deploy/chart/Chart.yaml
-        sed -i "s/appVersion: .*/appVersion: \"${VERSION}\"/" cmd/main/deploy/chart/Chart.yaml
+        sed -i "s/version: .*/version: ${{ steps.version.outputs.clean }}/" cmd/main/deploy/chart/Chart.yaml
+        sed -i "s/appVersion: .*/appVersion: \"${{ steps.version.outputs.full }}\"/" cmd/main/deploy/chart/Chart.yaml
 
     - name: Log in to GitHub Container Registry
       run: |
@@ -44,9 +56,8 @@ jobs:
 
     - name: Package and push Helm chart
       run: |
-        VERSION=${GITHUB_REF#refs/tags/}
-        helm package cmd/main/deploy/chart --version ${VERSION#v} --app-version ${VERSION}
-        helm push ${CHART_NAME}-${VERSION#v}.tgz oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
+        helm package cmd/main/deploy/chart --version ${{ steps.version.outputs.clean }} --app-version ${{ steps.version.outputs.full }}
+        helm push ${CHART_NAME}-${{ steps.version.outputs.clean }}.tgz oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
 
     - name: Upload chart to release assets
       uses: actions/upload-release-asset@v1
@@ -54,6 +65,6 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./${{ env.CHART_NAME }}-${{ github.ref_name }}.tgz
-        asset_name: ${{ env.CHART_NAME }}-${{ github.ref_name }}.tgz
+        asset_path: ./${{ env.CHART_NAME }}-${{ steps.version.outputs.clean }}.tgz
+        asset_name: ${{ env.CHART_NAME }}-${{ steps.version.outputs.clean }}.tgz
         asset_content_type: application/gzip

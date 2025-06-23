@@ -57,11 +57,11 @@ func init() {
 
 func main() {
 	var (
-		grpcPort              = flag.Int("grpc-port", 5005, "Port for the gRPC extension server")
-		healthProbeBindAddr   = flag.String("health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-		metricsBindAddr       = flag.String("metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
-		logLevel              = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
-		enableLeaderElection  = flag.Bool("leader-elect", false, "Enable leader election for controller manager.")
+		grpcPort             = flag.Int("grpc-port", 5005, "Port for the gRPC extension server")
+		healthProbeBindAddr  = flag.String("health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+		metricsBindAddr      = flag.String("metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
+		logLevel             = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
+		enableLeaderElection = flag.Bool("leader-elect", false, "Enable leader election for controller manager.")
 	)
 	flag.Parse()
 
@@ -150,17 +150,17 @@ func main() {
 	go func() {
 		<-quit
 		setupLog.Info("Shutting down extension server...")
-		
+
 		// Stop health service
 		healthService.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
-		
+
 		// Graceful shutdown with timeout
 		stopped := make(chan struct{})
 		go func() {
 			grpcServer.GracefulStop()
 			close(stopped)
 		}()
-		
+
 		select {
 		case <-stopped:
 			setupLog.Info("Extension server stopped gracefully")
@@ -170,7 +170,7 @@ func main() {
 		}
 	}()
 
-	setupLog.Info("Starting Tailscale Extension Server", 
+	setupLog.Info("Starting Tailscale Extension Server",
 		"grpcPort", *grpcPort,
 		"healthPort", *healthProbeBindAddr,
 		"metricsPort", *metricsBindAddr)

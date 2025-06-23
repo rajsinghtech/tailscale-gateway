@@ -20,8 +20,8 @@ type MockTailscaleServiceMapping struct {
 	ClusterName     string
 	EgressService   string
 	ExternalBackend string
-	Port           uint32
-	Protocol       string
+	Port            uint32
+	Protocol        string
 }
 
 func TestExtensionServer(t *testing.T) {
@@ -95,7 +95,7 @@ func TestExtensionServer(t *testing.T) {
 			client: fc,
 		}
 		_ = server // Use server to avoid unused variable warning
-		
+
 		// Test HTTPRoute exists in cluster
 		var routes gwapiv1.HTTPRouteList
 		err := fc.List(context.Background(), &routes)
@@ -132,11 +132,11 @@ func TestExtensionServer(t *testing.T) {
 				Tailnet: "test.tailnet.ts.net",
 				Endpoints: []gatewayv1alpha1.TailscaleEndpoint{
 					{
-						Name:          "web-service",
-						TailscaleIP:   "100.64.0.1",
-						TailscaleFQDN: "web-service.test.tailnet.ts.net",
-						Port:          80,
-						Protocol:      "HTTP",
+						Name:           "web-service",
+						TailscaleIP:    "100.64.0.1",
+						TailscaleFQDN:  "web-service.test.tailnet.ts.net",
+						Port:           80,
+						Protocol:       "HTTP",
 						ExternalTarget: "httpbin.org:80",
 					},
 				},
@@ -149,7 +149,7 @@ func TestExtensionServer(t *testing.T) {
 			client: fc,
 		}
 		_ = server // Use server to avoid unused variable warning
-		
+
 		// Test TailscaleEndpoints exists in cluster
 		var endpointsList gatewayv1alpha1.TailscaleEndpointsList
 		err := fc.List(context.Background(), &endpointsList)
@@ -191,19 +191,19 @@ func TestExtensionServer(t *testing.T) {
 				Tailnet: "test.tailnet.ts.net",
 				Endpoints: []gatewayv1alpha1.TailscaleEndpoint{
 					{
-						Name:          "web-service",
-						TailscaleIP:   "100.64.0.1",
-						TailscaleFQDN: "web-service.test.tailnet.ts.net",
-						Port:          80,
-						Protocol:      "HTTP",
+						Name:           "web-service",
+						TailscaleIP:    "100.64.0.1",
+						TailscaleFQDN:  "web-service.test.tailnet.ts.net",
+						Port:           80,
+						Protocol:       "HTTP",
 						ExternalTarget: "httpbin.org:80",
 					},
 					{
-						Name:          "api-service",
-						TailscaleIP:   "100.64.0.2",
-						TailscaleFQDN: "api-service.test.tailnet.ts.net",
-						Port:          443,
-						Protocol:      "HTTPS",
+						Name:           "api-service",
+						TailscaleIP:    "100.64.0.2",
+						TailscaleFQDN:  "api-service.test.tailnet.ts.net",
+						Port:           443,
+						Protocol:       "HTTPS",
 						ExternalTarget: "api.github.com:443",
 					},
 				},
@@ -216,7 +216,7 @@ func TestExtensionServer(t *testing.T) {
 			client: fc,
 		}
 		_ = server // Use server to avoid unused variable warning
-		
+
 		// Test that we can generate service mappings from the endpoints
 		var endpointsList gatewayv1alpha1.TailscaleEndpointsList
 		err := fc.List(context.Background(), &endpointsList)
@@ -236,15 +236,15 @@ func TestExtensionServer(t *testing.T) {
 		// Test generating mappings for each endpoint
 		for _, ep := range endpoint.Spec.Endpoints {
 			mapping := generateServiceMapping(ep, "default", "test-endpoints")
-			
+
 			if mapping.ServiceName != ep.Name {
 				t.Errorf("expected service name %q, got %q", ep.Name, mapping.ServiceName)
 			}
-			
+
 			if mapping.ExternalBackend != ep.ExternalTarget {
 				t.Errorf("expected external backend %q, got %q", ep.ExternalTarget, mapping.ExternalBackend)
 			}
-			
+
 			if mapping.Port != uint32(ep.Port) {
 				t.Errorf("expected port %d, got %d", ep.Port, mapping.Port)
 			}
@@ -288,52 +288,52 @@ func TestExtensionServer(t *testing.T) {
 
 func TestTailscaleServiceMappingGeneration(t *testing.T) {
 	tests := []struct {
-		name         string
-		endpoint     gatewayv1alpha1.TailscaleEndpoint
-		namespace    string
+		name          string
+		endpoint      gatewayv1alpha1.TailscaleEndpoint
+		namespace     string
 		endpointsName string
-		want         TailscaleServiceMapping
+		want          TailscaleServiceMapping
 	}{
 		{
 			name: "http_service",
 			endpoint: gatewayv1alpha1.TailscaleEndpoint{
-				Name:          "web-service",
-				TailscaleIP:   "100.64.0.1",
-				TailscaleFQDN: "web-service.test.tailnet.ts.net",
-				Port:          80,
-				Protocol:      "HTTP",
+				Name:           "web-service",
+				TailscaleIP:    "100.64.0.1",
+				TailscaleFQDN:  "web-service.test.tailnet.ts.net",
+				Port:           80,
+				Protocol:       "HTTP",
 				ExternalTarget: "httpbin.org:80",
 			},
-			namespace:    "default",
+			namespace:     "default",
 			endpointsName: "test-endpoints",
 			want: TailscaleServiceMapping{
 				ServiceName:     "web-service",
 				ClusterName:     "external-backend-web-service",
 				EgressService:   "test-endpoints-web-service-egress.default.svc.cluster.local",
 				ExternalBackend: "httpbin.org:80",
-				Port:           80,
-				Protocol:       "HTTP",
+				Port:            80,
+				Protocol:        "HTTP",
 			},
 		},
 		{
 			name: "https_service",
 			endpoint: gatewayv1alpha1.TailscaleEndpoint{
-				Name:          "secure-api",
-				TailscaleIP:   "100.64.0.2",
-				TailscaleFQDN: "secure-api.test.tailnet.ts.net",
-				Port:          443,
-				Protocol:      "HTTPS",
+				Name:           "secure-api",
+				TailscaleIP:    "100.64.0.2",
+				TailscaleFQDN:  "secure-api.test.tailnet.ts.net",
+				Port:           443,
+				Protocol:       "HTTPS",
 				ExternalTarget: "api.example.com:443",
 			},
-			namespace:    "production",
+			namespace:     "production",
 			endpointsName: "prod-endpoints",
 			want: TailscaleServiceMapping{
 				ServiceName:     "secure-api",
 				ClusterName:     "external-backend-secure-api",
 				EgressService:   "prod-endpoints-secure-api-egress.production.svc.cluster.local",
 				ExternalBackend: "api.example.com:443",
-				Port:           443,
-				Protocol:       "HTTPS",
+				Port:            443,
+				Protocol:        "HTTPS",
 			},
 		},
 	}
@@ -341,7 +341,7 @@ func TestTailscaleServiceMappingGeneration(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mapping := generateServiceMapping(tt.endpoint, tt.namespace, tt.endpointsName)
-			
+
 			if diff := cmp.Diff(mapping, tt.want); diff != "" {
 				t.Errorf("generateServiceMapping() mismatch (-got +want):\n%s", diff)
 			}
@@ -382,7 +382,7 @@ func generateServiceMapping(endpoint gatewayv1alpha1.TailscaleEndpoint, namespac
 		ClusterName:     "external-backend-" + endpoint.Name,
 		EgressService:   endpointsName + "-" + endpoint.Name + "-egress." + namespace + ".svc.cluster.local",
 		ExternalBackend: endpoint.ExternalTarget,
-		Port:           uint32(endpoint.Port),
-		Protocol:       endpoint.Protocol,
+		Port:            uint32(endpoint.Port),
+		Protocol:        endpoint.Protocol,
 	}
 }
