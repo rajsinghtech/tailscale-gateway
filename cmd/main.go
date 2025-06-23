@@ -113,6 +113,7 @@ func main() {
 		Scheme:   mgr.GetScheme(),
 		Logger:   logger.Named("gateway-controller"),
 		Recorder: mgr.GetEventRecorderFor("tailscale-gateway-controller"),
+		// Note: ServiceCoordinator and TailscaleClient will be initialized per-tailnet during reconciliation
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error("unable to create controller", "controller", "TailscaleGateway", "error", err)
 		os.Exit(1)

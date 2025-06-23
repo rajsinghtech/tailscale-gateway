@@ -22,10 +22,34 @@ func TestTailscaleGatewayController(t *testing.T) {
 	gatewayv1alpha1.AddToScheme(scheme)
 	gwapiv1.AddToScheme(scheme)
 
+	// Create test resources that all tests will reference
+	testEnvoyGateway := &gwapiv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-envoy-gateway",
+			Namespace: "default",
+		},
+		Spec: gwapiv1.GatewaySpec{
+			GatewayClassName: "envoy-gateway",
+		},
+	}
+
+	testTailnet := &gatewayv1alpha1.TailscaleTailnet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-tailnet",
+			Namespace: "default",
+		},
+		Spec: gatewayv1alpha1.TailscaleTailnetSpec{
+			Tailnet:             "test.tailnet.ts.net",
+			OAuthSecretName:     "test-oauth-secret",
+			OAuthSecretNamespace: "default",
+		},
+	}
+
 	t.Run("basic_gateway_creation", func(t *testing.T) {
 		fc := fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&gatewayv1alpha1.TailscaleGateway{}).
+			WithObjects(testEnvoyGateway, testTailnet).
 			Build()
 
 		recorder := record.NewFakeRecorder(100)
@@ -91,6 +115,7 @@ func TestTailscaleGatewayController(t *testing.T) {
 		fc := fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&gatewayv1alpha1.TailscaleGateway{}).
+			WithObjects(testEnvoyGateway, testTailnet).
 			Build()
 
 		recorder := record.NewFakeRecorder(100)
@@ -149,6 +174,7 @@ func TestTailscaleGatewayController(t *testing.T) {
 		fc := fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&gatewayv1alpha1.TailscaleGateway{}).
+			WithObjects(testEnvoyGateway, testTailnet).
 			Build()
 
 		recorder := record.NewFakeRecorder(100)

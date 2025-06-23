@@ -2,15 +2,18 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	gatewayv1alpha1 "github.com/rajsinghtech/tailscale-gateway/api/v1alpha1"
@@ -21,17 +24,44 @@ func TestTailscaleEndpointsController(t *testing.T) {
 	gatewayv1alpha1.AddToScheme(scheme)
 	corev1.AddToScheme(scheme)
 	appsv1.AddToScheme(scheme)
+	rbacv1.AddToScheme(scheme)
+
+	// Create test TailscaleTailnet resource that all tests will reference
+	testTailnet := &gatewayv1alpha1.TailscaleTailnet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test.tailnet.ts.net",
+			Namespace: "default",
+		},
+		Spec: gatewayv1alpha1.TailscaleTailnetSpec{
+			Tailnet:             "test.tailnet.ts.net",
+			OAuthSecretName:     "test-oauth-secret",
+			OAuthSecretNamespace: "default",
+		},
+	}
+
+	// Create test OAuth secret that all tests will reference
+	testOAuthSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-oauth-secret",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"client_id":     []byte("test-client-id"),
+			"client_secret": []byte("test-client-secret"),
+		},
+	}
 
 	t.Run("basic_endpoints_creation", func(t *testing.T) {
 		fc := fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&gatewayv1alpha1.TailscaleEndpoints{}).
+			WithObjects(testTailnet, testOAuthSecret).
 			Build()
 
 		reconciler := &TailscaleEndpointsReconciler{
 			Client: fc,
 			Scheme: scheme,
-			TailscaleClientManager: NewMultiTailnetManager(),
+			TailscaleClientManager: nil, // Skip Tailscale API calls in tests
 		}
 
 		endpoints := &gatewayv1alpha1.TailscaleEndpoints{
@@ -55,7 +85,7 @@ func TestTailscaleEndpointsController(t *testing.T) {
 		}
 
 		mustCreate(t, fc, endpoints)
-		expectReconciled(t, reconciler, "default", "test-endpoints")
+		expectEndpointsReconciled(t, reconciler, "default", "test-endpoints")
 
 		// Verify endpoints status is updated
 		got := &gatewayv1alpha1.TailscaleEndpoints{}
@@ -69,10 +99,10 @@ func TestTailscaleEndpointsController(t *testing.T) {
 			t.Errorf("expected 0 discovered endpoints (manual config), got %d", got.Status.DiscoveredEndpoints)
 		}
 
-		// Should have Ready condition
-		readyCondition := findCondition(got.Status.Conditions, "Ready")
-		if readyCondition == nil {
-			t.Fatal("expected Ready condition")
+		// Should have Synced condition
+		syncedCondition := findCondition(got.Status.Conditions, "Synced")
+		if syncedCondition == nil {
+			t.Fatal("expected Synced condition")
 		}
 	})
 
@@ -80,12 +110,13 @@ func TestTailscaleEndpointsController(t *testing.T) {
 		fc := fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&gatewayv1alpha1.TailscaleEndpoints{}).
+			WithObjects(testTailnet, testOAuthSecret).
 			Build()
 
 		reconciler := &TailscaleEndpointsReconciler{
 			Client: fc,
 			Scheme: scheme,
-			TailscaleClientManager: NewMultiTailnetManager(),
+			TailscaleClientManager: nil, // Skip Tailscale API calls in tests
 		}
 
 		endpoints := &gatewayv1alpha1.TailscaleEndpoints{
@@ -109,7 +140,7 @@ func TestTailscaleEndpointsController(t *testing.T) {
 		}
 
 		mustCreate(t, fc, endpoints)
-		expectReconciled(t, reconciler, "default", "test-endpoints")
+		expectEndpointsReconciled(t, reconciler, "default", "test-endpoints")
 
 		// Verify StatefulSet was created
 		egressSTS := &appsv1.StatefulSet{}
@@ -149,12 +180,13 @@ func TestTailscaleEndpointsController(t *testing.T) {
 		fc := fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&gatewayv1alpha1.TailscaleEndpoints{}).
+			WithObjects(testTailnet, testOAuthSecret).
 			Build()
 
 		reconciler := &TailscaleEndpointsReconciler{
 			Client: fc,
 			Scheme: scheme,
-			TailscaleClientManager: NewMultiTailnetManager(),
+			TailscaleClientManager: nil, // Skip Tailscale API calls in tests
 		}
 
 		endpoints := &gatewayv1alpha1.TailscaleEndpoints{
@@ -182,7 +214,7 @@ func TestTailscaleEndpointsController(t *testing.T) {
 		}
 
 		mustCreate(t, fc, endpoints)
-		expectReconciled(t, reconciler, "default", "test-endpoints")
+		expectEndpointsReconciled(t, reconciler, "default", "test-endpoints")
 
 		// Verify auto-discovery is configured
 		got := &gatewayv1alpha1.TailscaleEndpoints{}
@@ -207,12 +239,13 @@ func TestTailscaleEndpointsController(t *testing.T) {
 		fc := fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&gatewayv1alpha1.TailscaleEndpoints{}).
+			WithObjects(testTailnet, testOAuthSecret).
 			Build()
 
 		reconciler := &TailscaleEndpointsReconciler{
 			Client: fc,
 			Scheme: scheme,
-			TailscaleClientManager: NewMultiTailnetManager(),
+			TailscaleClientManager: nil, // Skip Tailscale API calls in tests
 		}
 
 		endpoints := &gatewayv1alpha1.TailscaleEndpoints{
@@ -243,7 +276,7 @@ func TestTailscaleEndpointsController(t *testing.T) {
 		}
 
 		mustCreate(t, fc, endpoints)
-		expectReconciled(t, reconciler, "default", "test-endpoints")
+		expectEndpointsReconciled(t, reconciler, "default", "test-endpoints")
 
 		// Verify health check configuration
 		got := &gatewayv1alpha1.TailscaleEndpoints{}
@@ -279,12 +312,13 @@ func TestTailscaleEndpointsController(t *testing.T) {
 		fc := fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithStatusSubresource(&gatewayv1alpha1.TailscaleEndpoints{}).
+			WithObjects(testTailnet, testOAuthSecret).
 			Build()
 
 		reconciler := &TailscaleEndpointsReconciler{
 			Client: fc,
 			Scheme: scheme,
-			TailscaleClientManager: NewMultiTailnetManager(),
+			TailscaleClientManager: nil, // Skip Tailscale API calls in tests
 		}
 
 		endpoints := &gatewayv1alpha1.TailscaleEndpoints{
@@ -307,11 +341,11 @@ func TestTailscaleEndpointsController(t *testing.T) {
 		}
 
 		mustCreate(t, fc, endpoints)
-		expectReconciled(t, reconciler, "default", "test-endpoints")
+		expectEndpointsReconciled(t, reconciler, "default", "test-endpoints")
 
 		// Delete the endpoints
 		mustDelete(t, fc, endpoints)
-		expectReconciled(t, reconciler, "default", "test-endpoints")
+		expectEndpointsReconciled(t, reconciler, "default", "test-endpoints")
 
 		// Verify the endpoints resource is deleted
 		got := &gatewayv1alpha1.TailscaleEndpoints{}
@@ -412,7 +446,7 @@ func TestTailscaleEndpointsValidation(t *testing.T) {
 			if tt.wantErr {
 				if err == nil {
 					t.Error("expected validation error but got none")
-				} else if tt.errMsg != "" && err.Error() != tt.errMsg {
+				} else if tt.errMsg != "" && !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("expected error message to contain %q, got %q", tt.errMsg, err.Error())
 				}
 			} else if err != nil {
@@ -435,6 +469,11 @@ func validateTailscaleEndpoints(endpoints *gatewayv1alpha1.TailscaleEndpoints) e
 			return errors.NewBadRequest("endpoint name is required")
 		}
 		
+		// Validate endpoint name format (no underscores, must be DNS compliant)
+		if strings.Contains(endpoint.Name, "_") {
+			return errors.NewBadRequest("endpoint name must be DNS compliant (no underscores)")
+		}
+		
 		// Validate port range
 		if endpoint.Port < 1 || endpoint.Port > 65535 {
 			return errors.NewBadRequest("port must be between 1 and 65535")
@@ -451,4 +490,19 @@ func validateTailscaleEndpoints(endpoints *gatewayv1alpha1.TailscaleEndpoints) e
 	}
 	
 	return nil
+}
+
+// expectEndpointsReconciled is a helper function specific to TailscaleEndpoints reconciler
+func expectEndpointsReconciled(t *testing.T, reconciler *TailscaleEndpointsReconciler, namespace, name string) {
+	t.Helper()
+	req := ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      name,
+			Namespace: namespace,
+		},
+	}
+	_, err := reconciler.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
 }

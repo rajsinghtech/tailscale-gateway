@@ -1,0 +1,29 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: test-workload-route
+  namespace: default
+  labels:
+    tailscale-gateway: "test"
+spec:
+  parentRefs:
+  - name: envoy-gateway
+    namespace: default
+  hostnames:
+  - "test-app.example.com"
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: "/"
+    backendRefs:
+    # Reference to local Kubernetes service
+    - name: test-app
+      port: 80
+      weight: 50
+    # Reference to Tailscale endpoints via the extension server  
+    - group: gateway.tailscale.com
+      kind: TailscaleEndpoints  
+      name: cluster2-endpoints
+      port: 80
+      weight: 50

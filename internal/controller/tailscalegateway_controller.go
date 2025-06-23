@@ -79,10 +79,12 @@ type TailscaleGatewayReconciler struct {
 //+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscaletailnets,verbs=get;list;watch
 //+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscaleendpoints,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch
+//+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch
 //+kubebuilder:rbac:groups=gateway.envoyproxy.io,resources=gateways,verbs=get;list;watch
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -167,6 +169,12 @@ func (r *TailscaleGatewayReconciler) reconcileGateway(ctx context.Context, gatew
 		return ctrl.Result{RequeueAfter: time.Minute}, err
 	}
 	r.updateCondition(gateway, "EndpointsReady", metav1.ConditionTrue, "EndpointsManaged", "TailscaleEndpoints are managed")
+
+	// Initialize ServiceCoordinator and TailscaleClient if needed
+	if err := r.ensureServiceCoordinator(ctx, gateway); err != nil {
+		r.updateCondition(gateway, "ServicesReady", metav1.ConditionFalse, "ServiceCoordinatorError", err.Error())
+		return ctrl.Result{RequeueAfter: time.Minute}, err
+	}
 
 	// Process HTTPRoutes and ensure VIP services if ServiceCoordinator is available
 	if r.ServiceCoordinator != nil {
@@ -478,6 +486,101 @@ func (r *TailscaleGatewayReconciler) handleDeletion(ctx context.Context, gateway
 }
 
 // cleanupServices detaches from all VIP services during gateway deletion
+// ensureServiceCoordinator initializes ServiceCoordinator and TailscaleClient for the first tailnet
+func (r *TailscaleGatewayReconciler) ensureServiceCoordinator(ctx context.Context, gateway *gatewayv1alpha1.TailscaleGateway) error {
+	if r.ServiceCoordinator != nil && r.TailscaleClient != nil {
+		return nil // Already initialized
+	}
+
+	if len(gateway.Spec.Tailnets) == 0 {
+		return fmt.Errorf("no tailnets configured")
+	}
+
+	// Use the first tailnet for ServiceCoordinator initialization
+	firstTailnet := gateway.Spec.Tailnets[0]
+	
+	// Get the TailscaleTailnet resource
+	tailnet := &gatewayv1alpha1.TailscaleTailnet{}
+	tailnetNamespace := gateway.Namespace
+	if firstTailnet.TailscaleTailnetRef.Namespace != nil {
+		tailnetNamespace = string(*firstTailnet.TailscaleTailnetRef.Namespace)
+	}
+	tailnetKey := types.NamespacedName{
+		Name:      string(firstTailnet.TailscaleTailnetRef.Name),
+		Namespace: tailnetNamespace,
+	}
+	if err := r.Get(ctx, tailnetKey, tailnet); err != nil {
+		return fmt.Errorf("failed to get TailscaleTailnet %s: %w", tailnetKey, err)
+	}
+
+	// Initialize TailscaleClient using the tailnet's OAuth credentials
+	tsClient, err := r.createTailscaleClient(ctx, tailnet)
+	if err != nil {
+		return fmt.Errorf("failed to create Tailscale client: %w", err)
+	}
+	r.TailscaleClient = tsClient
+
+	// Initialize ServiceCoordinator
+	operatorID := fmt.Sprintf("%s-%s", gateway.Name, gateway.Namespace)
+	clusterID := fmt.Sprintf("cluster-%s", gateway.UID[:8]) // Use truncated UID as cluster identifier
+	r.ServiceCoordinator = service.NewServiceCoordinator(
+		tsClient,
+		r.Client,
+		operatorID,
+		clusterID,
+		r.Logger.Named("service-coordinator"),
+	)
+
+	tailnetName := "unknown"
+	if tailnet.Status.TailnetInfo != nil {
+		tailnetName = tailnet.Status.TailnetInfo.Name
+	}
+	r.Logger.Infow("ServiceCoordinator initialized", 
+		"operatorID", operatorID, 
+		"clusterID", clusterID,
+		"tailnet", tailnetName,
+	)
+
+	return nil
+}
+
+// createTailscaleClient creates a Tailscale client from TailscaleTailnet credentials
+func (r *TailscaleGatewayReconciler) createTailscaleClient(ctx context.Context, tailnet *gatewayv1alpha1.TailscaleTailnet) (tailscale.Client, error) {
+	// Get the OAuth secret
+	secret := &corev1.Secret{}
+	secretKey := types.NamespacedName{
+		Name:      tailnet.Spec.OAuthSecretName,
+		Namespace: tailnet.Spec.OAuthSecretNamespace,
+	}
+	if err := r.Get(ctx, secretKey, secret); err != nil {
+		return nil, fmt.Errorf("failed to get OAuth secret %s: %w", secretKey, err)
+	}
+
+	clientID, ok := secret.Data["client_id"]
+	if !ok {
+		return nil, fmt.Errorf("client_id not found in OAuth secret")
+	}
+
+	clientSecret, ok := secret.Data["client_secret"]
+	if !ok {
+		return nil, fmt.Errorf("client_secret not found in OAuth secret")
+	}
+
+	// Create Tailscale client config
+	config := tailscale.ClientConfig{
+		Tailnet:      tailnet.Spec.Tailnet,
+		APIBaseURL:   "", // Use default
+		ClientID:     string(clientID),
+		ClientSecret: string(clientSecret),
+	}
+	
+	client, err := tailscale.NewClient(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Tailscale client: %w", err)
+	}
+	return client, nil
+}
+
 func (r *TailscaleGatewayReconciler) cleanupServices(ctx context.Context, gateway *gatewayv1alpha1.TailscaleGateway) error {
 	// Get all HTTPRoutes that were managed by this gateway
 	httpRoutes, err := r.getRelatedHTTPRoutes(ctx, gateway)

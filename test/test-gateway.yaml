@@ -1,0 +1,135 @@
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleGateway
+metadata:
+  name: multi-cluster-gateway
+  namespace: default
+  labels:
+    cluster: shared
+spec:
+  # Reference to an Envoy Gateway (required by CRD)
+  gatewayRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: envoy-gateway
+    namespace: default
+  # Configure tailnets for service discovery
+  tailnets:
+  - name: test-tailnet
+    tailscaleTailnetRef:
+      group: gateway.tailscale.com
+      kind: TailscaleTailnet
+      name: test-tailnet
+      namespace: default
+    # Enable service discovery for this tailnet
+    serviceDiscovery:
+      enabled: true
+      patterns: ["*cluster*", "*web*", "*api*"]
+      excludePatterns: ["*test*", "*debug*"]
+      syncInterval: "30s"
+    # Configure route generation
+    routeGeneration:
+      ingress:
+        hostPattern: "{service}.{tailnet}.gateway.local"
+        pathPrefix: "/"
+        protocol: "HTTP"
+      egress:
+        hostPattern: "{service}.tailscale.local"
+        pathPrefix: "/api/{service}/"
+        protocol: "HTTP"
+  # Extension server configuration
+  extensionServer:
+    image: tailscale-gateway-extension-server:latest
+    replicas: 1
+    port: 5005
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "250m"
+      limits:
+        memory: "128Mi"
+        cpu: "500m"
+---
+# HTTPRoute for testing VIP service creation
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: cluster-web-route
+  namespace: default
+  labels:
+    tailscale-vip: "enabled"
+spec:
+  hostnames:
+  - "multi-cluster-web.example.com"
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /cluster1
+    backendRefs:
+    - name: test-service
+      namespace: default
+      port: 80
+      weight: 30  # Lower weight for cluster1
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /cluster2
+    backendRefs:
+    - name: test-service
+      namespace: default
+      port: 80
+      weight: 70  # Higher weight for cluster2
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /api/cluster1
+    backendRefs:
+    - name: api-service
+      namespace: default
+      port: 8080
+      weight: 30
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /api/cluster2
+    backendRefs:
+    - name: api-service
+      namespace: default
+      port: 8080
+      weight: 70
+---
+# HTTPRoute for external backend (example of VIP service coordination)
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: external-service-route
+  namespace: default
+  labels:
+    tailscale-vip: "enabled"
+spec:
+  hostnames:
+  - "external-api.example.com"
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /httpbin
+    backendRefs:
+    - name: httpbin-org
+      namespace: default
+      port: 80
+---
+# External service for VIP coordination testing
+apiVersion: v1
+kind: Service
+metadata:
+  name: httpbin-org
+  namespace: default
+  labels:
+    tailscale-vip: "external"
+spec:
+  type: ExternalName
+  externalName: httpbin.org
+  ports:
+  - port: 80
+    name: http

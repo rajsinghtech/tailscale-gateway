@@ -75,27 +75,6 @@ spec:
                     default: true
                     description: Enabled controls whether auto-discovery is active
                     type: boolean
-                  excludePatterns:
-                    description: |-
-                      ExcludePatterns defines patterns for services to exclude from discovery
-                      DEPRECATED: Use TagSelectors or ServiceDiscovery instead
-                    items:
-                      type: string
-                    type: array
-                  includePatterns:
-                    description: |-
-                      IncludePatterns defines patterns for services to include in discovery
-                      DEPRECATED: Use TagSelectors or ServiceDiscovery instead
-                    items:
-                      type: string
-                    type: array
-                  requiredTags:
-                    description: |-
-                      RequiredTags filters discovery to devices with specific tags
-                      DEPRECATED: Use TagSelectors instead
-                    items:
-                      type: string
-                    type: array
                   serviceDiscovery:
                     description: ServiceDiscovery configures VIP service discovery
                     properties:
@@ -431,6 +410,7 @@ spec:
     storage: true
     subresources:
       status: {}
+---
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -1062,6 +1042,7 @@ spec:
     subresources:
       status: {}
 ---
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -1648,6 +1629,7 @@ spec:
     storage: true
     subresources:
       status: {}
+---
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
