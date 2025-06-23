@@ -8,4 +8,5 @@ spec:
   oauthSecretName: tailscale-oauth
   oauthSecretNamespace: default
   tags:
-    - "tag:k8s-operator" 
+    - "tag:k8s-operator"
+    - "tag:test" 

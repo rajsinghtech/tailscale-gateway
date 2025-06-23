@@ -15,7 +15,7 @@ spec:
     port: 80
     protocol: "HTTP"
     externalTarget: "test-service.default.svc.cluster.local:80"
-    tags: ["tag:k8s-operator"]
+    tags: ["tag:k8s-operator", "tag:web", "tag:test"]
     weight: 1
     healthCheck:
       enabled: true
@@ -27,7 +27,7 @@ spec:
     port: 8080
     protocol: "HTTP"
     externalTarget: "api-service.default.svc.cluster.local:8080"
-    tags: ["tag:k8s-operator"]
+    tags: ["tag:k8s-operator", "tag:web", "tag:test"]
     weight: 1
     healthCheck:
       enabled: true
@@ -39,6 +39,8 @@ spec:
     tagSelectors:
     - tag: "tag:k8s-operator"
       operator: "Exists"
+    - tag: "tag:web"
+      operator: "Exists"
     # VIP service discovery
     serviceDiscovery:
       enabled: true
@@ -46,12 +48,9 @@ spec:
       - "svc:cluster1-web"
       - "svc:cluster1-api"
       serviceTags:
-      - "tag:vip"
-      - "tag:cluster1"
-    # Legacy pattern support (deprecated)
-    includePatterns: ["*cluster1*", "*web*", "*api*"]
-    excludePatterns: ["*test*", "*debug*"]
-    requiredTags: ["tag:service"]
+      - "tag:web"
+      - "tag:service"
+      - "tag:test"
     syncInterval: "30s"
 ---
 apiVersion: v1
