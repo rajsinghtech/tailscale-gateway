@@ -1,0 +1,28 @@
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleGateway
+metadata:
+  name: cluster2-gateway
+  namespace: envoy-gateway-system
+spec:
+  gatewayRef:
+    name: eg
+    namespace: envoy-gateway-system
+  tailnets:
+  - name: test-tailnet
+    tailscaleTailnetRef:
+      group: gateway.tailscale.com
+      kind: TailscaleTailnet
+      name: test-tailnet
+      namespace: default
+    serviceDiscovery:
+      enabled: true
+      patterns:
+      - "*api*"
+      - "*web*"
+      - "*service*" 
+      - "*server*"
+      - "*cluster*"
+  extensionServer:
+    port: 5005
+    tls:
+      insecureSkipVerify: true

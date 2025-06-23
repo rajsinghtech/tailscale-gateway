@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	gatewayv1alpha1 "github.com/rajsinghtech/tailscale-gateway/api/v1alpha1"
 	"github.com/rajsinghtech/tailscale-gateway/internal/controller"
@@ -34,6 +35,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(gwapiv1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
@@ -105,18 +107,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	// TODO: Implement TailscaleGateway controller
-	/*
-		if err = (&controller.TailscaleGatewayReconciler{
-			Client:   mgr.GetClient(),
-			Scheme:   mgr.GetScheme(),
-			Logger:   logger.Named("gateway-controller"),
-			Recorder: mgr.GetEventRecorderFor("tailscale-gateway-controller"),
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "TailscaleGateway")
-			os.Exit(1)
-		}
-	*/
+	// Setup TailscaleGateway controller
+	if err = (&controller.TailscaleGatewayReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Logger:   logger.Named("gateway-controller"),
+		Recorder: mgr.GetEventRecorderFor("tailscale-gateway-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error("unable to create controller", "controller", "TailscaleGateway", "error", err)
+		os.Exit(1)
+	}
 
 	// TODO: Implement TailscaleRoutePolicy controller
 	/*

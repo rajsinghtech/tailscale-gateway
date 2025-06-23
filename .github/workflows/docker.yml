@@ -48,7 +48,7 @@ jobs:
           type=semver,pattern={{major}}
           type=sha,prefix={{branch}}-
 
-    - name: Build and push Docker image
+    - name: Build and push Docker image (main operator)
       id: push
       uses: docker/build-push-action@v6
       with:
@@ -60,10 +60,44 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
-    - name: Generate artifact attestation
+    - name: Extract metadata for extension server
+      id: meta-ext
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-extension-server
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=semver,pattern={{major}}
+          type=sha,prefix={{branch}}-
+
+    - name: Build and push extension server image
+      id: push-ext
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: cmd/extension-server/Dockerfile  
+        platforms: linux/amd64,linux/arm64
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.meta-ext.outputs.tags }}
+        labels: ${{ steps.meta-ext.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Generate artifact attestation (main)
       if: github.event_name != 'pull_request'
       uses: actions/attest-build-provenance@v1
       with:
         subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME}}
         subject-digest: ${{ steps.push.outputs.digest }}
+        push-to-registry: true
+
+    - name: Generate artifact attestation (extension server)
+      if: github.event_name != 'pull_request'
+      uses: actions/attest-build-provenance@v1
+      with:
+        subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME}}-extension-server
+        subject-digest: ${{ steps.push-ext.outputs.digest }}
         push-to-registry: true

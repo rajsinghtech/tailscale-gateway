@@ -111,7 +111,7 @@ extensionServer:
   # Replica count for the extension server deployment
   replicaCount: 1
   
-  # Image configuration
+  # Image configuration - uses the same base image as operator with different entrypoint
   image:
     repository: ghcr.io/rajsinghtech/tailscale-gateway-extension-server
     pullPolicy: IfNotPresent

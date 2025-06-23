@@ -134,6 +134,7 @@ func (m *MultiTailnetManager) createClientFromTailnet(ctx context.Context, k8sCl
 //+kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
 
@@ -562,6 +563,11 @@ func (r *TailscaleEndpointsReconciler) reconcileStatefulSets(ctx context.Context
 			return fmt.Errorf("failed to reconcile egress StatefulSet for endpoint %s: %w", endpoint.Name, err)
 		}
 		statefulSetRefs = append(statefulSetRefs, *egressRef)
+
+		// Create Services for ingress and egress StatefulSets
+		if err := r.reconcileEndpointServices(ctx, endpoints, &endpoint, ingressRef, egressRef); err != nil {
+			return fmt.Errorf("failed to reconcile Services for endpoint %s: %w", endpoint.Name, err)
+		}
 	}
 
 	// Update status with StatefulSet references
@@ -959,6 +965,107 @@ func (r *TailscaleEndpointsReconciler) globMatch(pattern, name string) bool {
 		return strings.HasPrefix(name, prefix)
 	}
 	return pattern == name
+}
+
+// reconcileEndpointServices creates ClusterIP Services for ingress and egress StatefulSets
+// Following k8s-operator service creation patterns for backend connectivity
+func (r *TailscaleEndpointsReconciler) reconcileEndpointServices(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, endpoint *gatewayv1alpha1.TailscaleEndpoint, ingressRef, egressRef *gatewayv1alpha1.StatefulSetReference) error {
+	logger := log.FromContext(ctx)
+
+	// Create service for ingress StatefulSet (external → tailscale)
+	if err := r.createEndpointService(ctx, endpoints, endpoint, ingressRef, "ingress"); err != nil {
+		return fmt.Errorf("failed to create ingress service: %w", err)
+	}
+
+	// Create service for egress StatefulSet (tailscale → external) 
+	if err := r.createEndpointService(ctx, endpoints, endpoint, egressRef, "egress"); err != nil {
+		return fmt.Errorf("failed to create egress service: %w", err)
+	}
+
+	logger.Info("Successfully reconciled endpoint services", "endpoint", endpoint.Name)
+	return nil
+}
+
+// createEndpointService creates a ClusterIP Service for a StatefulSet
+// Following k8s-operator service patterns with proper labeling for discovery
+func (r *TailscaleEndpointsReconciler) createEndpointService(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, endpoint *gatewayv1alpha1.TailscaleEndpoint, ssRef *gatewayv1alpha1.StatefulSetReference, connectionType string) error {
+	serviceName := ssRef.Name + "-service"
+	
+	// Labels for service discovery by extension server
+	labels := map[string]string{
+		"app.kubernetes.io/name":         "tailscale-endpoint-service",
+		"app.kubernetes.io/instance":     endpoints.Name,
+		"app.kubernetes.io/component":    connectionType,
+		"app.kubernetes.io/managed-by":   "tailscale-gateway-operator",
+		"gateway.tailscale.com/endpoint": endpoint.Name,
+		"gateway.tailscale.com/type":     connectionType,
+		"gateway.tailscale.com/tailnet":  endpoints.Spec.Tailnet,
+	}
+
+	// Annotations for additional metadata
+	annotations := map[string]string{
+		"gateway.tailscale.com/statefulset":    ssRef.Name,
+		"gateway.tailscale.com/endpoint-name":  endpoint.Name,
+		"gateway.tailscale.com/protocol":       endpoint.Protocol,
+		"gateway.tailscale.com/tailscale-ip":   endpoint.TailscaleIP,
+		"gateway.tailscale.com/tailscale-fqdn": endpoint.TailscaleFQDN,
+	}
+
+	// Add external target annotation for egress services
+	if connectionType == "egress" && endpoint.ExternalTarget != "" {
+		annotations["gateway.tailscale.com/external-target"] = endpoint.ExternalTarget
+	}
+
+	// Determine service port - use endpoint port or default based on protocol
+	servicePort := endpoint.Port
+	if servicePort == 0 {
+		if endpoint.Protocol == "HTTPS" {
+			servicePort = 443
+		} else {
+			servicePort = 80
+		}
+	}
+
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        serviceName,
+			Namespace:   endpoints.Namespace,
+			Labels:      labels,
+			Annotations: annotations,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(endpoints, gatewayv1alpha1.GroupVersion.WithKind("TailscaleEndpoints")),
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Type: corev1.ServiceTypeClusterIP,
+			Ports: []corev1.ServicePort{
+				{
+					Name:     strings.ToLower(endpoint.Protocol),
+					Port:     servicePort,
+					Protocol: corev1.ProtocolTCP,
+				},
+			},
+			Selector: map[string]string{
+				"app.kubernetes.io/name":         "tailscale-endpoint",
+				"app.kubernetes.io/instance":     endpoints.Name,
+				"app.kubernetes.io/component":    connectionType,
+				"gateway.tailscale.com/endpoint": endpoint.Name,
+				"gateway.tailscale.com/type":     connectionType,
+			},
+		},
+	}
+
+	return r.createOrUpdate(ctx, service, func() {
+		service.Labels = labels
+		service.Annotations = annotations
+		service.Spec.Ports = []corev1.ServicePort{
+			{
+				Name:     strings.ToLower(endpoint.Protocol),
+				Port:     servicePort,
+				Protocol: corev1.ProtocolTCP,
+			},
+		}
+	})
 }
 
 // SetupWithManager sets up the controller with the Manager.

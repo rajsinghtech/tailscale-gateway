@@ -1,0 +1,70 @@
+# Cluster1-specific service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster1-api
+  namespace: default
+  labels:
+    app: cluster1-api
+    cluster: cluster1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cluster1-api
+  template:
+    metadata:
+      labels:
+        app: cluster1-api
+        cluster: cluster1
+    spec:
+      containers:
+      - name: api
+        image: ealen/echo-server:latest
+        ports:
+        - containerPort: 80
+        env:
+        - name: PORT
+          value: "80"
+        - name: ECHO_INCLUDE_ENV_VARS
+          value: "CLUSTER_ID"
+        - name: CLUSTER_ID
+          value: "cluster1"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cluster1-api
+  namespace: default
+  labels:
+    app: cluster1-api
+    cluster: cluster1
+spec:
+  selector:
+    app: cluster1-api
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+  type: ClusterIP
+---
+# Route for cluster1 service
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: cluster1-api-route
+  namespace: default
+spec:
+  parentRefs:
+  - name: eg
+    namespace: envoy-gateway-system
+  hostnames:
+  - "cluster1-api.test.local"
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: cluster1-api
+      port: 80

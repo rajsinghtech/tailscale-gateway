@@ -36,10 +36,10 @@ spec:
         image: "{{ .Values.extensionServer.image.repository }}:{{ .Values.extensionServer.image.tag }}"
         imagePullPolicy: {{ .Values.extensionServer.image.pullPolicy }}
         args:
-        - --grpc-port={{ .Values.extensionServer.grpcPort }}
-        - --health-probe-bind-address=:{{ .Values.extensionServer.healthProbePort }}
-        - --metrics-bind-address=:{{ .Values.extensionServer.metricsPort }}
-        - --leader-elect=false
+          - --grpc-port={{ .Values.extensionServer.grpcPort }}
+          - --health-probe-bind-address=:{{ .Values.extensionServer.healthProbePort }}
+          - --metrics-bind-address=:{{ .Values.extensionServer.metricsPort }}
+          - --leader-elect=false
         ports:
         - name: grpc
           containerPort: {{ .Values.extensionServer.grpcPort }}

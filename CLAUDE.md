@@ -8,47 +8,61 @@ The Tailscale Gateway Operator combines the power of [Tailscale](https://tailsca
 
 ## Architecture Overview
 
-The operator follows a multi-layered architecture enabling traffic flow from Tailscale clients to external services through Envoy Gateway:
+The operator follows a unified architecture combining the power of Tailscale mesh networking with Envoy Gateway for complete bidirectional traffic flow:
 
-1. **Extension Server**: gRPC server implementing Envoy Gateway extension hooks for dynamic route and cluster injection
-2. **TailscaleEndpoints Controller**: Manages Tailscale service discovery and external service mappings  
-3. **Multi-Tailnet Manager**: Manages multiple Tailscale network connections with isolated state per tailnet
+1. **Integrated Extension Server**: gRPC server running within the main operator for dynamic route and cluster injection
+2. **TailscaleEndpoints Controller**: Manages service discovery, StatefulSet creation, and Service exposure
+3. **HTTPRoute Discovery**: Automatic discovery and integration of Gateway API HTTPRoutes with Tailscale backends
+4. **Service Mesh Integration**: Complete service discovery bridging Kubernetes Services and Tailscale networks
 
-### Traffic Flow Architecture
+### Bidirectional Traffic Flow Architecture
 
 ```
 ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────────┐
-│   Tailscale     │────│   Envoy Gateway  │────│  External Services  │
-│   Clients       │    │   (with routes   │    │  (via extension     │
-└─────────────────┘    │   injected by    │    │   server mapping)   │
-                       │   extension)     │    └─────────────────────┘
+│   Tailscale     │◄──►│   Envoy Gateway  │◄──►│  Kubernetes         │
+│   Clients       │    │   (Integrated    │    │  Services           │
+└─────────────────┘    │   Extension)     │    └─────────────────────┘
                        └──────────────────┘               ▲
                                 │                         │
                                 │                         │
-                       ┌──────────────────┐               │
-                       │   Extension      │───────────────┘
-                       │     Server       │
-                       └──────────────────┘
+                    ┌───────────▼───────────┐             │
+                    │  Tailscale Gateway    │             │
+                    │     Operator          │             │
+                    │  (Integrated Ext.)    │◄────────────┘
+                    └───────────┬───────────┘
                                 │
-                                │
-                       ┌──────────────────┐
-                       │ TailscaleEndpoints│
-                       │    Resources      │
-                       └──────────────────┘
-                                │
-                    ┌───────────┼───────────┐
-                    │           │           │
-            ┌───────▼────┐ ┌────▼────┐ ┌───▼─────┐
-            │ Corp        │ │  Dev    │ │Staging  │
-            │ Tailnet     │ │Tailnet  │ │Tailnet  │
-            └────────────┘ └─────────┘ └─────────┘
+          ┌─────────────────────┼─────────────────────┐
+          │                     │                     │
+    ┌─────▼──────┐    ┌────────▼────────┐    ┌───────▼─────┐
+    │TailscaleEnd│    │   HTTPRoute     │    │   Service   │
+    │  points    │    │   Discovery     │    │  Discovery  │
+    │ + Services │    │   + Backend     │    │   + Mesh    │
+    │(StatefulSets)│   │   Mapping       │    │ Integration │
+    └────────────┘    └─────────────────┘    └─────────────┘
+          │                     │                     │
+┌─────────┼─────────┐           │           ┌─────────┼─────────┐
+│         │         │           │           │         │         │
+│  ┌──────▼──────┐  │     ┌─────▼─────┐     │  ┌──────▼──────┐  │
+│  │   Ingress   │  │     │HTTPRoutes │     │  │ K8s Service │  │
+│  │StatefulSet  │  │     │Backends   │     │  │  Backends   │  │
+│  │+ Service    │  │     │           │     │  │             │  │
+│  └─────────────┘  │     └───────────┘     │  └─────────────┘  │
+│                   │                       │                   │
+│  ┌─────────────┐  │                       │  ┌─────────────┐  │
+│  │   Egress    │  │                       │  │ Tailscale   │  │
+│  │StatefulSet  │  │                       │  │ Ingress     │  │
+│  │+ Service    │  │                       │  │ Services    │  │
+│  └─────────────┘  │                       │  └─────────────┘  │
+└───────────────────┘                       └───────────────────┘
 ```
 
-### Flow Description
+### Integrated Extension Server Architecture
 
-- **Egress Path**: Tailscale clients → Envoy Gateway → External Services  
-- **Route Injection**: Extension server injects `/api/{service}` routes to external backends
-- **Service Discovery**: TailscaleEndpoints resources define external service mappings
+- **Single Process**: Extension server runs within the main operator process
+- **Shared State**: Direct access to controller caches and Kubernetes clients
+- **HTTPRoute Awareness**: Discovers and processes Gateway API HTTPRoutes automatically
+- **Service Discovery**: Maps HTTPRoute backends to Kubernetes Services and TailscaleEndpoints
+- **Bidirectional Routes**: Supports both ingress (external → Tailscale) and egress (Tailscale → external) traffic
 
 ## Envoy Gateway Extension Server Implementation
 
@@ -120,8 +134,8 @@ extensionManager:
 
 ### Docker Images
 
-1. **Main Operator**: `tailscale-gateway:latest`
-2. **Extension Server**: `tailscale-gateway-extension-server:latest`
+1. **Main Operator**: `tailscale-gateway:latest` (includes controllers)
+2. **Integrated Extension Server**: `tailscale-gateway-extension-server:latest` (includes extension server + manager)
 
 ### Make Targets
 
@@ -140,10 +154,11 @@ kind load docker-image tailscale-gateway-extension-server:latest
 
 ## Key Files and Locations
 
-- **Extension Server**: `internal/extension/server.go` - Complete gRPC implementation
-- **Extension Command**: `cmd/extension-server/main.go` - Executable entry point
-- **TailscaleEndpoints CRD**: `api/v1alpha1/tailscaleendpoints_types.go` - With `externalTarget` field
-- **Extension Deployment**: `config/extension-server/deployment.yaml` - Kubernetes resources
+- **Integrated Extension Server**: `internal/extension/server.go` - Complete gRPC implementation with HTTPRoute discovery
+- **Extension Server Main**: `cmd/extension-server/main.go` - Integrated entry point with controller-runtime manager
+- **TailscaleEndpoints Controller**: `internal/controller/tailscaleendpoints_controller.go` - Service creation and StatefulSet management
+- **TailscaleEndpoints CRD**: `api/v1alpha1/tailscaleendpoints_types.go` - With `externalTarget` field for Envoy integration
+- **Extension Server RBAC**: `test/simple-extension-server.yaml` - RBAC for HTTPRoutes and Services access
 - **Envoy Gateway Config**: `config/envoy-gateway/envoy-gateway-config.yaml` - Integration setup
 - **Test Resources**: `test/` - Kind cluster configuration and test manifests
 
@@ -303,6 +318,143 @@ func (sc *ServiceCoordinator) CleanupStaleConsumers(ctx context.Context) error {
 - ✅ **Status Reporting**: ServiceInfo tracking in TailscaleGateway status
 
 This multi-operator service coordination system successfully addresses the requirement: *"multiple operators in different clusters should be able to handle each other publishing services because if ones already published wouldn't we want to attach to that service instead?"*
+
+## Tailscale StatefulSet and State Management Patterns
+
+### **Learnings from Tailscale k8s-operator**
+
+Based on analysis of the official Tailscale k8s-operator codebase, here are the key patterns for StatefulSet creation and state persistence that we follow:
+
+### **State Storage Strategy**
+
+The Tailscale k8s-operator uses a hybrid approach for state persistence:
+
+```go
+// Primary state storage: Kubernetes Secrets
+args = append(args, "--state=kube:"+cfg.KubeSecret)
+if cfg.StateDir == "" {
+    cfg.StateDir = "/tmp"
+}
+args = append(args, "--statedir="+cfg.StateDir)
+```
+
+**Key State Management Principles:**
+1. **Primary State Storage**: Kubernetes Secrets (`--state=kube:<secret-name>`)
+2. **Temporary State Directory**: `/tmp` (default) for transient state
+3. **TS_STATE_DIR**: Environment variable defaults to empty, falls back to `/tmp`
+4. **Secret-based Persistence**: All persistent state stored in Kubernetes Secrets
+
+### **StatefulSet Creation Patterns**
+
+**Main Creation Logic** (from `sts.go`):
+- Uses embedded YAML templates (`proxyYaml` and `userspaceProxyYaml`) as base configurations
+- Two modes: userspace networking and privileged kernel networking
+- StatefulSet names generated using `statefulSetNameBase()` to avoid Kubernetes name length limits
+
+### **Volume Management Strategy**
+
+**Configuration Volume Mounting:**
+```go
+configVolume := corev1.Volume{
+    Name: "tailscaledconfig",
+    VolumeSource: corev1.VolumeSource{
+        Secret: &corev1.SecretVolumeSource{
+            SecretName: proxySecret,
+        },
+    },
+}
+container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+    Name:      "tailscaledconfig",
+    ReadOnly:  true,
+    MountPath: "/etc/tsconfig",
+})
+```
+
+**Multi-Tailnet Volume Strategy:**
+For high-availability ProxyGroups, each replica gets its own configuration:
+```go
+for i := range pgReplicas(pg) {
+    volumes = append(volumes, corev1.Volume{
+        Name: fmt.Sprintf("tailscaledconfig-%d", i),
+        VolumeSource: corev1.VolumeSource{
+            Secret: &corev1.SecretVolumeSource{
+                SecretName: pgConfigSecretName(pg.Name, i),
+            },
+        },
+    })
+}
+```
+
+### **Container Environment Configuration**
+
+**Critical Environment Variables:**
+```go
+TS_KUBE_SECRET: Secret name for state storage
+TS_STATE: "kube:$(POD_NAME)" for ProxyGroups
+TS_EXPERIMENTAL_VERSIONED_CONFIG_DIR: "/etc/tsconfig"
+TS_USERSPACE: "true" or "false" for networking mode
+POD_IP, POD_NAME, POD_UID: Kubernetes Pod metadata
+```
+
+### **State Secret Management**
+
+**Secret Structure:**
+- **State Secrets**: Store persistent Tailscale daemon state
+- **Config Secrets**: Store versioned tailscaled configuration files
+- **Naming Pattern**: `<name>-<replica-index>` for ProxyGroups, `<service-name>-0` for single proxies
+
+**State Consistency Checking:**
+```go
+func hasConsistentState(d map[string][]byte) bool {
+    var (
+        _, hasCurrent = d[string(ipn.CurrentProfileStateKey)]
+        _, hasKnown   = d[string(ipn.KnownProfilesStateKey)]
+        _, hasMachine = d[string(ipn.MachineKeyStateKey)]
+        hasProfile    bool
+    )
+    // Validates complete state is present
+}
+```
+
+### **Implementation Patterns for Tailscale Gateway Operator**
+
+**1. Secret-based State Storage Pattern:**
+```go
+// For each tailnet connection
+TS_KUBE_SECRET: "<tailnet-specific-secret-name>"
+TS_EXPERIMENTAL_VERSIONED_CONFIG_DIR: "/etc/tsconfig/<tailnet-name>"
+POD_NAME: Used in secret naming for ProxyGroups
+POD_UID: For state validation
+```
+
+**2. Multi-Tailnet Isolation:**
+- Each tailnet connection gets isolated state secrets
+- Separate configuration volumes per tailnet
+- Pod naming includes tailnet identifier for state isolation
+
+**3. Volume Mount Strategy:**
+- Mount config secrets read-only to `/etc/tsconfig`
+- Use `TS_EXPERIMENTAL_VERSIONED_CONFIG_DIR` to point to config mount path
+- Implement graceful shutdown hooks to ensure state consistency
+
+**4. Critical Environment Variables for Multi-Tailnet:**
+```yaml
+env:
+- name: TS_KUBE_SECRET
+  value: "tailnet-<tailnet-name>-<pod-name>"
+- name: TS_EXPERIMENTAL_VERSIONED_CONFIG_DIR
+  value: "/etc/tsconfig/<tailnet-name>"
+- name: POD_NAME
+  valueFrom:
+    fieldRef:
+      fieldPath: metadata.name
+- name: POD_UID
+  valueFrom:
+    fieldRef:
+      fieldPath: metadata.uid
+```
+
+This pattern ensures reliable state persistence, proper isolation between tailnet connections, and follows Kubernetes best practices for StatefulSet management established by the official Tailscale k8s-operator.
 
 ## Development Commands
 
