@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -381,8 +382,20 @@ func (r *TailscaleGatewayReconciler) processHTTPRoute(ctx context.Context, gatew
 	// Generate route identifier
 	routeName := fmt.Sprintf("%s/%s", httpRoute.Namespace, httpRoute.Name)
 
-	// Ensure service exists or attach to existing one
-	registration, err := r.ServiceCoordinator.EnsureServiceForRoute(ctx, routeName, targetBackend)
+	// Gather metadata for dynamic service creation
+	metadata, err := r.gatherServiceMetadata(ctx, gateway, httpRoute, targetBackend)
+	if err != nil {
+		logger.Info("Failed to gather complete metadata, using basic service creation", "error", err)
+		// Fallback to basic service creation
+		registration, err := r.ServiceCoordinator.EnsureServiceForRoute(ctx, routeName, targetBackend)
+		if err != nil {
+			return nil, fmt.Errorf("failed to ensure service for route: %w", err)
+		}
+		return registration, nil
+	}
+
+	// Ensure service exists with dynamic configuration
+	registration, err := r.ServiceCoordinator.EnsureServiceWithMetadata(ctx, routeName, targetBackend, metadata)
 	if err != nil {
 		return nil, fmt.Errorf("failed to ensure service for route: %w", err)
 	}
@@ -905,4 +918,101 @@ func (r *TailscaleGatewayReconciler) mapTailnetToTailscaleGateway(ctx context.Co
 	}
 
 	return requests
+}
+
+// gatherServiceMetadata collects metadata needed for dynamic VIP service creation
+func (r *TailscaleGatewayReconciler) gatherServiceMetadata(
+	ctx context.Context,
+	gateway *gatewayv1alpha1.TailscaleGateway,
+	httpRoute *gwapiv1.HTTPRoute,
+	targetBackend string,
+) (*service.ServiceMetadata, error) {
+	metadata := &service.ServiceMetadata{
+		Gateway:   gateway,
+		HTTPRoute: httpRoute,
+	}
+
+	// Extract service name from target backend
+	serviceName, serviceNamespace := r.parseTargetBackend(targetBackend)
+	if serviceName == "" {
+		return nil, fmt.Errorf("could not parse service name from target backend: %s", targetBackend)
+	}
+
+	// Get the Kubernetes Service
+	kubeService := &corev1.Service{}
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      serviceName,
+		Namespace: serviceNamespace,
+	}, kubeService)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Kubernetes service %s/%s: %w", serviceNamespace, serviceName, err)
+	}
+	metadata.Service = kubeService
+
+	// Get TailscaleTailnet for the first tailnet (simplified)
+	if len(gateway.Spec.Tailnets) > 0 {
+		tailnetConfig := gateway.Spec.Tailnets[0]
+		tailnetRef := tailnetConfig.TailscaleTailnetRef
+
+		tailnet := &gatewayv1alpha1.TailscaleTailnet{}
+		tailnetNamespace := httpRoute.Namespace
+		if tailnetRef.Namespace != nil {
+			tailnetNamespace = string(*tailnetRef.Namespace)
+		}
+
+		err := r.Get(ctx, types.NamespacedName{
+			Name:      string(tailnetRef.Name),
+			Namespace: tailnetNamespace,
+		}, tailnet)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get TailscaleTailnet %s/%s: %w", tailnetNamespace, tailnetRef.Name, err)
+		}
+		metadata.TailscaleTailnet = tailnet
+	}
+
+	// Try to find matching TailscaleEndpoints
+	endpoints := &gatewayv1alpha1.TailscaleEndpointsList{}
+	err = r.List(ctx, endpoints, client.InNamespace(httpRoute.Namespace))
+	if err != nil {
+		return nil, fmt.Errorf("failed to list TailscaleEndpoints: %w", err)
+	}
+
+	// Find endpoints that reference our service
+	for _, ep := range endpoints.Items {
+		for _, endpoint := range ep.Spec.Endpoints {
+			if endpoint.ExternalTarget != "" {
+				if strings.Contains(endpoint.ExternalTarget, serviceName) {
+					metadata.TailscaleEndpoints = &ep
+					break
+				}
+			}
+		}
+		if metadata.TailscaleEndpoints != nil {
+			break
+		}
+	}
+
+	return metadata, nil
+}
+
+// parseTargetBackend extracts service name and namespace from target backend string
+func (r *TailscaleGatewayReconciler) parseTargetBackend(targetBackend string) (string, string) {
+	// Handle different formats:
+	// - "service-name"
+	// - "service-name.namespace"
+	// - "service-name.namespace.svc.cluster.local"
+
+	parts := strings.Split(targetBackend, ".")
+	if len(parts) == 0 {
+		return "", ""
+	}
+
+	serviceName := parts[0]
+	serviceNamespace := "default"
+
+	if len(parts) >= 2 && parts[1] != "" {
+		serviceNamespace = parts[1]
+	}
+
+	return serviceName, serviceNamespace
 }

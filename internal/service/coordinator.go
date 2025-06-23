@@ -15,7 +15,10 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	gatewayv1alpha1 "github.com/rajsinghtech/tailscale-gateway/api/v1alpha1"
 	"github.com/rajsinghtech/tailscale-gateway/internal/tailscale"
+	corev1 "k8s.io/api/core/v1"
+	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 // ServiceCoordinator manages multi-operator service coordination
@@ -55,6 +58,20 @@ type SharedServiceMapping struct {
 	OwnerOperator    string                  `json:"ownerOperator"`
 }
 
+// ServiceMetadata contains information needed to create VIP services dynamically
+type ServiceMetadata struct {
+	// Gateway provides context about the TailscaleGateway
+	Gateway *gatewayv1alpha1.TailscaleGateway
+	// HTTPRoute provides route information
+	HTTPRoute *gwapiv1.HTTPRoute
+	// Service provides the Kubernetes service information
+	Service *corev1.Service
+	// TailscaleEndpoints provides Tailscale-specific configuration
+	TailscaleEndpoints *gatewayv1alpha1.TailscaleEndpoints
+	// TailscaleTailnet provides tailnet configuration
+	TailscaleTailnet *gatewayv1alpha1.TailscaleTailnet
+}
+
 // NewServiceCoordinator creates a new service coordinator
 func NewServiceCoordinator(tsClient tailscale.Client, kubeClient client.Client, operatorID, clusterID string, logger *zap.SugaredLogger) *ServiceCoordinator {
 	return &ServiceCoordinator{
@@ -64,6 +81,30 @@ func NewServiceCoordinator(tsClient tailscale.Client, kubeClient client.Client, 
 		clusterID:  clusterID,
 		logger:     logger,
 	}
+}
+
+// EnsureServiceWithMetadata ensures a VIP service exists with dynamic configuration
+func (sc *ServiceCoordinator) EnsureServiceWithMetadata(
+	ctx context.Context,
+	routeName string,
+	targetBackend string,
+	metadata *ServiceMetadata,
+) (*ServiceRegistration, error) {
+	serviceName := sc.GenerateServiceName(targetBackend)
+
+	// First, check if service already exists
+	existingService, err := sc.tsClient.GetVIPService(ctx, serviceName)
+	if err != nil && !isNotFoundError(err) {
+		return nil, fmt.Errorf("failed to check existing service: %w", err)
+	}
+
+	if existingService != nil {
+		// Service exists - attach to it
+		return sc.attachToExistingService(ctx, existingService, routeName)
+	}
+
+	// Service doesn't exist - create new one with dynamic configuration
+	return sc.createNewServiceWithMetadata(ctx, serviceName, targetBackend, routeName, metadata)
 }
 
 // EnsureServiceForRoute ensures a service exists for a route, creating or attaching as needed
@@ -124,6 +165,122 @@ func (sc *ServiceCoordinator) attachToExistingService(
 
 	sc.logger.Infof("Attached to existing service %s (owner: %s)",
 		service.Name, registry.OwnerOperator)
+	return registry, nil
+}
+
+// extractTagsFromMetadata extracts tags from TailscaleEndpoints and TailscaleTailnet
+func (sc *ServiceCoordinator) extractTagsFromMetadata(metadata *ServiceMetadata) []string {
+	var tags []string
+
+	// Default fallback tags if no metadata available
+	defaultTags := []string{"tag:k8s-operator", "tag:gateway"}
+
+	if metadata == nil {
+		return defaultTags
+	}
+
+	// Extract tags from TailscaleTailnet
+	if metadata.TailscaleTailnet != nil && len(metadata.TailscaleTailnet.Spec.Tags) > 0 {
+		tags = append(tags, metadata.TailscaleTailnet.Spec.Tags...)
+	}
+
+	// Extract tags from TailscaleEndpoints if available and has matching service
+	if metadata.TailscaleEndpoints != nil && metadata.Service != nil {
+		serviceName := metadata.Service.Name
+		for _, endpoint := range metadata.TailscaleEndpoints.Spec.Endpoints {
+			// Check if this endpoint matches our service
+			if endpoint.ExternalTarget != "" {
+				// Parse external target to see if it matches our service
+				if strings.Contains(endpoint.ExternalTarget, serviceName) {
+					tags = append(tags, endpoint.Tags...)
+					break
+				}
+			}
+		}
+	}
+
+	// If no tags found, use defaults
+	if len(tags) == 0 {
+		tags = defaultTags
+	}
+
+	// Ensure we have unique tags
+	return removeDuplicateStrings(tags)
+}
+
+// extractPortsFromMetadata extracts ports from HTTPRoute and Service
+func (sc *ServiceCoordinator) extractPortsFromMetadata(metadata *ServiceMetadata) []string {
+	var ports []string
+
+	// Default ports
+	defaultPorts := []string{"tcp:80", "tcp:443"}
+
+	if metadata == nil {
+		return defaultPorts
+	}
+
+	// Extract ports from Kubernetes Service
+	if metadata.Service != nil {
+		for _, port := range metadata.Service.Spec.Ports {
+			protocol := strings.ToLower(string(port.Protocol))
+			if protocol == "" {
+				protocol = "tcp"
+			}
+			ports = append(ports, fmt.Sprintf("%s:%d", protocol, port.Port))
+		}
+	}
+
+	// If no ports found, use defaults
+	if len(ports) == 0 {
+		ports = defaultPorts
+	}
+
+	return removeDuplicateStrings(ports)
+}
+
+// createNewServiceWithMetadata creates a new VIP service with dynamic configuration
+func (sc *ServiceCoordinator) createNewServiceWithMetadata(
+	ctx context.Context,
+	serviceName tailscale.ServiceName,
+	targetBackend string,
+	routeName string,
+	metadata *ServiceMetadata,
+) (*ServiceRegistration, error) {
+	// Create new service registry
+	registry := &ServiceRegistration{
+		ServiceName:   serviceName,
+		OwnerOperator: sc.operatorID,
+		ConsumerClusters: map[string]ConsumerInfo{
+			fmt.Sprintf("%s-%s", sc.clusterID, sc.operatorID): {
+				OperatorID: sc.operatorID,
+				ClusterID:  sc.clusterID,
+				LastSeen:   time.Now(),
+				Routes:     []string{routeName},
+			},
+		},
+		LastUpdated: time.Now(),
+	}
+
+	// Extract dynamic configuration from metadata
+	tags := sc.extractTagsFromMetadata(metadata)
+	ports := sc.extractPortsFromMetadata(metadata)
+
+	// Create VIP service with dynamic configuration
+	vipService := &tailscale.VIPService{
+		Name:        serviceName,
+		Tags:        tags,
+		Comment:     fmt.Sprintf("Multi-cluster service: %s", targetBackend),
+		Annotations: sc.encodeServiceRegistry(registry),
+		Ports:       ports,
+	}
+
+	// Create the service
+	if err := sc.tsClient.CreateOrUpdateVIPService(ctx, vipService); err != nil {
+		return nil, fmt.Errorf("failed to create VIP service: %w", err)
+	}
+
+	sc.logger.Infof("Created new service %s with tags %v and ports %v (owner: %s)",
+		serviceName, tags, ports, sc.operatorID)
 	return registry, nil
 }
 
@@ -408,4 +565,19 @@ func mergeAnnotations(existing, new map[string]string) map[string]string {
 		existing[k] = v
 	}
 	return existing
+}
+
+// removeDuplicateStrings removes duplicate strings from a slice
+func removeDuplicateStrings(strings []string) []string {
+	keys := make(map[string]bool)
+	result := []string{}
+
+	for _, str := range strings {
+		if !keys[str] {
+			keys[str] = true
+			result = append(result, str)
+		}
+	}
+
+	return result
 }

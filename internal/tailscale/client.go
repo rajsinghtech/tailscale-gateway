@@ -36,7 +36,7 @@ type (
 	// vipServiceAPIResponse matches the actual API response format
 	vipServiceAPIResponse struct {
 		Name        ServiceName       `json:"name"`
-		Addrs       []netip.Addr      `json:"addrs"`        // API returns netip.Addr
+		Addrs       []netip.Addr      `json:"addrs"` // API returns netip.Addr
 		Comment     string            `json:"comment"`
 		Annotations map[string]string `json:"annotations"`
 		Ports       []string          `json:"ports"`
@@ -69,48 +69,48 @@ const (
 var (
 	// validServiceNameRegex validates the service name part after "svc:"
 	validServiceNameRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
-	
+
 	// reservedServiceNames that cannot be used
 	reservedServiceNames = map[string]bool{
-		"localhost":   true,
-		"wpad":        true,
-		"autoconfig":  true,
-		"isatap":      true,
-		"teredo":      true,
-		"autorouter":  true,
+		"localhost":  true,
+		"wpad":       true,
+		"autoconfig": true,
+		"isatap":     true,
+		"teredo":     true,
+		"autorouter": true,
 	}
 )
 
 // Validate checks if the service name follows required format and rules
 func (name ServiceName) Validate() error {
 	nameStr := string(name)
-	
+
 	// Must start with "svc:" prefix
 	if !strings.HasPrefix(nameStr, "svc:") {
 		return fmt.Errorf("service name must start with 'svc:' prefix, got: %s", nameStr)
 	}
-	
+
 	// Extract the actual service name
 	baseName := strings.TrimPrefix(nameStr, "svc:")
 	if baseName == "" {
 		return fmt.Errorf("service name cannot be empty after 'svc:' prefix")
 	}
-	
+
 	// Check length (DNS label limit)
 	if len(baseName) > 63 {
 		return fmt.Errorf("service name too long (max 63 characters): %s", baseName)
 	}
-	
+
 	// Check for reserved names
 	if reservedServiceNames[strings.ToLower(baseName)] {
 		return fmt.Errorf("service name '%s' is reserved", baseName)
 	}
-	
+
 	// Validate as DNS label
 	if !validServiceNameRegex.MatchString(baseName) {
 		return fmt.Errorf("service name must be a valid DNS label (lowercase letters, numbers, hyphens): %s", baseName)
 	}
-	
+
 	return nil
 }
 
@@ -126,7 +126,7 @@ func convertAPIResponseToVIPService(apiResp vipServiceAPIResponse) *VIPService {
 	for i, addr := range apiResp.Addrs {
 		addrs[i] = addr.String()
 	}
-	
+
 	return &VIPService{
 		Name:        apiResp.Name,
 		Tags:        apiResp.Tags,
@@ -143,15 +143,15 @@ func parseAPIError(resp *http.Response) error {
 	if err := json.NewDecoder(resp.Body).Decode(&errBody); err != nil {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	
+
 	if message, ok := errBody["message"].(string); ok {
 		return fmt.Errorf("API error: %s", message)
 	}
-	
+
 	if detail, ok := errBody["detail"].(string); ok {
 		return fmt.Errorf("API error: %s", detail)
 	}
-	
+
 	return fmt.Errorf("HTTP %d", resp.StatusCode)
 }
 
@@ -196,9 +196,9 @@ type ClientConfig struct {
 // clientImpl implements the Client interface
 type clientImpl struct {
 	*tailscaleclient.Client
-	tailnet     string
-	baseURL     string
-	httpClient  *http.Client
+	tailnet    string
+	baseURL    string
+	httpClient *http.Client
 }
 
 // NewClient creates a new Tailscale API client with OAuth authentication
@@ -319,21 +319,21 @@ func (c *clientImpl) GetVIPService(ctx context.Context, serviceName ServiceName)
 	if err := serviceName.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid service name: %w", err)
 	}
-	
+
 	// Use real Tailscale VIP service API
 	url := fmt.Sprintf("%s/api/v2/tailnet/%s/vip-services/%s", c.baseURL, c.tailnet, serviceName)
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("error creating request: %w", err)
 	}
-	
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("error making request: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	switch resp.StatusCode {
 	case http.StatusOK:
 		// Parse the API response
@@ -341,15 +341,15 @@ func (c *clientImpl) GetVIPService(ctx context.Context, serviceName ServiceName)
 		if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
 			return nil, fmt.Errorf("error decoding response: %w", err)
 		}
-		
+
 		return convertAPIResponseToVIPService(apiResp), nil
-		
+
 	case http.StatusNotFound:
 		return nil, fmt.Errorf("VIP service %s not found", serviceName)
-		
+
 	case http.StatusForbidden:
 		return nil, fmt.Errorf("VIP services feature not enabled or insufficient permissions")
-		
+
 	default:
 		return nil, parseAPIError(resp)
 	}
@@ -359,18 +359,18 @@ func (c *clientImpl) GetVIPService(ctx context.Context, serviceName ServiceName)
 func (c *clientImpl) GetVIPServices(ctx context.Context) ([]*VIPService, error) {
 	// Use real Tailscale VIP service API
 	url := fmt.Sprintf("%s/api/v2/tailnet/%s/vip-services/", c.baseURL, c.tailnet)
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("error creating request: %w", err)
 	}
-	
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("error making request: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	switch resp.StatusCode {
 	case http.StatusOK:
 		// Parse the API response
@@ -378,18 +378,18 @@ func (c *clientImpl) GetVIPServices(ctx context.Context) ([]*VIPService, error) 
 		if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
 			return nil, fmt.Errorf("error decoding response: %w", err)
 		}
-		
+
 		// Convert to internal format
 		services := make([]*VIPService, len(apiResp.VIPServices))
 		for i, svc := range apiResp.VIPServices {
 			services[i] = convertAPIResponseToVIPService(svc)
 		}
-		
+
 		return services, nil
-		
+
 	case http.StatusForbidden:
 		return nil, fmt.Errorf("VIP services feature not enabled or insufficient permissions")
-		
+
 	default:
 		return nil, parseAPIError(resp)
 	}
@@ -402,18 +402,18 @@ func (c *clientImpl) GetVIPServicesByTags(ctx context.Context, tags []string) ([
 	if err != nil {
 		return nil, fmt.Errorf("error getting VIP services: %w", err)
 	}
-	
+
 	if len(tags) == 0 {
 		return allServices, nil
 	}
-	
+
 	var filteredServices []*VIPService
 	for _, service := range allServices {
 		if hasAnyTag(service.Tags, tags) {
 			filteredServices = append(filteredServices, service)
 		}
 	}
-	
+
 	return filteredServices, nil
 }
 
@@ -435,10 +435,10 @@ func (c *clientImpl) CreateOrUpdateVIPService(ctx context.Context, service *VIPS
 	if err := c.ValidateVIPService(service); err != nil {
 		return fmt.Errorf("invalid VIP service: %w", err)
 	}
-	
+
 	// Use real Tailscale VIP service API
 	url := fmt.Sprintf("%s/api/v2/tailnet/%s/vip-services/%s", c.baseURL, c.tailnet, service.Name)
-	
+
 	// Use proper request format (include addrs for updates)
 	request := putVIPServiceRequest{
 		Name:        service.Name,
@@ -448,37 +448,37 @@ func (c *clientImpl) CreateOrUpdateVIPService(ctx context.Context, service *VIPS
 		Tags:        service.Tags,
 		Addrs:       service.Addrs,
 	}
-	
+
 	data, err := json.Marshal(request)
 	if err != nil {
 		return fmt.Errorf("error marshaling request: %w", err)
 	}
-	
+
 	req, err := http.NewRequestWithContext(ctx, "PUT", url, bytes.NewBuffer(data))
 	if err != nil {
 		return fmt.Errorf("error creating request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("error making request: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusCreated:
 		return nil
-		
+
 	case http.StatusBadRequest:
 		return parseAPIError(resp)
-		
+
 	case http.StatusForbidden:
 		return fmt.Errorf("VIP services feature not enabled or insufficient permissions")
-		
+
 	case http.StatusConflict:
 		return fmt.Errorf("service name already in use by another service")
-		
+
 	default:
 		return parseAPIError(resp)
 	}
@@ -490,32 +490,32 @@ func (c *clientImpl) DeleteVIPService(ctx context.Context, serviceName ServiceNa
 	if err := serviceName.Validate(); err != nil {
 		return fmt.Errorf("invalid service name: %w", err)
 	}
-	
+
 	// Use real Tailscale VIP service API
 	url := fmt.Sprintf("%s/api/v2/tailnet/%s/vip-services/%s", c.baseURL, c.tailnet, serviceName)
-	
+
 	req, err := http.NewRequestWithContext(ctx, "DELETE", url, nil)
 	if err != nil {
 		return fmt.Errorf("error creating request: %w", err)
 	}
-	
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("error making request: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusNoContent:
 		return nil
-		
+
 	case http.StatusNotFound:
 		// Service already doesn't exist, consider it success
 		return nil
-		
+
 	case http.StatusForbidden:
 		return fmt.Errorf("VIP services feature not enabled or insufficient permissions")
-		
+
 	default:
 		return parseAPIError(resp)
 	}
@@ -526,26 +526,26 @@ func (c *clientImpl) ValidateVIPService(service *VIPService) error {
 	if service == nil {
 		return fmt.Errorf("service cannot be nil")
 	}
-	
+
 	// Validate service name
 	if err := service.Name.Validate(); err != nil {
 		return fmt.Errorf("invalid service name: %w", err)
 	}
-	
+
 	// Validate ports format
 	for _, port := range service.Ports {
 		if err := validatePortSpec(port); err != nil {
 			return fmt.Errorf("invalid port specification '%s': %w", port, err)
 		}
 	}
-	
+
 	// Validate tags format (basic validation)
 	for _, tag := range service.Tags {
 		if strings.TrimSpace(tag) == "" {
 			return fmt.Errorf("empty tag not allowed")
 		}
 	}
-	
+
 	return nil
 }
 
@@ -554,25 +554,25 @@ func validatePortSpec(portSpec string) error {
 	if portSpec == "do-not-validate" {
 		return nil
 	}
-	
+
 	// Basic validation for tcp:port or udp:port format
 	if !strings.Contains(portSpec, ":") {
 		return fmt.Errorf("port must be in format 'protocol:port' or 'protocol:startport-endport'")
 	}
-	
+
 	parts := strings.SplitN(portSpec, ":", 2)
 	protocol := strings.ToLower(parts[0])
-	
+
 	if protocol != "tcp" && protocol != "udp" {
 		return fmt.Errorf("protocol must be 'tcp' or 'udp'")
 	}
-	
+
 	// Port validation could be more detailed here
 	// For now, just check it's not empty
 	if strings.TrimSpace(parts[1]) == "" {
 		return fmt.Errorf("port cannot be empty")
 	}
-	
+
 	return nil
 }
 
