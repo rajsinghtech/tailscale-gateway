@@ -33,7 +33,7 @@ spec:
         securityContext:
           {{- toYaml .Values.securityContext | nindent 10 }}
           runAsUser: 65532
-        image: "{{ .Values.extensionServer.image.repository }}:{{ .Values.extensionServer.image.tag }}"
+        image: "{{ .Values.extensionServer.image.repository }}:{{ .Values.extensionServer.image.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.extensionServer.image.pullPolicy }}
         args:
         - --grpc-port={{ .Values.extensionServer.grpcPort }}

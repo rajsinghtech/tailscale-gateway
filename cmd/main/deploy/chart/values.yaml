@@ -7,7 +7,7 @@ operator:
   
   # Image configuration
   image:
-    repository: ghcr.io/rajsinghtech/tailscale-gateway-operator
+    repository: ghcr.io/rajsinghtech/tailscale-gateway
     pullPolicy: IfNotPresent
     # Overrides the image tag whose default is the chart appVersion.
     tag: ""
@@ -115,7 +115,8 @@ extensionServer:
   image:
     repository: ghcr.io/rajsinghtech/tailscale-gateway-extension-server
     pullPolicy: IfNotPresent
-    tag: "latest"
+    # Overrides the image tag whose default is the chart appVersion.
+    tag: ""
   
   # gRPC and probe port configuration
   grpcPort: 5005

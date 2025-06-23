@@ -45,10 +45,14 @@ jobs:
         echo "full=${VERSION}" >> $GITHUB_OUTPUT
         echo "clean=${CLEAN_VERSION}" >> $GITHUB_OUTPUT
 
-    - name: Update chart version
+    - name: Update chart version and image tags
       run: |
+        # Update chart version and appVersion
         sed -i "s/version: .*/version: ${{ steps.version.outputs.clean }}/" cmd/main/deploy/chart/Chart.yaml
         sed -i "s/appVersion: .*/appVersion: \"${{ steps.version.outputs.full }}\"/" cmd/main/deploy/chart/Chart.yaml
+        
+        # Update default image tags in values.yaml
+        sed -i "s/tag: \"\"/tag: \"${{ steps.version.outputs.full }}\"/g" cmd/main/deploy/chart/values.yaml
 
     - name: Log in to GitHub Container Registry
       run: |
