@@ -19,7 +19,7 @@ spec:
       serviceAccountName: tailscale-gateway-operator
       containers:
       - name: manager
-        image: tailscale-gateway-operator:test-hash-fix
+        image: tailscale-gateway-operator:latest
         imagePullPolicy: Never
         ports:
         - containerPort: 8080

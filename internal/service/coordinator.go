@@ -152,7 +152,7 @@ func (sc *ServiceCoordinator) createNewService(
 	// Create VIP service with registry metadata
 	vipService := &tailscale.VIPService{
 		Name:        serviceName,
-		Tags:        []string{"tag:gateway-operator", "tag:multi-cluster-service"},
+		Tags:        []string{"tag:k8s-operator", "tag:test"},
 		Comment:     fmt.Sprintf("Multi-cluster service: %s", targetBackend),
 		Annotations: sc.encodeServiceRegistry(registry),
 		Ports:       []string{"tcp:80", "tcp:443"},

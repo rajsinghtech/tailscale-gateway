@@ -55,7 +55,7 @@ type (
 		Annotations map[string]string `json:"annotations,omitempty"`
 		Ports       []string          `json:"ports,omitempty"`
 		Tags        []string          `json:"tags,omitempty"`
-		// Addrs are auto-allocated by the server, don't include in requests
+		Addrs       []string          `json:"addrs,omitempty"` // Required for updates
 	}
 )
 
@@ -439,13 +439,14 @@ func (c *clientImpl) CreateOrUpdateVIPService(ctx context.Context, service *VIPS
 	// Use real Tailscale VIP service API
 	url := fmt.Sprintf("%s/api/v2/tailnet/%s/vip-services/%s", c.baseURL, c.tailnet, service.Name)
 	
-	// Use proper request format (don't include addrs - they are auto-allocated)
+	// Use proper request format (include addrs for updates)
 	request := putVIPServiceRequest{
 		Name:        service.Name,
 		Comment:     service.Comment,
 		Annotations: service.Annotations,
 		Ports:       service.Ports,
 		Tags:        service.Tags,
+		Addrs:       service.Addrs,
 	}
 	
 	data, err := json.Marshal(request)
