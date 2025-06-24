@@ -108,7 +108,8 @@ func readAllCRDs(crdDir string) (string, error) {
 		return "", err
 	}
 
-	for i, entry := range entries {
+	crdCount := 0
+	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
 			continue
 		}
@@ -118,9 +119,13 @@ func readAllCRDs(crdDir string) (string, error) {
 			return "", fmt.Errorf("failed to read CRD %s: %w", entry.Name(), err)
 		}
 
-		if i > 0 {
-			buf.WriteString("---\n")
+		// For the first CRD, don't add a separator (the template has "--- " already)
+		// For subsequent CRDs, add separator
+		if crdCount > 0 {
+			buf.WriteString("\n---\n")
 		}
+		crdCount++
+
 		buf.Write(content)
 	}
 
@@ -136,13 +141,23 @@ func replacePlaceholder(template, content string) string {
 		return template
 	}
 
-	// Keep the placeholder markers and indent the content
+	// Find the newline after the placeholder start line (which ends with " ---")
+	placeholderLineEnd := strings.Index(template[startIdx:], "\n")
+	if placeholderLineEnd == -1 {
+		log.Printf("Warning: Could not find end of PLACEHOLDER_CRDS_START line")
+		return template
+	}
+	
+	// Position right after the newline of the placeholder start line
+	afterPlaceholderLine := startIdx + placeholderLineEnd + 1
+
+	// Keep the placeholder markers and replace everything between them
 	indentedContent := indentContent(content, 0)
 
-	before := template[:startIdx+len(crdPlaceholderStart)]
+	before := template[:afterPlaceholderLine]
 	after := template[endIdx:]
 
-	return before + "\n" + indentedContent + "\n" + after
+	return before + indentedContent + "\n" + after
 }
 
 func indentContent(content string, spaces int) string {

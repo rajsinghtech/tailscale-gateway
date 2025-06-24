@@ -40,6 +40,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(gwapiv1.AddToScheme(scheme))
+	utilruntime.Must(gwapiv1alpha2.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 

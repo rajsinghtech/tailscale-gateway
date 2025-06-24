@@ -1,6 +1,7 @@
 {{- if .Values.installCRDs }}
 # CRDs are inserted here by the generate tool  
 # PLACEHOLDER_CRDS_START ---
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -1368,6 +1369,8 @@ spec:
     storage: true
     subresources:
       status: {}
+
+---
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -3043,6 +3046,8 @@ spec:
     storage: true
     subresources:
       status: {}
+
+---
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -4211,6 +4216,8 @@ spec:
     storage: true
     subresources:
       status: {}
+
+---
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
