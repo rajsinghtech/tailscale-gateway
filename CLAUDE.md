@@ -130,6 +130,35 @@ extensionManager:
       port: 5005
 ```
 
+### Extension Server Features
+
+The extension server has been enhanced with production-grade features:
+
+1. **Gateway API Compliance**: 
+   - Supports TailscaleEndpoints as backendRefs in all Gateway API route types
+   - Processes HTTPRoute, TCPRoute, UDPRoute, TLSRoute, and GRPCRoute
+   - No longer relies on annotations - uses standard Gateway API patterns
+
+2. **Configuration-Driven Route Generation**:
+   - Respects RouteGenerationConfig from TailscaleGateway resources
+   - No hardcoded `/api/` patterns - fully configurable route prefixes
+   - Hot configuration reloading for dynamic updates
+
+3. **Resource Indexing**:
+   - Bidirectional mapping between TailscaleEndpoints and routes
+   - VIP service relationship tracking
+   - Performance metrics and update tracking
+
+4. **Observability**:
+   - HTTP endpoints: `/metrics`, `/health`, `/healthz`, `/ready`
+   - JSON-formatted metrics with hook call statistics
+   - Health checks with threshold-based degradation detection
+   - Failure rate monitoring (>10% triggers degraded status)
+
+5. **Event-Driven Coordination**:
+   - Event channels between controllers for real-time updates
+   - Cross-controller communication for resource changes
+
 ## Build and Deployment
 
 ### Docker Images
@@ -157,10 +186,18 @@ kind load docker-image tailscale-gateway-extension-server:latest
 - **Integrated Extension Server**: `internal/extension/server.go` - Complete gRPC implementation with HTTPRoute discovery
 - **Extension Server Main**: `cmd/extension-server/main.go` - Integrated entry point with controller-runtime manager
 - **TailscaleEndpoints Controller**: `internal/controller/tailscaleendpoints_controller.go` - Service creation and StatefulSet management
+- **TailscaleRoutePolicy Controller**: `internal/controller/tailscaleroutepolicy_controller.go` - Policy processing for Gateway API resources
 - **TailscaleEndpoints CRD**: `api/v1alpha1/tailscaleendpoints_types.go` - With `externalTarget` field for Envoy integration
 - **Extension Server RBAC**: `test/simple-extension-server.yaml` - RBAC for HTTPRoutes and Services access
 - **Envoy Gateway Config**: `config/envoy-gateway/envoy-gateway-config.yaml` - Integration setup
 - **Test Resources**: `test/` - Kind cluster configuration and test manifests
+
+### Testing
+
+Comprehensive test coverage includes:
+- **Extension Server Tests**: `internal/extension/server_test.go` - Unit tests for all features
+- **Integration Tests**: `internal/extension/integration_test.go` - Gateway API compliance testing
+- **HTTP Endpoint Tests**: Tests for metrics and health check endpoints with various scenarios
 
 ## Multi-Operator Service Coordination
 
@@ -470,6 +507,73 @@ make manifests
 make docker-build
 make deploy
 ```
+
+## Important Implementation Patterns
+
+### Extension Server Core Structs
+
+```go
+// Main server struct with all components
+type TailscaleExtensionServer struct {
+    pb.UnimplementedEnvoyGatewayExtensionServer
+    client             client.Client
+    tailscaleManager   *TailscaleManager
+    xdsDiscovery       *XDSServiceDiscovery
+    logger             *slog.Logger
+    serviceCoordinator *service.ServiceCoordinator
+    configCache        *ConfigCache
+    resourceIndex      *ResourceIndex
+    metrics            *ExtensionServerMetrics
+    mu                 sync.RWMutex
+}
+
+// Metrics tracking
+type ExtensionServerMetrics struct {
+    totalHookCalls      int64
+    successfulCalls     int64
+    failedCalls         int64
+    lastCallDuration    time.Duration
+    averageCallDuration time.Duration
+    hookTypeMetrics     map[string]*HookTypeMetrics
+    mu                  sync.RWMutex
+}
+
+// Resource indexing for performance
+type ResourceIndex struct {
+    endpointsToHTTPRoutes map[string][]string
+    httpRoutesToEndpoints map[string][]string
+    endpointsToVIPServices map[string][]VIPServiceReference
+    vipServicesToEndpoints map[string][]string
+    // Similar mappings for TCP, UDP, TLS, GRPC routes
+    indexUpdateCount int64
+    lastIndexUpdate  time.Time
+    mu sync.RWMutex
+}
+```
+
+### Gateway API Backend Processing Pattern
+
+All route types follow this pattern for TailscaleEndpoints backends:
+```go
+// Check if backend is TailscaleEndpoints
+if backendRef.Group != nil && *backendRef.Group == "gateway.tailscale.com" &&
+   backendRef.Kind != nil && *backendRef.Kind == "TailscaleEndpoints" {
+    // Process TailscaleEndpoints backend
+}
+```
+
+### HTTP Observability Endpoints
+
+The extension server provides HTTP endpoints on a separate port:
+- `/metrics` - JSON metrics about hook calls, resource counts, cache stats
+- `/health` - Health check with degradation detection
+- `/healthz` - Kubernetes-style health endpoint  
+- `/ready` - Readiness check
+
+Health degradation triggers:
+- Hook call failure rate > 10%
+- Config cache older than 10 minutes
+- Resource index older than 10 minutes
 
 # important-instruction-reminders
 Do what has been asked; nothing more, nothing less.

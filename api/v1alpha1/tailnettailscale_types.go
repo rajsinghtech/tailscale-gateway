@@ -68,6 +68,35 @@ type TailscaleTailnetStatus struct {
 	// communicated with the Tailscale API for this tailnet.
 	// +optional
 	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
+
+	// APIStatus provides detailed information about Tailscale API communication
+	// +optional
+	APIStatus *TailscaleAPIStatus `json:"apiStatus,omitempty"`
+
+	// CredentialStatus tracks OAuth credential validation
+	// +optional
+	CredentialStatus *CredentialStatus `json:"credentialStatus,omitempty"`
+
+	// OperationalMetrics provides performance and operational insights
+	// +optional
+	OperationalMetrics *OperationalMetrics `json:"operationalMetrics,omitempty"`
+
+	// RecentErrors tracks recent operational errors with context
+	// +optional
+	// +listType=atomic
+	RecentErrors []DetailedError `json:"recentErrors,omitempty"`
+
+	// DeviceCount total number of devices in this tailnet
+	// +optional
+	DeviceCount *int32 `json:"deviceCount,omitempty"`
+
+	// ConnectedDevices number of currently connected devices
+	// +optional
+	ConnectedDevices *int32 `json:"connectedDevices,omitempty"`
+
+	// FeatureFlags available features for this tailnet
+	// +optional
+	FeatureFlags []string `json:"featureFlags,omitempty"`
 }
 
 // TailnetInfo contains essential metadata about a connected tailnet
@@ -82,6 +111,26 @@ type TailnetInfo struct {
 	// Organization is the organization name if applicable.
 	// +optional
 	Organization *string `json:"organization,omitempty"`
+
+	// TailnetID is the unique identifier for this tailnet
+	// +optional
+	TailnetID *string `json:"tailnetID,omitempty"`
+
+	// PlanType indicates the Tailscale plan (Personal, Business, Enterprise)
+	// +optional
+	PlanType *string `json:"planType,omitempty"`
+
+	// Region indicates the primary region for this tailnet
+	// +optional
+	Region *string `json:"region,omitempty"`
+
+	// CreatedAt when the tailnet was created
+	// +optional
+	CreatedAt *metav1.Time `json:"createdAt,omitempty"`
+
+	// LastUpdated when the tailnet info was last updated
+	// +optional
+	LastUpdated *metav1.Time `json:"lastUpdated,omitempty"`
 }
 
 // ConditionType represents the type of condition for TailscaleTailnet
@@ -99,21 +148,43 @@ const (
 )
 
 const (
-	// ReasonReady indicates the tailnet is ready
-	ReasonReady = "Ready"
-
-	// ReasonAuthenticationFailed indicates OAuth authentication failed
-	ReasonAuthenticationFailed = "AuthenticationFailed"
-
 	// ReasonInvalidConfiguration indicates invalid tailnet configuration
 	ReasonInvalidConfiguration = "InvalidConfiguration"
-
-	// ReasonAPIError indicates a Tailscale API error
-	ReasonAPIError = "APIError"
-
-	// ReasonPending indicates the tailnet is being set up
-	ReasonPending = "Pending"
 )
+
+// CredentialStatus tracks OAuth credential validation and status
+type CredentialStatus struct {
+	// Valid indicates if the credentials are currently valid
+	Valid bool `json:"valid"`
+
+	// LastValidated when credentials were last validated
+	// +optional
+	LastValidated *metav1.Time `json:"lastValidated,omitempty"`
+
+	// ExpiresAt when the current token expires (if applicable)
+	// +optional
+	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
+
+	// Scopes available OAuth scopes for these credentials
+	// +optional
+	Scopes []string `json:"scopes,omitempty"`
+
+	// TokenRefreshCount number of times the token has been refreshed
+	// +optional
+	TokenRefreshCount *int64 `json:"tokenRefreshCount,omitempty"`
+
+	// LastRefresh when the token was last refreshed
+	// +optional
+	LastRefresh *metav1.Time `json:"lastRefresh,omitempty"`
+
+	// ValidationErrors errors from credential validation
+	// +optional
+	ValidationErrors []DetailedError `json:"validationErrors,omitempty"`
+
+	// SecretVersion tracks the version of the OAuth secret
+	// +optional
+	SecretVersion string `json:"secretVersion,omitempty"`
+}
 
 func init() {
 	SchemeBuilder.Register(&TailscaleTailnet{}, &TailscaleTailnetList{})

@@ -581,3 +581,49 @@ func removeDuplicateStrings(strings []string) []string {
 
 	return result
 }
+
+// DiscoverVIPServices discovers all VIP services in the tailnet for cross-cluster coordination
+func (sc *ServiceCoordinator) DiscoverVIPServices(ctx context.Context) ([]*ServiceRegistration, error) {
+	sc.logger.Debug("Discovering VIP services for cross-cluster coordination")
+
+	// Get all VIP services from the tailnet
+	vipServices, err := sc.tsClient.GetVIPServices(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get VIP services: %w", err)
+	}
+
+	var registrations []*ServiceRegistration
+	for _, vipService := range vipServices {
+		// Parse service registry from annotations
+		registry, err := sc.parseServiceRegistry(vipService.Annotations)
+		if err != nil {
+			sc.logger.Warnw("Failed to parse service registry from VIP service annotations",
+				"service", vipService.Name,
+				"error", err,
+			)
+			// Create a basic registration for services without proper annotations
+			registry = &ServiceRegistration{
+				ServiceName:      vipService.Name,
+				OwnerOperator:    "unknown",
+				ConsumerClusters: make(map[string]ConsumerInfo),
+				VIPAddresses:     vipService.Addrs,
+				LastUpdated:      time.Now(),
+			}
+		}
+
+		registrations = append(registrations, registry)
+	}
+
+	sc.logger.Infow("Discovered VIP services", "count", len(registrations))
+	return registrations, nil
+}
+
+// GetOperatorID returns the operator ID for this ServiceCoordinator
+func (sc *ServiceCoordinator) GetOperatorID() string {
+	return sc.operatorID
+}
+
+// GetClusterID returns the cluster ID for this ServiceCoordinator
+func (sc *ServiceCoordinator) GetClusterID() string {
+	return sc.clusterID
+}

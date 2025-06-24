@@ -338,6 +338,22 @@ type TailscaleRoutePolicyStatus struct {
 	// AppliedTo indicates which targets this policy has been successfully applied to.
 	// +optional
 	AppliedTo []PolicyTargetStatus `json:"appliedTo,omitempty"`
+
+	// RuleStatus provides detailed status for each policy rule
+	// +optional
+	RuleStatus []RuleStatus `json:"ruleStatus,omitempty"`
+
+	// ValidationErrors tracks policy validation errors
+	// +optional
+	ValidationErrors []DetailedError `json:"validationErrors,omitempty"`
+
+	// OperationalMetrics provides performance and operational insights
+	// +optional
+	OperationalMetrics *OperationalMetrics `json:"operationalMetrics,omitempty"`
+
+	// PolicyConflicts tracks conflicts with other policies
+	// +optional
+	PolicyConflicts []PolicyConflict `json:"policyConflicts,omitempty"`
 }
 
 // PolicyTargetStatus represents the status of policy application to a target
@@ -351,6 +367,130 @@ type PolicyTargetStatus struct {
 	// Message contains additional information about the application status.
 	// +optional
 	Message *string `json:"message,omitempty"`
+
+	// Status indicates the current application state
+	// +kubebuilder:validation:Enum=Applied;Pending;Failed;Conflicted;NotApplicable
+	// +optional
+	Status string `json:"status,omitempty"`
+
+	// LastApplied timestamp when the policy was last applied
+	// +optional
+	LastApplied *metav1.Time `json:"lastApplied,omitempty"`
+
+	// AppliedRules number of rules successfully applied to this target
+	// +optional
+	AppliedRules *int32 `json:"appliedRules,omitempty"`
+
+	// TotalRules total number of rules in the policy
+	// +optional
+	TotalRules *int32 `json:"totalRules,omitempty"`
+
+	// Errors specific errors for this target
+	// +optional
+	Errors []DetailedError `json:"errors,omitempty"`
+
+	// Version tracks the resource version of the target
+	// +optional
+	Version string `json:"version,omitempty"`
+}
+
+// RuleStatus provides detailed status for a policy rule
+type RuleStatus struct {
+	// RuleName identifies the rule (uses rule name or index)
+	RuleName string `json:"ruleName"`
+
+	// Applied indicates if the rule was successfully applied
+	Applied bool `json:"applied"`
+
+	// MatchCount number of times this rule has matched
+	MatchCount int64 `json:"matchCount"`
+
+	// LastMatch timestamp when this rule last matched
+	// +optional
+	LastMatch *metav1.Time `json:"lastMatch,omitempty"`
+
+	// ValidationStatus indicates if the rule passed validation
+	// +kubebuilder:validation:Enum=Valid;Invalid;Warning
+	ValidationStatus string `json:"validationStatus"`
+
+	// ValidationErrors specific validation errors for this rule
+	// +optional
+	ValidationErrors []DetailedError `json:"validationErrors,omitempty"`
+
+	// ActionResults status of each action in this rule
+	// +optional
+	ActionResults []ActionResult `json:"actionResults,omitempty"`
+
+	// PerformanceMetrics performance metrics for this rule
+	// +optional
+	PerformanceMetrics *RulePerformanceMetrics `json:"performanceMetrics,omitempty"`
+}
+
+// ActionResult provides status for a policy action
+type ActionResult struct {
+	// ActionType the type of action
+	ActionType PolicyActionType `json:"actionType"`
+
+	// Success indicates if the action was successful
+	Success bool `json:"success"`
+
+	// ExecutionCount number of times this action has executed
+	ExecutionCount int64 `json:"executionCount"`
+
+	// LastExecution timestamp when this action last executed
+	// +optional
+	LastExecution *metav1.Time `json:"lastExecution,omitempty"`
+
+	// ErrorMessage error message if action failed
+	// +optional
+	ErrorMessage string `json:"errorMessage,omitempty"`
+
+	// AverageExecutionTime average time to execute this action
+	// +optional
+	AverageExecutionTime *metav1.Duration `json:"averageExecutionTime,omitempty"`
+}
+
+// RulePerformanceMetrics provides performance metrics for a rule
+type RulePerformanceMetrics struct {
+	// AverageEvaluationTime average time to evaluate this rule
+	// +optional
+	AverageEvaluationTime *metav1.Duration `json:"averageEvaluationTime,omitempty"`
+
+	// LastEvaluationTime time for the last evaluation
+	// +optional
+	LastEvaluationTime *metav1.Duration `json:"lastEvaluationTime,omitempty"`
+
+	// EvaluationCount total number of rule evaluations
+	EvaluationCount int64 `json:"evaluationCount"`
+
+	// MatchRate percentage of evaluations that resulted in matches as a string (e.g., "75.5%")
+	// +optional
+	MatchRate *string `json:"matchRate,omitempty"`
+}
+
+// PolicyConflict represents a conflict with another policy
+type PolicyConflict struct {
+	// ConflictingPolicy reference to the conflicting policy
+	ConflictingPolicy LocalPolicyTargetReference `json:"conflictingPolicy"`
+
+	// ConflictType describes the type of conflict
+	// +kubebuilder:validation:Enum=OverlappingRule;ConflictingAction;PriorityConflict;TargetConflict
+	ConflictType string `json:"conflictType"`
+
+	// ConflictDescription human-readable description of the conflict
+	ConflictDescription string `json:"conflictDescription"`
+
+	// Resolution describes how the conflict was resolved
+	// +kubebuilder:validation:Enum=Ignored;Overridden;Merged;Failed
+	// +optional
+	Resolution string `json:"resolution,omitempty"`
+
+	// DetectedAt timestamp when the conflict was detected
+	DetectedAt metav1.Time `json:"detectedAt"`
+
+	// Severity indicates the severity of the conflict
+	// +kubebuilder:validation:Enum=Critical;Warning;Info
+	Severity string `json:"severity"`
 }
 
 func init() {

@@ -46,6 +46,9 @@ type TailscaleTailnetReconciler struct {
 	Scheme   *runtime.Scheme
 	Logger   *zap.SugaredLogger
 	Recorder record.EventRecorder
+
+	// Metrics for tracking reconciliation performance
+	metrics *ReconcilerMetrics
 }
 
 //+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscaletailnets,verbs=get;list;watch;create;update;patch;delete
@@ -79,8 +82,20 @@ func (r *TailscaleTailnetReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return r.handleDeletion(ctx, tailnet)
 	}
 
+	// Track reconciliation metrics
+	reconcileStart := time.Now()
+	apiCallCount := int32(0)
+
 	// Reconcile the tailnet
-	return r.reconcileTailnet(ctx, tailnet)
+	result, err := r.reconcileTailnet(ctx, tailnet)
+	if err != nil {
+		r.recordError(tailnet, gatewayv1alpha1.ErrorCodeReconciliation, "Failed to reconcile TailscaleTailnet", "controller", err)
+		return result, err
+	}
+
+	// Record successful reconciliation metrics
+	r.recordMetrics(tailnet, reconcileStart, apiCallCount)
+	return result, nil
 }
 
 // reconcileTailnet handles the main reconciliation logic
@@ -245,25 +260,51 @@ func (r *TailscaleTailnetReconciler) handleDeletion(ctx context.Context, tailnet
 
 // updateStatus updates the status condition for the tailnet
 func (r *TailscaleTailnetReconciler) updateStatus(ctx context.Context, tailnet *gatewayv1alpha1.TailscaleTailnet, conditionType gatewayv1alpha1.ConditionType, status metav1.ConditionStatus, reason, message string) {
-	condition := metav1.Condition{
-		Type:               string(conditionType),
-		Status:             status,
-		Reason:             reason,
-		Message:            message,
-		LastTransitionTime: metav1.Now(),
+	gatewayv1alpha1.SetCondition(&tailnet.Status.Conditions, string(conditionType), status, reason, message)
+}
+
+func (r *TailscaleTailnetReconciler) recordError(tailnet *gatewayv1alpha1.TailscaleTailnet, code, message, component string, err error) {
+	errorMessage := message
+	if err != nil {
+		errorMessage = fmt.Sprintf("%s: %v", message, err)
 	}
 
-	// Find existing condition and update or append
-	found := false
-	for i := range tailnet.Status.Conditions {
-		if tailnet.Status.Conditions[i].Type == condition.Type {
-			tailnet.Status.Conditions[i] = condition
-			found = true
-			break
+	detailedError := gatewayv1alpha1.DetailedError{
+		Code:      code,
+		Message:   errorMessage,
+		Component: component,
+		Timestamp: metav1.Now(),
+		Severity:  gatewayv1alpha1.SeverityHigh,
+	}
+
+	// Add context if available
+	if tailnet.Name != "" {
+		detailedError.Context = map[string]string{
+			"tailnet":   tailnet.Name,
+			"namespace": tailnet.Namespace,
 		}
 	}
-	if !found {
-		tailnet.Status.Conditions = append(tailnet.Status.Conditions, condition)
+
+	gatewayv1alpha1.AddError(&tailnet.Status.RecentErrors, detailedError, 10)
+}
+
+func (r *TailscaleTailnetReconciler) recordMetrics(tailnet *gatewayv1alpha1.TailscaleTailnet, reconcileStart time.Time, apiCallCount int32) {
+	duration := time.Since(reconcileStart)
+
+	if tailnet.Status.OperationalMetrics == nil {
+		tailnet.Status.OperationalMetrics = &gatewayv1alpha1.OperationalMetrics{}
+	}
+
+	tailnet.Status.OperationalMetrics.LastReconcileTime = metav1.Time{Time: reconcileStart}
+	tailnet.Status.OperationalMetrics.SuccessfulReconciles++
+	tailnet.Status.OperationalMetrics.AverageReconcileTime = &metav1.Duration{Duration: duration}
+
+	if tailnet.Status.APIStatus == nil {
+		tailnet.Status.APIStatus = &gatewayv1alpha1.TailscaleAPIStatus{}
+	}
+	// Update API call tracking
+	if tailnet.Status.APIStatus.LastSuccessfulCall == nil {
+		tailnet.Status.APIStatus.LastSuccessfulCall = &metav1.Time{Time: time.Now()}
 	}
 }
 

@@ -3,6 +3,7 @@ kind: Namespace
 metadata:
   name: tailscale-gateway-system
 ---
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -1825,13 +1826,13 @@ rules:
   resources: ["deployments", "statefulsets"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 - apiGroups: ["gateway.tailscale.com"]
-  resources: ["tailscaletailnets", "tailscalegateways", "tailscaleroutepolicies", "tailscaleendpoints"]
+  resources: ["tailscaletailnets", "tailscalegateways", "tailscaleroutepolicies"]
   verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
 - apiGroups: ["gateway.tailscale.com"]
-  resources: ["tailscaletailnets/finalizers", "tailscalegateways/finalizers", "tailscaleroutepolicies/finalizers", "tailscaleendpoints/finalizers"]
+  resources: ["tailscaletailnets/finalizers", "tailscalegateways/finalizers", "tailscaleroutepolicies/finalizers"]
   verbs: ["update"]
 - apiGroups: ["gateway.tailscale.com"]
-  resources: ["tailscaletailnets/status", "tailscalegateways/status", "tailscaleroutepolicies/status", "tailscaleendpoints/status"]
+  resources: ["tailscaletailnets/status", "tailscalegateways/status", "tailscaleroutepolicies/status"]
   verbs: ["get", "patch", "update"]
 - apiGroups: ["gateway.networking.k8s.io"]
   resources: ["gateways", "httproutes", "grpcroutes", "tcproutes", "tlsroutes", "udproutes"]
@@ -1884,8 +1885,8 @@ spec:
         fsGroup: 65532
       containers:
       - name: manager
-        image: tailscale-gateway:latest
-        imagePullPolicy: Never
+        image: ghcr.io/rajsinghtech/tailscale-gateway-operator:v0.1.0
+        imagePullPolicy: IfNotPresent
         args:
         - --health-probe-bind-address=:8081
         - --metrics-bind-address=:8080

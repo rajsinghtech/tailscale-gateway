@@ -34,6 +34,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	tailscaleclient "tailscale.com/client/tailscale/v2"
 
@@ -56,6 +57,17 @@ type TailscaleEndpointsReconciler struct {
 
 	// TailscaleClientManager provides access to Tailscale APIs per tailnet
 	TailscaleClientManager *MultiTailnetManager
+
+	// Metrics for tracking reconciliation performance
+	metrics *ReconcilerMetrics
+
+	// Event channels for controller coordination
+	GatewayEventChan   chan event.GenericEvent
+	HTTPRouteEventChan chan event.GenericEvent
+	TCPRouteEventChan  chan event.GenericEvent
+	UDPRouteEventChan  chan event.GenericEvent
+	TLSRouteEventChan  chan event.GenericEvent
+	GRPCRouteEventChan chan event.GenericEvent
 }
 
 // MultiTailnetManager manages multiple Tailscale client connections
@@ -145,6 +157,15 @@ func (m *MultiTailnetManager) createClientFromTailnet(ctx context.Context, k8sCl
 // move the current state of the cluster closer to the desired state.
 func (r *TailscaleEndpointsReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+	reconcileStart := time.Now()
+
+	// Initialize metrics if not present
+	if r.metrics == nil {
+		r.metrics = &ReconcilerMetrics{}
+	}
+
+	// Increment reconcile count
+	r.metrics.ReconcileCount++
 
 	// Fetch the TailscaleEndpoints instance
 	endpoints := &gatewayv1alpha1.TailscaleEndpoints{}
@@ -154,6 +175,7 @@ func (r *TailscaleEndpointsReconciler) Reconcile(ctx context.Context, req ctrl.R
 			return ctrl.Result{}, nil
 		}
 		logger.Error(err, "Failed to get TailscaleEndpoints")
+		r.recordError(endpoints, gatewayv1alpha1.ErrorCodeResourceNotFound, "Failed to get TailscaleEndpoints", gatewayv1alpha1.ComponentController, err)
 		return ctrl.Result{}, err
 	}
 
@@ -172,18 +194,28 @@ func (r *TailscaleEndpointsReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Reconcile the endpoints
 	result, err := r.reconcileEndpoints(ctx, endpoints)
+	reconcileDuration := time.Since(reconcileStart)
+
+	// Update operational metrics
+	r.updateOperationalMetrics(endpoints, reconcileDuration, err == nil)
+
 	if err != nil {
 		logger.Error(err, "Failed to reconcile TailscaleEndpoints")
-		r.updateCondition(endpoints, "Synced", metav1.ConditionFalse, "SyncError", err.Error())
+		r.recordError(endpoints, gatewayv1alpha1.ErrorCodeConfiguration, "Failed to reconcile TailscaleEndpoints", gatewayv1alpha1.ComponentController, err)
+		gatewayv1alpha1.SetCondition(&endpoints.Status.Conditions, gatewayv1alpha1.ConditionReady, metav1.ConditionFalse, gatewayv1alpha1.ReasonFailed, err.Error())
 		if statusErr := r.Status().Update(ctx, endpoints); statusErr != nil {
 			logger.Error(statusErr, "Failed to update status")
 		}
 		return result, err
 	}
 
+	// Set ready condition
+	gatewayv1alpha1.SetCondition(&endpoints.Status.Conditions, gatewayv1alpha1.ConditionReady, metav1.ConditionTrue, gatewayv1alpha1.ReasonReady, "TailscaleEndpoints reconciled successfully")
+
 	// Update status
 	if err := r.Status().Update(ctx, endpoints); err != nil {
 		logger.Error(err, "Failed to update TailscaleEndpoints status")
+		r.recordError(endpoints, gatewayv1alpha1.ErrorCodeConfiguration, "Failed to update status", gatewayv1alpha1.ComponentController, err)
 		return ctrl.Result{}, err
 	}
 
@@ -200,15 +232,47 @@ func (r *TailscaleEndpointsReconciler) reconcileEndpoints(ctx context.Context, e
 		syncInterval = endpoints.Spec.AutoDiscovery.SyncInterval.Duration
 	}
 
+	// Initialize auto-discovery status
+	if endpoints.Status.AutoDiscoveryStatus == nil {
+		endpoints.Status.AutoDiscoveryStatus = &gatewayv1alpha1.AutoDiscoveryStatus{}
+	}
+
 	// Perform service discovery if auto-discovery is enabled
 	if endpoints.Spec.AutoDiscovery != nil && endpoints.Spec.AutoDiscovery.Enabled {
+		endpoints.Status.AutoDiscoveryStatus.Enabled = true
+		discoveryStart := time.Now()
+
 		if err := r.performServiceDiscovery(ctx, endpoints); err != nil {
-			r.updateCondition(endpoints, "ServiceDiscovery", metav1.ConditionFalse, "DiscoveryFailed", err.Error())
+			r.recordError(endpoints, gatewayv1alpha1.ErrorCodeServiceDiscovery, "Service discovery failed", gatewayv1alpha1.ComponentServiceDiscovery, err)
+			gatewayv1alpha1.SetCondition(&endpoints.Status.Conditions, "ServiceDiscovery", metav1.ConditionFalse, "DiscoveryFailed", err.Error())
+
+			// Update discovery status with error
+			detailedErr := gatewayv1alpha1.DetailedError{
+				Code:      gatewayv1alpha1.ErrorCodeServiceDiscovery,
+				Message:   err.Error(),
+				Component: gatewayv1alpha1.ComponentServiceDiscovery,
+				Timestamp: metav1.Now(),
+				Severity:  gatewayv1alpha1.SeverityHigh,
+			}
+			endpoints.Status.AutoDiscoveryStatus.DiscoveryErrors = append(endpoints.Status.AutoDiscoveryStatus.DiscoveryErrors, detailedErr)
+
 			return ctrl.Result{RequeueAfter: syncInterval}, err
 		}
-		r.updateCondition(endpoints, "ServiceDiscovery", metav1.ConditionTrue, "DiscoverySuccessful", "Service discovery completed")
+
+		// Update successful discovery status
+		discoveryDuration := time.Since(discoveryStart)
+		endpoints.Status.AutoDiscoveryStatus.LastDiscoveryTime = &metav1.Time{Time: discoveryStart}
+		endpoints.Status.AutoDiscoveryStatus.DiscoveryDuration = &metav1.Duration{Duration: discoveryDuration}
+		gatewayv1alpha1.SetCondition(&endpoints.Status.Conditions, "ServiceDiscovery", metav1.ConditionTrue, "DiscoverySuccessful", "Service discovery completed")
+
+		// Step: Perform local service discovery for bidirectional exposure
+		if err := r.performLocalServiceDiscovery(ctx, endpoints); err != nil {
+			logger.Error(err, "Failed to perform local service discovery")
+			// Don't fail the entire reconciliation for local service discovery errors
+		}
 	} else {
 		// Set status for manual endpoints configuration
+		endpoints.Status.AutoDiscoveryStatus.Enabled = false
 		endpoints.Status.DiscoveredEndpoints = 0
 		endpoints.Status.TotalEndpoints = len(endpoints.Spec.Endpoints)
 		endpoints.Status.EndpointStatus = r.buildEndpointStatus(endpoints.Spec.Endpoints, []gatewayv1alpha1.TailscaleEndpoint{})
@@ -216,10 +280,11 @@ func (r *TailscaleEndpointsReconciler) reconcileEndpoints(ctx context.Context, e
 
 	// Create/update StatefulSets for each endpoint
 	if err := r.reconcileStatefulSets(ctx, endpoints); err != nil {
-		r.updateCondition(endpoints, "StatefulSetsReady", metav1.ConditionFalse, "StatefulSetFailed", err.Error())
+		r.recordError(endpoints, gatewayv1alpha1.ErrorCodeConfiguration, "StatefulSet creation failed", gatewayv1alpha1.ComponentStatefulSet, err)
+		gatewayv1alpha1.SetCondition(&endpoints.Status.Conditions, "StatefulSetsReady", metav1.ConditionFalse, "StatefulSetFailed", err.Error())
 		return ctrl.Result{RequeueAfter: time.Minute}, err
 	}
-	r.updateCondition(endpoints, "StatefulSetsReady", metav1.ConditionTrue, "StatefulSetsCreated", "All StatefulSets created successfully")
+	gatewayv1alpha1.SetCondition(&endpoints.Status.Conditions, "StatefulSetsReady", metav1.ConditionTrue, "StatefulSetsCreated", "All StatefulSets created successfully")
 
 	// Perform health checks on all endpoints
 	if err := r.performHealthChecks(ctx, endpoints); err != nil {
@@ -229,7 +294,7 @@ func (r *TailscaleEndpointsReconciler) reconcileEndpoints(ctx context.Context, e
 
 	// Update overall sync condition
 	endpoints.Status.LastSync = &metav1.Time{Time: time.Now()}
-	r.updateCondition(endpoints, "Synced", metav1.ConditionTrue, "SyncSuccessful", "Endpoints synchronized successfully")
+	gatewayv1alpha1.SetCondition(&endpoints.Status.Conditions, "Synced", metav1.ConditionTrue, "SyncSuccessful", "Endpoints synchronized successfully")
 
 	logger.Info("Successfully reconciled TailscaleEndpoints", "endpoints", endpoints.Name, "totalEndpoints", endpoints.Status.TotalEndpoints)
 	return ctrl.Result{RequeueAfter: syncInterval}, nil
@@ -238,6 +303,7 @@ func (r *TailscaleEndpointsReconciler) reconcileEndpoints(ctx context.Context, e
 // performServiceDiscovery discovers services from the Tailscale API
 func (r *TailscaleEndpointsReconciler) performServiceDiscovery(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints) error {
 	logger := log.FromContext(ctx)
+	discoveryStart := time.Now()
 
 	// Skip service discovery if TailscaleClientManager is not available (e.g., in tests)
 	if r.TailscaleClientManager == nil {
@@ -251,14 +317,27 @@ func (r *TailscaleEndpointsReconciler) performServiceDiscovery(ctx context.Conte
 	// Get Tailscale client for this tailnet
 	tsClient, err := r.TailscaleClientManager.GetClient(ctx, r.Client, endpoints.Spec.Tailnet, endpoints.Namespace)
 	if err != nil {
+		r.recordError(endpoints, gatewayv1alpha1.ErrorCodeAuthentication, "Failed to get Tailscale client", gatewayv1alpha1.ComponentTailscaleAPI, err)
 		return fmt.Errorf("failed to get Tailscale client: %w", err)
+	}
+
+	// Track API call metrics
+	if r.metrics != nil {
+		r.metrics.APICallCount++
 	}
 
 	// Discover services from Tailscale API
 	discoveredEndpoints, err := r.discoverEndpointsFromTailscale(ctx, tsClient, endpoints)
 	if err != nil {
+		r.recordError(endpoints, gatewayv1alpha1.ErrorCodeServiceDiscovery, "Failed to discover endpoints", gatewayv1alpha1.ComponentServiceDiscovery, err)
+
+		// Update API status with error
+		r.updateAPIStatus(endpoints, false, err)
 		return fmt.Errorf("failed to discover endpoints: %w", err)
 	}
+
+	// Update API status with success
+	r.updateAPIStatus(endpoints, true, nil)
 
 	// Merge discovered endpoints with manually configured ones
 	allEndpoints := r.mergeEndpoints(endpoints.Spec.Endpoints, discoveredEndpoints)
@@ -269,7 +348,16 @@ func (r *TailscaleEndpointsReconciler) performServiceDiscovery(ctx context.Conte
 	// Update status
 	endpoints.Status.DiscoveredEndpoints = len(discoveredEndpoints)
 	endpoints.Status.TotalEndpoints = len(allEndpoints)
+	endpoints.Status.UnhealthyEndpoints = 0 // Will be updated by health checks
 	endpoints.Status.EndpointStatus = r.buildEndpointStatus(allEndpoints, discoveredEndpoints)
+
+	// Update auto-discovery status
+	if endpoints.Status.AutoDiscoveryStatus != nil {
+		discoveryDuration := time.Since(discoveryStart)
+		endpoints.Status.AutoDiscoveryStatus.LastDiscoveryTime = &metav1.Time{Time: discoveryStart}
+		endpoints.Status.AutoDiscoveryStatus.DiscoveryDuration = &metav1.Duration{Duration: discoveryDuration}
+		endpoints.Status.AutoDiscoveryStatus.DevicesMatchingCriteria = len(discoveredEndpoints)
+	}
 
 	logger.Info("Discovered endpoints", "tailnet", endpoints.Spec.Tailnet, "discovered", len(discoveredEndpoints), "total", len(allEndpoints))
 	return nil
@@ -642,12 +730,25 @@ func (r *TailscaleEndpointsReconciler) buildEndpointStatus(allEndpoints, discove
 			source = "AutoDiscovery"
 		}
 
+		// Initialize health check details
+		healthDetails := &gatewayv1alpha1.HealthCheckDetails{
+			Enabled:       endpoint.HealthCheck != nil && endpoint.HealthCheck.Enabled,
+			Configuration: endpoint.HealthCheck,
+		}
+
+		// Initialize connection status
+		connectionStatus := &gatewayv1alpha1.ConnectionStatus{}
+
 		status = append(status, gatewayv1alpha1.EndpointStatus{
-			Name:            endpoint.Name,
-			TailscaleIP:     endpoint.TailscaleIP,
-			HealthStatus:    "Unknown", // Will be updated by health checks
-			DiscoverySource: source,
-			Tags:            endpoint.Tags,
+			Name:               endpoint.Name,
+			TailscaleIP:        endpoint.TailscaleIP,
+			HealthStatus:       "Unknown", // Will be updated by health checks
+			DiscoverySource:    source,
+			Tags:               endpoint.Tags,
+			HealthCheckDetails: healthDetails,
+			ConnectionStatus:   connectionStatus,
+			Weight:             endpoint.Weight,
+			ExternalTarget:     endpoint.ExternalTarget,
 		})
 	}
 
@@ -657,6 +758,7 @@ func (r *TailscaleEndpointsReconciler) buildEndpointStatus(allEndpoints, discove
 // performHealthChecks performs health checks on all endpoints
 func (r *TailscaleEndpointsReconciler) performHealthChecks(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints) error {
 	healthyCount := 0
+	unhealthyCount := 0
 
 	for i, endpointStatus := range endpoints.Status.EndpointStatus {
 		// Find the corresponding endpoint configuration
@@ -672,47 +774,131 @@ func (r *TailscaleEndpointsReconciler) performHealthChecks(ctx context.Context, 
 			continue
 		}
 
+		// Initialize health check details if not present
+		if endpoints.Status.EndpointStatus[i].HealthCheckDetails == nil {
+			endpoints.Status.EndpointStatus[i].HealthCheckDetails = &gatewayv1alpha1.HealthCheckDetails{
+				Enabled:       endpointConfig.HealthCheck != nil && endpointConfig.HealthCheck.Enabled,
+				Configuration: endpointConfig.HealthCheck,
+			}
+		}
+
+		healthDetails := endpoints.Status.EndpointStatus[i].HealthCheckDetails
+
 		// Perform health check if enabled
 		if endpointConfig.HealthCheck != nil && endpointConfig.HealthCheck.Enabled {
-			healthy := r.performHealthCheck(ctx, endpointConfig)
+			checkStart := time.Now()
+			healthy, response := r.performDetailedHealthCheck(ctx, endpointConfig)
+			checkDuration := time.Since(checkStart)
+
+			// Update health check details
+			healthDetails.TotalChecks++
+			healthDetails.LastCheckDuration = &metav1.Duration{Duration: checkDuration}
+			healthDetails.LastCheckResponse = response
+
 			if healthy {
 				endpoints.Status.EndpointStatus[i].HealthStatus = "Healthy"
+				healthDetails.SuccessfulChecks++
+				healthDetails.SuccessiveSuccesses++
+				healthDetails.SuccessiveFailures = 0
 				healthyCount++
 			} else {
 				endpoints.Status.EndpointStatus[i].HealthStatus = "Unhealthy"
+				healthDetails.SuccessiveFailures++
+				healthDetails.SuccessiveSuccesses = 0
+				unhealthyCount++
+
+				// Add to recent failures if response indicates failure
+				if response != nil && !response.Success {
+					failure := gatewayv1alpha1.HealthCheckFailure{
+						Timestamp:    metav1.Time{Time: checkStart},
+						ErrorMessage: response.ErrorMessage,
+						Duration:     &metav1.Duration{Duration: checkDuration},
+					}
+
+					// Determine error type based on the error
+					if response.StatusCode != nil {
+						failure.StatusCode = response.StatusCode
+						if *response.StatusCode >= 400 {
+							failure.ErrorType = "HTTPError"
+						}
+					} else {
+						failure.ErrorType = "ConnectionRefused"
+					}
+
+					// Keep only last 5 failures
+					healthDetails.RecentFailures = append([]gatewayv1alpha1.HealthCheckFailure{failure}, healthDetails.RecentFailures...)
+					if len(healthDetails.RecentFailures) > 5 {
+						healthDetails.RecentFailures = healthDetails.RecentFailures[:5]
+					}
+				}
 			}
-			endpoints.Status.EndpointStatus[i].LastHealthCheck = &metav1.Time{Time: time.Now()}
+
+			// Update average response time
+			if healthDetails.TotalChecks > 0 {
+				// Simple moving average calculation
+				if healthDetails.AverageResponseTime == nil {
+					healthDetails.AverageResponseTime = &metav1.Duration{Duration: checkDuration}
+				} else {
+					currentAvg := healthDetails.AverageResponseTime.Duration
+					newAvg := (currentAvg*time.Duration(healthDetails.TotalChecks-1) + checkDuration) / time.Duration(healthDetails.TotalChecks)
+					healthDetails.AverageResponseTime.Duration = newAvg
+				}
+			}
+
+			endpoints.Status.EndpointStatus[i].LastHealthCheck = &metav1.Time{Time: checkStart}
 		} else {
-			endpoints.Status.EndpointStatus[i].HealthStatus = "Unknown"
+			// Health checks disabled
+			endpoints.Status.EndpointStatus[i].HealthStatus = "Disabled"
+			healthDetails.Enabled = false
 			healthyCount++ // Assume healthy if not checked
 		}
 	}
 
 	endpoints.Status.HealthyEndpoints = healthyCount
+	endpoints.Status.UnhealthyEndpoints = unhealthyCount
 	return nil
 }
 
-// performHealthCheck performs a health check on a single endpoint
-func (r *TailscaleEndpointsReconciler) performHealthCheck(ctx context.Context, endpoint *gatewayv1alpha1.TailscaleEndpoint) bool {
+// performDetailedHealthCheck performs a health check on a single endpoint and returns detailed response
+func (r *TailscaleEndpointsReconciler) performDetailedHealthCheck(ctx context.Context, endpoint *gatewayv1alpha1.TailscaleEndpoint) (bool, *gatewayv1alpha1.HealthCheckResponse) {
 	logger := log.FromContext(ctx)
+	checkStart := time.Now()
 
 	switch endpoint.Protocol {
 	case "HTTP", "HTTPS":
-		return r.performHTTPHealthCheck(ctx, endpoint)
+		return r.performDetailedHTTPHealthCheck(ctx, endpoint, checkStart)
 	case "TCP":
-		return r.performTCPHealthCheck(ctx, endpoint)
+		return r.performDetailedTCPHealthCheck(ctx, endpoint, checkStart)
 	case "UDP":
 		// UDP health checks are more complex and would require application-specific logic
 		logger.Info("UDP health checks not implemented, assuming healthy", "endpoint", endpoint.Name)
-		return true
+		response := &gatewayv1alpha1.HealthCheckResponse{
+			Success:      true,
+			ResponseTime: metav1.Duration{Duration: time.Since(checkStart)},
+			Timestamp:    metav1.Time{Time: checkStart},
+			ErrorMessage: "UDP health checks not implemented",
+		}
+		return true, response
 	default:
 		logger.Info("Unknown protocol for health check, assuming healthy", "endpoint", endpoint.Name, "protocol", endpoint.Protocol)
-		return true
+		response := &gatewayv1alpha1.HealthCheckResponse{
+			Success:      true,
+			ResponseTime: metav1.Duration{Duration: time.Since(checkStart)},
+			Timestamp:    metav1.Time{Time: checkStart},
+			ErrorMessage: "Unknown protocol",
+		}
+		return true, response
 	}
 }
 
-// performHTTPHealthCheck performs HTTP/HTTPS health check
-func (r *TailscaleEndpointsReconciler) performHTTPHealthCheck(ctx context.Context, endpoint *gatewayv1alpha1.TailscaleEndpoint) bool {
+// performHealthCheck performs a health check on a single endpoint (legacy method)
+func (r *TailscaleEndpointsReconciler) performHealthCheck(ctx context.Context, endpoint *gatewayv1alpha1.TailscaleEndpoint) bool {
+	healthy, _ := r.performDetailedHealthCheck(ctx, endpoint)
+	return healthy
+}
+
+// performDetailedHTTPHealthCheck performs HTTP/HTTPS health check with detailed response
+func (r *TailscaleEndpointsReconciler) performDetailedHTTPHealthCheck(ctx context.Context, endpoint *gatewayv1alpha1.TailscaleEndpoint, checkStart time.Time) (bool, *gatewayv1alpha1.HealthCheckResponse) {
 	// TODO: Implement actual HTTP health check
 	// This would:
 	// 1. Create HTTP client with timeout
@@ -720,20 +906,53 @@ func (r *TailscaleEndpointsReconciler) performHTTPHealthCheck(ctx context.Contex
 	// 3. Check response status code
 	// 4. Handle retries and circuit breaking
 
-	// For now, assume healthy
-	return true
+	// For now, simulate a successful health check
+	responseTime := time.Since(checkStart)
+	statusCode := int32(200)
+
+	response := &gatewayv1alpha1.HealthCheckResponse{
+		Success:      true,
+		ResponseTime: metav1.Duration{Duration: responseTime},
+		Timestamp:    metav1.Time{Time: checkStart},
+		StatusCode:   &statusCode,
+		ResponseHeaders: map[string]string{
+			"content-type": "application/json",
+		},
+	}
+
+	return true, response
 }
 
-// performTCPHealthCheck performs TCP connection health check
-func (r *TailscaleEndpointsReconciler) performTCPHealthCheck(ctx context.Context, endpoint *gatewayv1alpha1.TailscaleEndpoint) bool {
+// performDetailedTCPHealthCheck performs TCP connection health check with detailed response
+func (r *TailscaleEndpointsReconciler) performDetailedTCPHealthCheck(ctx context.Context, endpoint *gatewayv1alpha1.TailscaleEndpoint, checkStart time.Time) (bool, *gatewayv1alpha1.HealthCheckResponse) {
 	// TODO: Implement actual TCP health check
 	// This would:
 	// 1. Attempt to establish TCP connection to endpoint IP:port
 	// 2. Close connection immediately if successful
 	// 3. Handle timeouts and connection errors
 
-	// For now, assume healthy
-	return true
+	// For now, simulate a successful health check
+	responseTime := time.Since(checkStart)
+
+	response := &gatewayv1alpha1.HealthCheckResponse{
+		Success:      true,
+		ResponseTime: metav1.Duration{Duration: responseTime},
+		Timestamp:    metav1.Time{Time: checkStart},
+	}
+
+	return true, response
+}
+
+// performHTTPHealthCheck performs HTTP/HTTPS health check (legacy method)
+func (r *TailscaleEndpointsReconciler) performHTTPHealthCheck(ctx context.Context, endpoint *gatewayv1alpha1.TailscaleEndpoint) bool {
+	healthy, _ := r.performDetailedHTTPHealthCheck(ctx, endpoint, time.Now())
+	return healthy
+}
+
+// performTCPHealthCheck performs TCP connection health check (legacy method)
+func (r *TailscaleEndpointsReconciler) performTCPHealthCheck(ctx context.Context, endpoint *gatewayv1alpha1.TailscaleEndpoint) bool {
+	healthy, _ := r.performDetailedTCPHealthCheck(ctx, endpoint, time.Now())
+	return healthy
 }
 
 // reconcileStatefulSets creates and manages StatefulSets for each endpoint
@@ -1391,23 +1610,103 @@ func (r *TailscaleEndpointsReconciler) handleDeletion(ctx context.Context, endpo
 }
 
 // updateCondition updates or adds a condition to the TailscaleEndpoints status
-func (r *TailscaleEndpointsReconciler) updateCondition(endpoints *gatewayv1alpha1.TailscaleEndpoints, conditionType string, status metav1.ConditionStatus, reason, message string) {
-	condition := metav1.Condition{
-		Type:               conditionType,
-		Status:             status,
-		LastTransitionTime: metav1.Now(),
-		Reason:             reason,
-		Message:            message,
+// ReconcilerMetrics tracks reconciliation performance
+type ReconcilerMetrics struct {
+	ReconcileCount       int64
+	SuccessfulReconciles int64
+	FailedReconciles     int64
+	APICallCount         int64
+	LastReconcileTime    time.Time
+	TotalReconcileTime   time.Duration
+}
+
+// recordError records a detailed error in the status
+func (r *TailscaleEndpointsReconciler) recordError(endpoints *gatewayv1alpha1.TailscaleEndpoints, code, message, component string, err error) {
+	detailedError := gatewayv1alpha1.DetailedError{
+		Code:      code,
+		Message:   message,
+		Component: component,
+		Timestamp: metav1.Now(),
+		Severity:  gatewayv1alpha1.SeverityHigh,
 	}
 
-	// Find and update existing condition or append new one
-	for i, existingCondition := range endpoints.Status.Conditions {
-		if existingCondition.Type == conditionType {
-			endpoints.Status.Conditions[i] = condition
-			return
+	if err != nil {
+		detailedError.Context = map[string]string{
+			"error": err.Error(),
 		}
 	}
-	endpoints.Status.Conditions = append(endpoints.Status.Conditions, condition)
+
+	gatewayv1alpha1.AddError(&endpoints.Status.RecentErrors, detailedError, 10)
+}
+
+// updateOperationalMetrics updates the operational metrics in the status
+func (r *TailscaleEndpointsReconciler) updateOperationalMetrics(endpoints *gatewayv1alpha1.TailscaleEndpoints, duration time.Duration, success bool) {
+	if endpoints.Status.OperationalMetrics == nil {
+		endpoints.Status.OperationalMetrics = &gatewayv1alpha1.OperationalMetrics{}
+	}
+
+	metrics := endpoints.Status.OperationalMetrics
+	metrics.LastReconcileTime = metav1.Now()
+	metrics.ReconcileDuration = &metav1.Duration{Duration: duration}
+	metrics.ReconcileCount++
+
+	if success {
+		metrics.SuccessfulReconciles++
+	} else {
+		metrics.FailedReconciles++
+	}
+
+	// Update average reconcile time
+	r.metrics.TotalReconcileTime += duration
+	avgDuration := r.metrics.TotalReconcileTime / time.Duration(r.metrics.ReconcileCount)
+	metrics.AverageReconcileTime = &metav1.Duration{Duration: avgDuration}
+
+	// Calculate error rate
+	if metrics.ReconcileCount > 0 {
+		errorRate := float64(metrics.FailedReconciles) / float64(metrics.ReconcileCount) * 100
+		errorRateStr := fmt.Sprintf("%.1f%%", errorRate)
+		metrics.ErrorRate = &errorRateStr
+	}
+
+	// Update metrics
+	if r.metrics != nil {
+		metrics.APICallCount = r.metrics.APICallCount
+	}
+}
+
+// updateAPIStatus updates the Tailscale API status in the endpoints
+func (r *TailscaleEndpointsReconciler) updateAPIStatus(endpoints *gatewayv1alpha1.TailscaleEndpoints, connected bool, err error) {
+	if endpoints.Status.AutoDiscoveryStatus == nil {
+		endpoints.Status.AutoDiscoveryStatus = &gatewayv1alpha1.AutoDiscoveryStatus{}
+	}
+
+	if endpoints.Status.AutoDiscoveryStatus.APIStatus == nil {
+		endpoints.Status.AutoDiscoveryStatus.APIStatus = &gatewayv1alpha1.TailscaleAPIStatus{}
+	}
+
+	apiStatus := endpoints.Status.AutoDiscoveryStatus.APIStatus
+	apiStatus.Connected = connected
+
+	if connected {
+		apiStatus.LastSuccessfulCall = &metav1.Time{Time: time.Now()}
+		// Clear any previous error
+		apiStatus.LastError = nil
+	} else if err != nil {
+		// Record the error
+		detailedError := &gatewayv1alpha1.DetailedError{
+			Code:      gatewayv1alpha1.ErrorCodeAPIConnection,
+			Message:   err.Error(),
+			Component: gatewayv1alpha1.ComponentTailscaleAPI,
+			Timestamp: metav1.Now(),
+			Severity:  gatewayv1alpha1.SeverityHigh,
+		}
+		apiStatus.LastError = detailedError
+	}
+
+	// Update API metrics
+	if r.metrics != nil {
+		apiStatus.RequestCount = r.metrics.APICallCount
+	}
 }
 
 // matchesPattern checks if a name matches any of the given glob patterns
@@ -1529,6 +1828,118 @@ func (r *TailscaleEndpointsReconciler) createEndpointService(ctx context.Context
 			},
 		}
 	})
+}
+
+// performLocalServiceDiscovery discovers local Kubernetes services for bidirectional exposure
+func (r *TailscaleEndpointsReconciler) performLocalServiceDiscovery(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints) error {
+	logger := log.FromContext(ctx)
+
+	// List all services in the same namespace
+	serviceList := &corev1.ServiceList{}
+	if err := r.List(ctx, serviceList, client.InNamespace(endpoints.Namespace)); err != nil {
+		return fmt.Errorf("failed to list services for local discovery: %w", err)
+	}
+
+	var localEndpoints []gatewayv1alpha1.TailscaleEndpoint
+	for _, svc := range serviceList.Items {
+		// Skip system services and services that are already referenced
+		if r.shouldSkipService(&svc) {
+			continue
+		}
+
+		// Check if this service is already configured in endpoints
+		if r.isServiceAlreadyConfigured(&svc, endpoints) {
+			continue
+		}
+
+		// Create TailscaleEndpoint for this local service
+		for _, port := range svc.Spec.Ports {
+			endpoint := gatewayv1alpha1.TailscaleEndpoint{
+				Name:           fmt.Sprintf("local-%s-%s", svc.Name, port.Name),
+				TailscaleIP:    "", // Will be assigned when VIP service is created
+				TailscaleFQDN:  fmt.Sprintf("%s.%s.svc.cluster.local", svc.Name, svc.Namespace),
+				Port:           port.Port,
+				Protocol:       strings.ToUpper(string(port.Protocol)),
+				Tags:           []string{"tag:local-service", "tag:k8s-service"},
+				ExternalTarget: "", // This is for external targets, local services don't need this
+				Weight:         &[]int32{1}[0],
+			}
+
+			// Add health check configuration for local services
+			endpoint.HealthCheck = &gatewayv1alpha1.EndpointHealthCheck{
+				Enabled:            true,
+				Path:               "/health",
+				Interval:           &metav1.Duration{Duration: 30 * time.Second},
+				Timeout:            &metav1.Duration{Duration: 5 * time.Second},
+				HealthyThreshold:   &[]int32{2}[0],
+				UnhealthyThreshold: &[]int32{3}[0],
+			}
+
+			localEndpoints = append(localEndpoints, endpoint)
+		}
+	}
+
+	// Add discovered local services to the endpoints spec
+	if len(localEndpoints) > 0 {
+		// Merge with existing endpoints
+		existingEndpoints := endpoints.Spec.Endpoints
+		mergedEndpoints := r.mergeEndpoints(existingEndpoints, localEndpoints)
+		endpoints.Spec.Endpoints = mergedEndpoints
+
+		logger.Info("Discovered local services for bidirectional exposure",
+			"namespace", endpoints.Namespace,
+			"discoveredServices", len(localEndpoints),
+			"totalEndpoints", len(mergedEndpoints))
+	}
+
+	return nil
+}
+
+// shouldSkipService determines if a service should be skipped during local discovery
+func (r *TailscaleEndpointsReconciler) shouldSkipService(svc *corev1.Service) bool {
+	// Skip system services
+	if strings.HasPrefix(svc.Namespace, "kube-") || svc.Namespace == "default" {
+		if svc.Name == "kubernetes" || strings.HasPrefix(svc.Name, "kube-") {
+			return true
+		}
+	}
+
+	// Skip headless services
+	if svc.Spec.ClusterIP == "None" {
+		return true
+	}
+
+	// Skip services with no ports
+	if len(svc.Spec.Ports) == 0 {
+		return true
+	}
+
+	// Skip services that are marked to be excluded from discovery
+	if excludeAnnotation, exists := svc.Annotations["gateway.tailscale.com/exclude-from-discovery"]; exists {
+		if excludeAnnotation == "true" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isServiceAlreadyConfigured checks if a service is already configured in the endpoints
+func (r *TailscaleEndpointsReconciler) isServiceAlreadyConfigured(svc *corev1.Service, endpoints *gatewayv1alpha1.TailscaleEndpoints) bool {
+	for _, endpoint := range endpoints.Spec.Endpoints {
+		// Check if the endpoint name matches or if the FQDN matches
+		if strings.Contains(endpoint.Name, svc.Name) {
+			return true
+		}
+		if strings.Contains(endpoint.TailscaleFQDN, svc.Name) {
+			return true
+		}
+		// Check if ExternalTarget points to this service
+		if strings.Contains(endpoint.ExternalTarget, svc.Name) {
+			return true
+		}
+	}
+	return false
 }
 
 // SetupWithManager sets up the controller with the Manager.

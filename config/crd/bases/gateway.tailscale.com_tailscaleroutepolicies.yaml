@@ -476,9 +476,139 @@ spec:
                       description: Applied indicates if the policy was successfully
                         applied.
                       type: boolean
+                    appliedRules:
+                      description: AppliedRules number of rules successfully applied
+                        to this target
+                      format: int32
+                      type: integer
+                    errors:
+                      description: Errors specific errors for this target
+                      items:
+                        description: DetailedError provides comprehensive error information
+                          with context
+                        properties:
+                          code:
+                            description: Code is a machine-readable error code
+                            type: string
+                          component:
+                            description: Component identifies which component generated
+                              the error
+                            enum:
+                            - Controller
+                            - ExtensionServer
+                            - TailscaleAPI
+                            - ServiceDiscovery
+                            - RouteGeneration
+                            - Validation
+                            - StatefulSet
+                            - HealthCheck
+                            - OAuth
+                            - PolicyEngine
+                            type: string
+                          context:
+                            additionalProperties:
+                              type: string
+                            description: Context provides additional context about
+                              the error
+                            type: object
+                          httpStatusCode:
+                            description: HTTPStatusCode provides HTTP status code
+                              for API-related errors
+                            format: int32
+                            type: integer
+                          lastRetry:
+                            description: LastRetry timestamp of the last retry attempt
+                            format: date-time
+                            type: string
+                          message:
+                            description: Message is a human-readable error message
+                            type: string
+                          resolutionHint:
+                            description: ResolutionHint provides guidance on how to
+                              resolve the error
+                            type: string
+                          resourceRef:
+                            description: ResourceRef identifies the specific resource
+                              that caused the error
+                            properties:
+                              group:
+                                description: Group is the group of the target resource.
+                                maxLength: 253
+                                pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                type: string
+                              kind:
+                                description: Kind is the kind of the target resource.
+                                maxLength: 63
+                                minLength: 1
+                                pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+                                type: string
+                              name:
+                                description: Name is the name of the target resource.
+                                maxLength: 253
+                                minLength: 1
+                                type: string
+                              namespace:
+                                description: Namespace is the namespace of the target
+                                  resource.
+                                maxLength: 63
+                                minLength: 1
+                                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                type: string
+                              sectionName:
+                                description: SectionName is the name of a section
+                                  within the target resource.
+                                maxLength: 253
+                                minLength: 1
+                                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                type: string
+                            required:
+                            - group
+                            - kind
+                            - name
+                            type: object
+                          retries:
+                            description: Retries indicates how many times this operation
+                              has been retried
+                            format: int32
+                            type: integer
+                          severity:
+                            description: Severity indicates the severity of the error
+                            enum:
+                            - Critical
+                            - High
+                            - Medium
+                            - Low
+                            - Info
+                            type: string
+                          timestamp:
+                            description: Timestamp when the error occurred
+                            format: date-time
+                            type: string
+                        required:
+                        - code
+                        - component
+                        - message
+                        - retries
+                        - timestamp
+                        type: object
+                      type: array
+                    lastApplied:
+                      description: LastApplied timestamp when the policy was last
+                        applied
+                      format: date-time
+                      type: string
                     message:
                       description: Message contains additional information about the
                         application status.
+                      type: string
+                    status:
+                      description: Status indicates the current application state
+                      enum:
+                      - Applied
+                      - Pending
+                      - Failed
+                      - Conflicted
+                      - NotApplicable
                       type: string
                     targetRef:
                       description: TargetRef is the reference to the target.
@@ -517,6 +647,13 @@ spec:
                       - kind
                       - name
                       type: object
+                    totalRules:
+                      description: TotalRules total number of rules in the policy
+                      format: int32
+                      type: integer
+                    version:
+                      description: Version tracks the resource version of the target
+                      type: string
                   required:
                   - applied
                   - targetRef
@@ -577,6 +714,450 @@ spec:
                   - reason
                   - status
                   - type
+                  type: object
+                type: array
+              operationalMetrics:
+                description: OperationalMetrics provides performance and operational
+                  insights
+                properties:
+                  apiCallCount:
+                    description: APICallCount total API calls made to Tailscale
+                    format: int64
+                    type: integer
+                  apiRateLimitHits:
+                    description: APIRateLimitHits number of times rate limits were
+                      hit
+                    format: int64
+                    type: integer
+                  averageReconcileTime:
+                    description: AverageReconcileTime average reconciliation duration
+                    type: string
+                  errorRate:
+                    description: ErrorRate percentage of failed operations as a string
+                      (e.g., "15.5%")
+                    type: string
+                  failedReconciles:
+                    description: FailedReconciles number of failed reconciliations
+                    format: int64
+                    type: integer
+                  lastReconcileTime:
+                    description: LastReconcileTime when the last reconciliation occurred
+                    format: date-time
+                    type: string
+                  reconcileCount:
+                    description: ReconcileCount total number of reconciliations
+                    format: int64
+                    type: integer
+                  reconcileDuration:
+                    description: ReconcileDuration how long the last reconciliation
+                      took
+                    type: string
+                  successfulReconciles:
+                    description: SuccessfulReconciles number of successful reconciliations
+                    format: int64
+                    type: integer
+                  throughputPerHour:
+                    description: ThroughputPerHour operations completed per hour
+                    format: int64
+                    type: integer
+                required:
+                - failedReconciles
+                - lastReconcileTime
+                - reconcileCount
+                - successfulReconciles
+                type: object
+              policyConflicts:
+                description: PolicyConflicts tracks conflicts with other policies
+                items:
+                  description: PolicyConflict represents a conflict with another policy
+                  properties:
+                    conflictDescription:
+                      description: ConflictDescription human-readable description
+                        of the conflict
+                      type: string
+                    conflictType:
+                      description: ConflictType describes the type of conflict
+                      enum:
+                      - OverlappingRule
+                      - ConflictingAction
+                      - PriorityConflict
+                      - TargetConflict
+                      type: string
+                    conflictingPolicy:
+                      description: ConflictingPolicy reference to the conflicting
+                        policy
+                      properties:
+                        group:
+                          description: Group is the group of the target resource.
+                          maxLength: 253
+                          pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                          type: string
+                        kind:
+                          description: Kind is the kind of the target resource.
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+                          type: string
+                        name:
+                          description: Name is the name of the target resource.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        namespace:
+                          description: Namespace is the namespace of the target resource.
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                        sectionName:
+                          description: SectionName is the name of a section within
+                            the target resource.
+                          maxLength: 253
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                          type: string
+                      required:
+                      - group
+                      - kind
+                      - name
+                      type: object
+                    detectedAt:
+                      description: DetectedAt timestamp when the conflict was detected
+                      format: date-time
+                      type: string
+                    resolution:
+                      description: Resolution describes how the conflict was resolved
+                      enum:
+                      - Ignored
+                      - Overridden
+                      - Merged
+                      - Failed
+                      type: string
+                    severity:
+                      description: Severity indicates the severity of the conflict
+                      enum:
+                      - Critical
+                      - Warning
+                      - Info
+                      type: string
+                  required:
+                  - conflictDescription
+                  - conflictType
+                  - conflictingPolicy
+                  - detectedAt
+                  - severity
+                  type: object
+                type: array
+              ruleStatus:
+                description: RuleStatus provides detailed status for each policy rule
+                items:
+                  description: RuleStatus provides detailed status for a policy rule
+                  properties:
+                    actionResults:
+                      description: ActionResults status of each action in this rule
+                      items:
+                        description: ActionResult provides status for a policy action
+                        properties:
+                          actionType:
+                            description: ActionType the type of action
+                            type: string
+                          averageExecutionTime:
+                            description: AverageExecutionTime average time to execute
+                              this action
+                            type: string
+                          errorMessage:
+                            description: ErrorMessage error message if action failed
+                            type: string
+                          executionCount:
+                            description: ExecutionCount number of times this action
+                              has executed
+                            format: int64
+                            type: integer
+                          lastExecution:
+                            description: LastExecution timestamp when this action
+                              last executed
+                            format: date-time
+                            type: string
+                          success:
+                            description: Success indicates if the action was successful
+                            type: boolean
+                        required:
+                        - actionType
+                        - executionCount
+                        - success
+                        type: object
+                      type: array
+                    applied:
+                      description: Applied indicates if the rule was successfully
+                        applied
+                      type: boolean
+                    lastMatch:
+                      description: LastMatch timestamp when this rule last matched
+                      format: date-time
+                      type: string
+                    matchCount:
+                      description: MatchCount number of times this rule has matched
+                      format: int64
+                      type: integer
+                    performanceMetrics:
+                      description: PerformanceMetrics performance metrics for this
+                        rule
+                      properties:
+                        averageEvaluationTime:
+                          description: AverageEvaluationTime average time to evaluate
+                            this rule
+                          type: string
+                        evaluationCount:
+                          description: EvaluationCount total number of rule evaluations
+                          format: int64
+                          type: integer
+                        lastEvaluationTime:
+                          description: LastEvaluationTime time for the last evaluation
+                          type: string
+                        matchRate:
+                          description: MatchRate percentage of evaluations that resulted
+                            in matches as a string (e.g., "75.5%")
+                          type: string
+                      required:
+                      - evaluationCount
+                      type: object
+                    ruleName:
+                      description: RuleName identifies the rule (uses rule name or
+                        index)
+                      type: string
+                    validationErrors:
+                      description: ValidationErrors specific validation errors for
+                        this rule
+                      items:
+                        description: DetailedError provides comprehensive error information
+                          with context
+                        properties:
+                          code:
+                            description: Code is a machine-readable error code
+                            type: string
+                          component:
+                            description: Component identifies which component generated
+                              the error
+                            enum:
+                            - Controller
+                            - ExtensionServer
+                            - TailscaleAPI
+                            - ServiceDiscovery
+                            - RouteGeneration
+                            - Validation
+                            - StatefulSet
+                            - HealthCheck
+                            - OAuth
+                            - PolicyEngine
+                            type: string
+                          context:
+                            additionalProperties:
+                              type: string
+                            description: Context provides additional context about
+                              the error
+                            type: object
+                          httpStatusCode:
+                            description: HTTPStatusCode provides HTTP status code
+                              for API-related errors
+                            format: int32
+                            type: integer
+                          lastRetry:
+                            description: LastRetry timestamp of the last retry attempt
+                            format: date-time
+                            type: string
+                          message:
+                            description: Message is a human-readable error message
+                            type: string
+                          resolutionHint:
+                            description: ResolutionHint provides guidance on how to
+                              resolve the error
+                            type: string
+                          resourceRef:
+                            description: ResourceRef identifies the specific resource
+                              that caused the error
+                            properties:
+                              group:
+                                description: Group is the group of the target resource.
+                                maxLength: 253
+                                pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                type: string
+                              kind:
+                                description: Kind is the kind of the target resource.
+                                maxLength: 63
+                                minLength: 1
+                                pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+                                type: string
+                              name:
+                                description: Name is the name of the target resource.
+                                maxLength: 253
+                                minLength: 1
+                                type: string
+                              namespace:
+                                description: Namespace is the namespace of the target
+                                  resource.
+                                maxLength: 63
+                                minLength: 1
+                                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                type: string
+                              sectionName:
+                                description: SectionName is the name of a section
+                                  within the target resource.
+                                maxLength: 253
+                                minLength: 1
+                                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                type: string
+                            required:
+                            - group
+                            - kind
+                            - name
+                            type: object
+                          retries:
+                            description: Retries indicates how many times this operation
+                              has been retried
+                            format: int32
+                            type: integer
+                          severity:
+                            description: Severity indicates the severity of the error
+                            enum:
+                            - Critical
+                            - High
+                            - Medium
+                            - Low
+                            - Info
+                            type: string
+                          timestamp:
+                            description: Timestamp when the error occurred
+                            format: date-time
+                            type: string
+                        required:
+                        - code
+                        - component
+                        - message
+                        - retries
+                        - timestamp
+                        type: object
+                      type: array
+                    validationStatus:
+                      description: ValidationStatus indicates if the rule passed validation
+                      enum:
+                      - Valid
+                      - Invalid
+                      - Warning
+                      type: string
+                  required:
+                  - applied
+                  - matchCount
+                  - ruleName
+                  - validationStatus
+                  type: object
+                type: array
+              validationErrors:
+                description: ValidationErrors tracks policy validation errors
+                items:
+                  description: DetailedError provides comprehensive error information
+                    with context
+                  properties:
+                    code:
+                      description: Code is a machine-readable error code
+                      type: string
+                    component:
+                      description: Component identifies which component generated
+                        the error
+                      enum:
+                      - Controller
+                      - ExtensionServer
+                      - TailscaleAPI
+                      - ServiceDiscovery
+                      - RouteGeneration
+                      - Validation
+                      - StatefulSet
+                      - HealthCheck
+                      - OAuth
+                      - PolicyEngine
+                      type: string
+                    context:
+                      additionalProperties:
+                        type: string
+                      description: Context provides additional context about the error
+                      type: object
+                    httpStatusCode:
+                      description: HTTPStatusCode provides HTTP status code for API-related
+                        errors
+                      format: int32
+                      type: integer
+                    lastRetry:
+                      description: LastRetry timestamp of the last retry attempt
+                      format: date-time
+                      type: string
+                    message:
+                      description: Message is a human-readable error message
+                      type: string
+                    resolutionHint:
+                      description: ResolutionHint provides guidance on how to resolve
+                        the error
+                      type: string
+                    resourceRef:
+                      description: ResourceRef identifies the specific resource that
+                        caused the error
+                      properties:
+                        group:
+                          description: Group is the group of the target resource.
+                          maxLength: 253
+                          pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                          type: string
+                        kind:
+                          description: Kind is the kind of the target resource.
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+                          type: string
+                        name:
+                          description: Name is the name of the target resource.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        namespace:
+                          description: Namespace is the namespace of the target resource.
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                        sectionName:
+                          description: SectionName is the name of a section within
+                            the target resource.
+                          maxLength: 253
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                          type: string
+                      required:
+                      - group
+                      - kind
+                      - name
+                      type: object
+                    retries:
+                      description: Retries indicates how many times this operation
+                        has been retried
+                      format: int32
+                      type: integer
+                    severity:
+                      description: Severity indicates the severity of the error
+                      enum:
+                      - Critical
+                      - High
+                      - Medium
+                      - Low
+                      - Info
+                      type: string
+                    timestamp:
+                      description: Timestamp when the error occurred
+                      format: date-time
+                      type: string
+                  required:
+                  - code
+                  - component
+                  - message
+                  - retries
+                  - timestamp
                   type: object
                 type: array
             type: object

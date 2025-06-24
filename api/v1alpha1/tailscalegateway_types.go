@@ -204,6 +204,23 @@ type TailscaleGatewayStatus struct {
 	// Services tracks VIP services managed by this gateway
 	// +optional
 	Services []ServiceInfo `json:"services,omitempty"`
+
+	// RecentErrors tracks recent operational errors with context
+	// +optional
+	// +listType=atomic
+	RecentErrors []DetailedError `json:"recentErrors,omitempty"`
+
+	// OperationalMetrics provides performance and operational insights
+	// +optional
+	OperationalMetrics *OperationalMetrics `json:"operationalMetrics,omitempty"`
+
+	// DependencyStatus tracks the status of dependent resources
+	// +optional
+	DependencyStatus []DependencyStatus `json:"dependencyStatus,omitempty"`
+
+	// HTTPRouteRefs tracks which HTTPRoutes are being processed
+	// +optional
+	HTTPRouteRefs []LocalPolicyTargetReference `json:"httpRouteRefs,omitempty"`
 }
 
 // TailnetStatus provides status information for a specific tailnet
@@ -223,6 +240,18 @@ type TailnetStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// APIStatus provides details about Tailscale API communication
+	// +optional
+	APIStatus *TailscaleAPIStatus `json:"apiStatus,omitempty"`
+
+	// ServiceDiscoveryDetails provides detailed service discovery information
+	// +optional
+	ServiceDiscoveryDetails *ServiceDiscoveryDetails `json:"serviceDiscoveryDetails,omitempty"`
+
+	// LastError provides context about the most recent error
+	// +optional
+	LastError *DetailedError `json:"lastError,omitempty"`
 }
 
 // ExtensionServerStatus provides status for the Extension Server deployment
@@ -243,6 +272,18 @@ type ExtensionServerStatus struct {
 	// LastHookCall is the timestamp of the last successful hook call.
 	// +optional
 	LastHookCall *metav1.Time `json:"lastHookCall,omitempty"`
+
+	// HookCallMetrics provides metrics about hook call performance
+	// +optional
+	HookCallMetrics *HookCallMetrics `json:"hookCallMetrics,omitempty"`
+
+	// ReplicaStatus provides detailed status for each replica
+	// +optional
+	ReplicaStatus []ReplicaStatus `json:"replicaStatus,omitempty"`
+
+	// DeploymentErrors tracks deployment-related errors
+	// +optional
+	DeploymentErrors []DetailedError `json:"deploymentErrors,omitempty"`
 }
 
 // GeneratedRoutesStatus tracks generated route metrics
@@ -272,6 +313,116 @@ type ServiceInfo struct {
 
 	// ConsumerCount is the number of clusters consuming this service
 	ConsumerCount int `json:"consumerCount"`
+
+	// Status indicates the current state of this service
+	// +kubebuilder:validation:Enum=Ready;Pending;Failed;Unknown
+	Status string `json:"status"`
+
+	// CreatedAt indicates when this service was created
+	// +optional
+	CreatedAt *metav1.Time `json:"createdAt,omitempty"`
+
+	// LastUpdated indicates when this service was last updated
+	// +optional
+	LastUpdated *metav1.Time `json:"lastUpdated,omitempty"`
+
+	// ErrorMessage provides context if the service is in an error state
+	// +optional
+	ErrorMessage string `json:"errorMessage,omitempty"`
+
+	// ConsumerClusters lists which clusters are consuming this service
+	// +optional
+	ConsumerClusters []string `json:"consumerClusters,omitempty"`
+}
+
+// ServiceDiscoveryDetails provides detailed service discovery information
+type ServiceDiscoveryDetails struct {
+	// TotalServices total number of services in the tailnet
+	TotalServices int `json:"totalServices"`
+
+	// FilteredServices services after applying include/exclude patterns
+	FilteredServices int `json:"filteredServices"`
+
+	// PatternsMatched which patterns matched during discovery
+	// +optional
+	PatternsMatched []string `json:"patternsMatched,omitempty"`
+
+	// PatternsExcluded which patterns excluded services
+	// +optional
+	PatternsExcluded []string `json:"patternsExcluded,omitempty"`
+
+	// LastDiscoveryDuration how long service discovery took
+	// +optional
+	LastDiscoveryDuration *metav1.Duration `json:"lastDiscoveryDuration,omitempty"`
+
+	// DiscoveryErrors any errors during service discovery
+	// +optional
+	DiscoveryErrors []DetailedError `json:"discoveryErrors,omitempty"`
+}
+
+// HookCallMetrics provides metrics about extension server hook calls
+type HookCallMetrics struct {
+	// TotalCalls total number of hook calls
+	TotalCalls int64 `json:"totalCalls"`
+
+	// SuccessfulCalls number of successful hook calls
+	SuccessfulCalls int64 `json:"successfulCalls"`
+
+	// FailedCalls number of failed hook calls
+	FailedCalls int64 `json:"failedCalls"`
+
+	// AverageResponseTime average hook call response time
+	// +optional
+	AverageResponseTime *metav1.Duration `json:"averageResponseTime,omitempty"`
+
+	// LastCallDuration duration of the last hook call
+	// +optional
+	LastCallDuration *metav1.Duration `json:"lastCallDuration,omitempty"`
+
+	// HookTypeMetrics per-hook-type metrics
+	// +optional
+	HookTypeMetrics map[string]HookTypeMetric `json:"hookTypeMetrics,omitempty"`
+}
+
+// HookTypeMetric provides metrics for a specific hook type
+type HookTypeMetric struct {
+	// Calls number of calls for this hook type
+	Calls int64 `json:"calls"`
+
+	// Successes number of successful calls
+	Successes int64 `json:"successes"`
+
+	// Failures number of failed calls
+	Failures int64 `json:"failures"`
+
+	// AverageResponseTime average response time for this hook type
+	// +optional
+	AverageResponseTime *metav1.Duration `json:"averageResponseTime,omitempty"`
+}
+
+// ReplicaStatus provides detailed status for an extension server replica
+type ReplicaStatus struct {
+	// Name of the replica pod
+	Name string `json:"name"`
+
+	// Ready indicates if the replica is ready
+	Ready bool `json:"ready"`
+
+	// Phase current phase of the replica
+	// +kubebuilder:validation:Enum=Pending;Running;Succeeded;Failed;Unknown
+	Phase string `json:"phase"`
+
+	// LastHealthCheck timestamp of last health check
+	// +optional
+	LastHealthCheck *metav1.Time `json:"lastHealthCheck,omitempty"`
+
+	// Errors any errors from this replica
+	// +optional
+	Errors []DetailedError `json:"errors,omitempty"`
+
+	// Version the image version running in this replica
+	// +optional
+	Version string `json:"version,omitempty"`
 }
 
 func init() {

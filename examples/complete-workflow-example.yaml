@@ -1,0 +1,293 @@
+# Complete Workflow Example - Implements the envisioned user workflow
+# This demonstrates steps 1-9 of the complete tailscale-gateway workflow
+
+# Step 1: Install envoy-gateway and tailscale-gateway
+# kubectl apply -f https://github.com/envoyproxy/gateway/releases/latest/download/install.yaml
+# kubectl apply -f config/crd/bases/
+
+# Step 2: Define TailscaleTailnet with OAuth credentials and default tags
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleTailnet
+metadata:
+  name: production-tailnet
+  namespace: default
+spec:
+  # OAuth credentials secret
+  oauthSecretName: tailscale-oauth-secret
+  oauthSecretNamespace: default
+  
+  # Default tags to apply to all resources attached to this tailnet
+  tags:
+    - "tag:k8s-operator"
+    - "tag:production"
+    - "tag:cluster-main"
+  
+  # Tailnet identifier (optional, defaults to default tailnet)
+  tailnet: "my-company.ts.net"
+
+---
+# OAuth credentials secret (create this manually with your OAuth client credentials)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tailscale-oauth-secret
+  namespace: default
+type: Opaque
+data:
+  client_id: <base64-encoded-oauth-client-id>
+  client_secret: <base64-encoded-oauth-client-secret>
+
+---
+# Step 3: Define Gateway API Gateway using envoy gateway class
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: main-gateway
+  namespace: default
+spec:
+  gatewayClassName: eg  # Envoy Gateway class
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: All
+  - name: https
+    port: 443
+    protocol: HTTPS
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - name: gateway-tls-cert
+
+---
+# Step 4: Define TailscaleGateway that integrates with Envoy Gateway
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleGateway
+metadata:
+  name: main-tailscale-gateway
+  namespace: default
+spec:
+  # Reference to the Envoy Gateway to integrate with
+  gatewayRef:
+    name: main-gateway
+    namespace: default
+  
+  # Configure tailnets and their service discovery
+  tailnets:
+  - name: production
+    tailscaleTailnetRef:
+      name: production-tailnet
+      namespace: default
+    
+    # Service discovery configuration
+    serviceDiscovery:
+      enabled: true
+      patterns:
+        - "tag:service"
+        - "tag:production"
+      excludePatterns:
+        - "tag:exclude"
+      syncInterval: "30s"
+    
+    # Route generation configuration
+    routeGeneration:
+      ingress:
+        hostPattern: "{service}.production.gateway.local"
+        pathPrefix: "/"
+        protocol: "HTTPS"
+      egress:
+        hostPattern: "{service}.tailscale.local"
+        pathPrefix: "/api/{service}/"
+        protocol: "HTTP"
+  
+  # Extension server configuration (optional)
+  extensionServer:
+    image: "tailscale-gateway-extension:latest"
+    replicas: 2
+    port: 8443
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "100m"
+      limits:
+        memory: "128Mi"
+        cpu: "200m"
+
+---
+# Step 5: TailscaleEndpoints will be created automatically by the operator
+# This shows what the operator creates based on the TailscaleGateway configuration
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleEndpoints
+metadata:
+  name: main-tailscale-gateway-production-endpoints
+  namespace: default
+  labels:
+    gateway.tailscale.com/gateway: main-tailscale-gateway
+    gateway.tailscale.com/tailnet: production
+spec:
+  tailnet: production
+  
+  # Auto-discovery configuration (from TailscaleGateway)
+  autoDiscovery:
+    enabled: true
+    syncInterval: "30s"
+    tagSelectors:
+    - tag: "tag:service"
+      operator: "Exists"
+    - tag: "tag:production"
+      operator: "Exists"
+    
+    # VIP service discovery
+    serviceDiscovery:
+      enabled: true
+      serviceTags:
+        - "tag:production"
+  
+  # Manual endpoints (for specific external services)
+  endpoints:
+  - name: httpbin-service
+    tailscaleIP: "100.64.0.10"
+    tailscaleFQDN: "httpbin.my-company.ts.net"
+    port: 80
+    protocol: "HTTP"
+    tags:
+      - "tag:service"
+      - "tag:external"
+    externalTarget: "httpbin.org:80"
+    healthCheck:
+      enabled: true
+      path: "/status/200"
+      interval: "30s"
+      timeout: "5s"
+
+---
+# Step 6: Sample application service that will be discovered and exposed
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: webapp
+  template:
+    metadata:
+      labels:
+        app: webapp
+    spec:
+      containers:
+      - name: webapp
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp
+  namespace: default
+  labels:
+    app: webapp
+  # This service will be automatically discovered for bidirectional exposure
+spec:
+  selector:
+    app: webapp
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+  type: ClusterIP
+
+---
+# Step 8: HTTPRoute that references TailscaleEndpoints backends
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: external-services-route
+  namespace: default
+  annotations:
+    # This annotation links the HTTPRoute to our TailscaleGateway
+    gateway.tailscale.com/gateway: main-tailscale-gateway
+spec:
+  parentRefs:
+  - name: main-gateway
+    namespace: default
+  
+  # Route to external services via Tailscale
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: "/api/httpbin/"
+    backendRefs:
+    # Reference TailscaleEndpoints as backend (NEW FEATURE)
+    - group: gateway.tailscale.com
+      kind: TailscaleEndpoints
+      name: main-tailscale-gateway-production-endpoints
+      port: 80
+      weight: 100
+    
+    # Route filters for path rewriting
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: "/"
+
+---
+# Step 9: HTTPRoute for local webapp that will be accessible via Tailscale
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: webapp-route
+  namespace: default
+  annotations:
+    gateway.tailscale.com/gateway: main-tailscale-gateway
+spec:
+  parentRefs:
+  - name: main-gateway
+    namespace: default
+  
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: "/webapp/"
+    backendRefs:
+    - name: webapp
+      port: 80
+      weight: 100
+    
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: "/"
+
+---
+# Example TLS certificate for HTTPS listeners
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gateway-tls-cert
+  namespace: default
+type: kubernetes.io/tls
+data:
+  tls.crt: LS0tLS1CRUdJTi... # base64 encoded certificate
+  tls.key: LS0tLS1CRUdJTi... # base64 encoded private key

@@ -184,6 +184,27 @@ type StatefulSetReference struct {
 
 	// EndpointName identifies which endpoint this StatefulSet serves
 	EndpointName string `json:"endpointName"`
+
+	// Status indicates the current state of the StatefulSet
+	// +kubebuilder:validation:Enum=Ready;Pending;Failed;Scaling;Unknown
+	// +optional
+	Status string `json:"status,omitempty"`
+
+	// ReadyReplicas number of ready replicas
+	// +optional
+	ReadyReplicas *int32 `json:"readyReplicas,omitempty"`
+
+	// DesiredReplicas desired number of replicas
+	// +optional
+	DesiredReplicas *int32 `json:"desiredReplicas,omitempty"`
+
+	// LastStatusChange when the status last changed
+	// +optional
+	LastStatusChange *metav1.Time `json:"lastStatusChange,omitempty"`
+
+	// ErrorMessage provides context if the StatefulSet is in an error state
+	// +optional
+	ErrorMessage string `json:"errorMessage,omitempty"`
 }
 
 // TailscaleEndpointsStatus defines the observed state of TailscaleEndpoints
@@ -203,6 +224,9 @@ type TailscaleEndpointsStatus struct {
 	// HealthyEndpoints is the count of endpoints passing health checks
 	HealthyEndpoints int `json:"healthyEndpoints"`
 
+	// UnhealthyEndpoints is the count of endpoints failing health checks
+	UnhealthyEndpoints int `json:"unhealthyEndpoints"`
+
 	// LastSync indicates when endpoint discovery last succeeded
 	// +optional
 	LastSync *metav1.Time `json:"lastSync,omitempty"`
@@ -214,6 +238,23 @@ type TailscaleEndpointsStatus struct {
 	// StatefulSetRefs tracks the StatefulSets created for endpoint connections
 	// +optional
 	StatefulSetRefs []StatefulSetReference `json:"statefulSetRefs,omitempty"`
+
+	// AutoDiscoveryStatus provides details about the auto-discovery process
+	// +optional
+	AutoDiscoveryStatus *AutoDiscoveryStatus `json:"autoDiscoveryStatus,omitempty"`
+
+	// TagSelectorResults provides results of tag selector matching
+	// +optional
+	TagSelectorResults []TagSelectorResult `json:"tagSelectorResults,omitempty"`
+
+	// RecentErrors tracks recent operational errors with context
+	// +optional
+	// +listType=atomic
+	RecentErrors []DetailedError `json:"recentErrors,omitempty"`
+
+	// OperationalMetrics provides performance and operational insights
+	// +optional
+	OperationalMetrics *OperationalMetrics `json:"operationalMetrics,omitempty"`
 }
 
 // EndpointStatus provides status information for a specific endpoint
@@ -225,7 +266,7 @@ type EndpointStatus struct {
 	TailscaleIP string `json:"tailscaleIP"`
 
 	// HealthStatus indicates the health check status
-	// +kubebuilder:validation:Enum=Healthy;Unhealthy;Unknown
+	// +kubebuilder:validation:Enum=Healthy;Unhealthy;Unknown;Disabled
 	HealthStatus string `json:"healthStatus"`
 
 	// LastHealthCheck is when the endpoint was last health checked
@@ -233,12 +274,32 @@ type EndpointStatus struct {
 	LastHealthCheck *metav1.Time `json:"lastHealthCheck,omitempty"`
 
 	// DiscoverySource indicates how this endpoint was discovered
-	// +kubebuilder:validation:Enum=Manual;AutoDiscovery
+	// +kubebuilder:validation:Enum=Manual;AutoDiscovery;VIPService;TagSelector
 	DiscoverySource string `json:"discoverySource"`
 
 	// Tags are the Tailscale tags associated with this endpoint
 	// +optional
 	Tags []string `json:"tags,omitempty"`
+
+	// HealthCheckDetails provides detailed health check information
+	// +optional
+	HealthCheckDetails *HealthCheckDetails `json:"healthCheckDetails,omitempty"`
+
+	// ConnectionStatus tracks the status of StatefulSet connections
+	// +optional
+	ConnectionStatus *ConnectionStatus `json:"connectionStatus,omitempty"`
+
+	// LastError provides context about the most recent error
+	// +optional
+	LastError *DetailedError `json:"lastError,omitempty"`
+
+	// Weight is the current load balancing weight
+	// +optional
+	Weight *int32 `json:"weight,omitempty"`
+
+	// ExternalTarget shows the configured external target
+	// +optional
+	ExternalTarget string `json:"externalTarget,omitempty"`
 }
 
 //+kubebuilder:object:root=true
@@ -267,6 +328,179 @@ type TailscaleEndpointsList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []TailscaleEndpoints `json:"items"`
+}
+
+// HealthCheckDetails provides comprehensive health check information
+type HealthCheckDetails struct {
+	// Enabled indicates if health checking is enabled for this endpoint
+	Enabled bool `json:"enabled"`
+
+	// SuccessiveSuccesses number of consecutive successful health checks
+	SuccessiveSuccesses int32 `json:"successiveSuccesses"`
+
+	// SuccessiveFailures number of consecutive failed health checks
+	SuccessiveFailures int32 `json:"successiveFailures"`
+
+	// TotalChecks total number of health checks performed
+	TotalChecks int64 `json:"totalChecks"`
+
+	// SuccessfulChecks total number of successful health checks
+	SuccessfulChecks int64 `json:"successfulChecks"`
+
+	// LastCheckDuration duration of the last health check
+	// +optional
+	LastCheckDuration *metav1.Duration `json:"lastCheckDuration,omitempty"`
+
+	// LastCheckResponse details about the last health check response
+	// +optional
+	LastCheckResponse *HealthCheckResponse `json:"lastCheckResponse,omitempty"`
+
+	// AverageResponseTime average health check response time
+	// +optional
+	AverageResponseTime *metav1.Duration `json:"averageResponseTime,omitempty"`
+
+	// RecentFailures details about recent health check failures
+	// +optional
+	RecentFailures []HealthCheckFailure `json:"recentFailures,omitempty"`
+
+	// Configuration shows the current health check configuration
+	// +optional
+	Configuration *EndpointHealthCheck `json:"configuration,omitempty"`
+}
+
+// HealthCheckResponse contains details about a health check response
+type HealthCheckResponse struct {
+	// StatusCode HTTP status code (for HTTP/HTTPS checks)
+	// +optional
+	StatusCode *int32 `json:"statusCode,omitempty"`
+
+	// Success indicates if the health check succeeded
+	Success bool `json:"success"`
+
+	// ResponseTime how long the check took
+	ResponseTime metav1.Duration `json:"responseTime"`
+
+	// ErrorMessage error message if the check failed
+	// +optional
+	ErrorMessage string `json:"errorMessage,omitempty"`
+
+	// ResponseHeaders key response headers (for HTTP/HTTPS checks)
+	// +optional
+	ResponseHeaders map[string]string `json:"responseHeaders,omitempty"`
+
+	// Timestamp when the check was performed
+	Timestamp metav1.Time `json:"timestamp"`
+}
+
+// HealthCheckFailure provides details about a health check failure
+type HealthCheckFailure struct {
+	// Timestamp when the failure occurred
+	Timestamp metav1.Time `json:"timestamp"`
+
+	// ErrorType categorizes the type of failure
+	// +kubebuilder:validation:Enum=Timeout;ConnectionRefused;DNSResolution;HTTPError;TCPError;UDPError;TLSError;Unknown
+	ErrorType string `json:"errorType"`
+
+	// ErrorMessage detailed error message
+	ErrorMessage string `json:"errorMessage"`
+
+	// StatusCode HTTP status code if applicable
+	// +optional
+	StatusCode *int32 `json:"statusCode,omitempty"`
+
+	// Duration how long the failed check took
+	// +optional
+	Duration *metav1.Duration `json:"duration,omitempty"`
+
+	// RetryAttempt which retry attempt this was
+	// +optional
+	RetryAttempt *int32 `json:"retryAttempt,omitempty"`
+}
+
+// ConnectionStatus provides details about StatefulSet connection status
+type ConnectionStatus struct {
+	// IngressReady indicates if ingress connection is ready
+	// +optional
+	IngressReady *bool `json:"ingressReady,omitempty"`
+
+	// EgressReady indicates if egress connection is ready
+	// +optional
+	EgressReady *bool `json:"egressReady,omitempty"`
+
+	// TailscaleConnected indicates if Tailscale connection is established
+	// +optional
+	TailscaleConnected *bool `json:"tailscaleConnected,omitempty"`
+
+	// LastConnectionAttempt timestamp of last connection attempt
+	// +optional
+	LastConnectionAttempt *metav1.Time `json:"lastConnectionAttempt,omitempty"`
+
+	// ConnectionErrors recent connection errors
+	// +optional
+	ConnectionErrors []DetailedError `json:"connectionErrors,omitempty"`
+}
+
+// AutoDiscoveryStatus provides details about the auto-discovery process
+type AutoDiscoveryStatus struct {
+	// Enabled indicates if auto-discovery is enabled
+	Enabled bool `json:"enabled"`
+
+	// LastDiscoveryTime when auto-discovery was last performed
+	// +optional
+	LastDiscoveryTime *metav1.Time `json:"lastDiscoveryTime,omitempty"`
+
+	// DiscoveryDuration how long the last discovery took
+	// +optional
+	DiscoveryDuration *metav1.Duration `json:"discoveryDuration,omitempty"`
+
+	// TotalDevicesScanned total devices found in tailnet
+	TotalDevicesScanned int `json:"totalDevicesScanned"`
+
+	// DevicesMatchingCriteria devices that matched discovery criteria
+	DevicesMatchingCriteria int `json:"devicesMatchingCriteria"`
+
+	// VIPServicesDiscovered VIP services found
+	// +optional
+	VIPServicesDiscovered int `json:"vipServicesDiscovered,omitempty"`
+
+	// TagSelectorsApplied number of tag selectors applied
+	// +optional
+	TagSelectorsApplied int `json:"tagSelectorsApplied,omitempty"`
+
+	// DiscoveryErrors errors encountered during discovery
+	// +optional
+	DiscoveryErrors []DetailedError `json:"discoveryErrors,omitempty"`
+
+	// APIStatus status of Tailscale API communication
+	// +optional
+	APIStatus *TailscaleAPIStatus `json:"apiStatus,omitempty"`
+}
+
+// TagSelectorResult provides results of tag selector matching
+type TagSelectorResult struct {
+	// Selector the tag selector that was applied
+	Selector TagSelector `json:"selector"`
+
+	// MatchedDevices number of devices that matched this selector
+	MatchedDevices int `json:"matchedDevices"`
+
+	// ExcludedDevices number of devices that were excluded
+	// +optional
+	ExcludedDevices int `json:"excludedDevices,omitempty"`
+
+	// LastApplied when this selector was last applied
+	LastApplied metav1.Time `json:"lastApplied"`
+
+	// Success indicates if the selector was applied successfully
+	Success bool `json:"success"`
+
+	// ErrorMessage error message if selector application failed
+	// +optional
+	ErrorMessage string `json:"errorMessage,omitempty"`
+
+	// MatchedDeviceNames names of devices that matched (for debugging)
+	// +optional
+	MatchedDeviceNames []string `json:"matchedDeviceNames,omitempty"`
 }
 
 func init() {

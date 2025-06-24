@@ -458,15 +458,279 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              dependencyStatus:
+                description: DependencyStatus tracks the status of dependent resources
+                items:
+                  description: DependencyStatus tracks the status of dependent resources
+                  properties:
+                    blockingReason:
+                      description: BlockingReason explains why this dependency is
+                        blocking operations
+                      type: string
+                    dependencyType:
+                      description: DependencyType categorizes the type of dependency
+                      enum:
+                      - Required
+                      - Optional
+                      - Soft
+                      - Hard
+                      type: string
+                    errorMessage:
+                      description: ErrorMessage provides context if the dependency
+                        is in an error state
+                      type: string
+                    failedConditions:
+                      description: FailedConditions tracks which conditions have failed
+                        on the dependency
+                      items:
+                        type: string
+                      type: array
+                    impact:
+                      description: Impact describes the impact if this dependency
+                        is not ready
+                      type: string
+                    lastChecked:
+                      description: LastChecked when the dependency was last checked
+                      format: date-time
+                      type: string
+                    readyConditions:
+                      description: ReadyConditions tracks which conditions are ready
+                        on the dependency
+                      items:
+                        type: string
+                      type: array
+                    resourceRef:
+                      description: ResourceRef references the dependent resource
+                      properties:
+                        group:
+                          description: Group is the group of the target resource.
+                          maxLength: 253
+                          pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                          type: string
+                        kind:
+                          description: Kind is the kind of the target resource.
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+                          type: string
+                        name:
+                          description: Name is the name of the target resource.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        namespace:
+                          description: Namespace is the namespace of the target resource.
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                        sectionName:
+                          description: SectionName is the name of a section within
+                            the target resource.
+                          maxLength: 253
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                          type: string
+                      required:
+                      - group
+                      - kind
+                      - name
+                      type: object
+                    status:
+                      description: Status indicates the current state of the dependency
+                      enum:
+                      - Ready
+                      - Pending
+                      - Failed
+                      - NotFound
+                      - Unknown
+                      - Conflicted
+                      type: string
+                    version:
+                      description: Version tracks the resource version of the dependency
+                      type: string
+                  required:
+                  - lastChecked
+                  - resourceRef
+                  - status
+                  type: object
+                type: array
               extensionServerStatus:
                 description: ExtensionServerStatus provides status for the Extension
                   Server
                 properties:
+                  deploymentErrors:
+                    description: DeploymentErrors tracks deployment-related errors
+                    items:
+                      description: DetailedError provides comprehensive error information
+                        with context
+                      properties:
+                        code:
+                          description: Code is a machine-readable error code
+                          type: string
+                        component:
+                          description: Component identifies which component generated
+                            the error
+                          enum:
+                          - Controller
+                          - ExtensionServer
+                          - TailscaleAPI
+                          - ServiceDiscovery
+                          - RouteGeneration
+                          - Validation
+                          - StatefulSet
+                          - HealthCheck
+                          - OAuth
+                          - PolicyEngine
+                          type: string
+                        context:
+                          additionalProperties:
+                            type: string
+                          description: Context provides additional context about the
+                            error
+                          type: object
+                        httpStatusCode:
+                          description: HTTPStatusCode provides HTTP status code for
+                            API-related errors
+                          format: int32
+                          type: integer
+                        lastRetry:
+                          description: LastRetry timestamp of the last retry attempt
+                          format: date-time
+                          type: string
+                        message:
+                          description: Message is a human-readable error message
+                          type: string
+                        resolutionHint:
+                          description: ResolutionHint provides guidance on how to
+                            resolve the error
+                          type: string
+                        resourceRef:
+                          description: ResourceRef identifies the specific resource
+                            that caused the error
+                          properties:
+                            group:
+                              description: Group is the group of the target resource.
+                              maxLength: 253
+                              pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                              type: string
+                            kind:
+                              description: Kind is the kind of the target resource.
+                              maxLength: 63
+                              minLength: 1
+                              pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+                              type: string
+                            name:
+                              description: Name is the name of the target resource.
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            namespace:
+                              description: Namespace is the namespace of the target
+                                resource.
+                              maxLength: 63
+                              minLength: 1
+                              pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                              type: string
+                            sectionName:
+                              description: SectionName is the name of a section within
+                                the target resource.
+                              maxLength: 253
+                              minLength: 1
+                              pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                              type: string
+                          required:
+                          - group
+                          - kind
+                          - name
+                          type: object
+                        retries:
+                          description: Retries indicates how many times this operation
+                            has been retried
+                          format: int32
+                          type: integer
+                        severity:
+                          description: Severity indicates the severity of the error
+                          enum:
+                          - Critical
+                          - High
+                          - Medium
+                          - Low
+                          - Info
+                          type: string
+                        timestamp:
+                          description: Timestamp when the error occurred
+                          format: date-time
+                          type: string
+                      required:
+                      - code
+                      - component
+                      - message
+                      - retries
+                      - timestamp
+                      type: object
+                    type: array
                   desiredReplicas:
                     description: DesiredReplicas indicates the desired number of Extension
                       Server replicas
                     format: int32
                     type: integer
+                  hookCallMetrics:
+                    description: HookCallMetrics provides metrics about hook call
+                      performance
+                    properties:
+                      averageResponseTime:
+                        description: AverageResponseTime average hook call response
+                          time
+                        type: string
+                      failedCalls:
+                        description: FailedCalls number of failed hook calls
+                        format: int64
+                        type: integer
+                      hookTypeMetrics:
+                        additionalProperties:
+                          description: HookTypeMetric provides metrics for a specific
+                            hook type
+                          properties:
+                            averageResponseTime:
+                              description: AverageResponseTime average response time
+                                for this hook type
+                              type: string
+                            calls:
+                              description: Calls number of calls for this hook type
+                              format: int64
+                              type: integer
+                            failures:
+                              description: Failures number of failed calls
+                              format: int64
+                              type: integer
+                            successes:
+                              description: Successes number of successful calls
+                              format: int64
+                              type: integer
+                          required:
+                          - calls
+                          - failures
+                          - successes
+                          type: object
+                        description: HookTypeMetrics per-hook-type metrics
+                        type: object
+                      lastCallDuration:
+                        description: LastCallDuration duration of the last hook call
+                        type: string
+                      successfulCalls:
+                        description: SuccessfulCalls number of successful hook calls
+                        format: int64
+                        type: integer
+                      totalCalls:
+                        description: TotalCalls total number of hook calls
+                        format: int64
+                        type: integer
+                    required:
+                    - failedCalls
+                    - successfulCalls
+                    - totalCalls
+                    type: object
                   lastHookCall:
                     description: LastHookCall is the timestamp of the last successful
                       hook call.
@@ -481,6 +745,154 @@ spec:
                       replicas are ready
                     format: int32
                     type: integer
+                  replicaStatus:
+                    description: ReplicaStatus provides detailed status for each replica
+                    items:
+                      description: ReplicaStatus provides detailed status for an extension
+                        server replica
+                      properties:
+                        errors:
+                          description: Errors any errors from this replica
+                          items:
+                            description: DetailedError provides comprehensive error
+                              information with context
+                            properties:
+                              code:
+                                description: Code is a machine-readable error code
+                                type: string
+                              component:
+                                description: Component identifies which component
+                                  generated the error
+                                enum:
+                                - Controller
+                                - ExtensionServer
+                                - TailscaleAPI
+                                - ServiceDiscovery
+                                - RouteGeneration
+                                - Validation
+                                - StatefulSet
+                                - HealthCheck
+                                - OAuth
+                                - PolicyEngine
+                                type: string
+                              context:
+                                additionalProperties:
+                                  type: string
+                                description: Context provides additional context about
+                                  the error
+                                type: object
+                              httpStatusCode:
+                                description: HTTPStatusCode provides HTTP status code
+                                  for API-related errors
+                                format: int32
+                                type: integer
+                              lastRetry:
+                                description: LastRetry timestamp of the last retry
+                                  attempt
+                                format: date-time
+                                type: string
+                              message:
+                                description: Message is a human-readable error message
+                                type: string
+                              resolutionHint:
+                                description: ResolutionHint provides guidance on how
+                                  to resolve the error
+                                type: string
+                              resourceRef:
+                                description: ResourceRef identifies the specific resource
+                                  that caused the error
+                                properties:
+                                  group:
+                                    description: Group is the group of the target
+                                      resource.
+                                    maxLength: 253
+                                    pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                    type: string
+                                  kind:
+                                    description: Kind is the kind of the target resource.
+                                    maxLength: 63
+                                    minLength: 1
+                                    pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+                                    type: string
+                                  name:
+                                    description: Name is the name of the target resource.
+                                    maxLength: 253
+                                    minLength: 1
+                                    type: string
+                                  namespace:
+                                    description: Namespace is the namespace of the
+                                      target resource.
+                                    maxLength: 63
+                                    minLength: 1
+                                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                    type: string
+                                  sectionName:
+                                    description: SectionName is the name of a section
+                                      within the target resource.
+                                    maxLength: 253
+                                    minLength: 1
+                                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                    type: string
+                                required:
+                                - group
+                                - kind
+                                - name
+                                type: object
+                              retries:
+                                description: Retries indicates how many times this
+                                  operation has been retried
+                                format: int32
+                                type: integer
+                              severity:
+                                description: Severity indicates the severity of the
+                                  error
+                                enum:
+                                - Critical
+                                - High
+                                - Medium
+                                - Low
+                                - Info
+                                type: string
+                              timestamp:
+                                description: Timestamp when the error occurred
+                                format: date-time
+                                type: string
+                            required:
+                            - code
+                            - component
+                            - message
+                            - retries
+                            - timestamp
+                            type: object
+                          type: array
+                        lastHealthCheck:
+                          description: LastHealthCheck timestamp of last health check
+                          format: date-time
+                          type: string
+                        name:
+                          description: Name of the replica pod
+                          type: string
+                        phase:
+                          description: Phase current phase of the replica
+                          enum:
+                          - Pending
+                          - Running
+                          - Succeeded
+                          - Failed
+                          - Unknown
+                          type: string
+                        ready:
+                          description: Ready indicates if the replica is ready
+                          type: boolean
+                        version:
+                          description: Version the image version running in this replica
+                          type: string
+                      required:
+                      - name
+                      - phase
+                      - ready
+                      type: object
+                    type: array
                   serviceEndpoint:
                     description: ServiceEndpoint provides the gRPC endpoint for the
                       Extension Server
@@ -508,22 +920,250 @@ spec:
                 - egressRoutes
                 - ingressRoutes
                 type: object
+              httpRouteRefs:
+                description: HTTPRouteRefs tracks which HTTPRoutes are being processed
+                items:
+                  description: LocalPolicyTargetReference identifies a target for
+                    policy attachment
+                  properties:
+                    group:
+                      description: Group is the group of the target resource.
+                      maxLength: 253
+                      pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                      type: string
+                    kind:
+                      description: Kind is the kind of the target resource.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+                      type: string
+                    name:
+                      description: Name is the name of the target resource.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    namespace:
+                      description: Namespace is the namespace of the target resource.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    sectionName:
+                      description: SectionName is the name of a section within the
+                        target resource.
+                      maxLength: 253
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                      type: string
+                  required:
+                  - group
+                  - kind
+                  - name
+                  type: object
+                type: array
+              operationalMetrics:
+                description: OperationalMetrics provides performance and operational
+                  insights
+                properties:
+                  apiCallCount:
+                    description: APICallCount total API calls made to Tailscale
+                    format: int64
+                    type: integer
+                  apiRateLimitHits:
+                    description: APIRateLimitHits number of times rate limits were
+                      hit
+                    format: int64
+                    type: integer
+                  averageReconcileTime:
+                    description: AverageReconcileTime average reconciliation duration
+                    type: string
+                  errorRate:
+                    description: ErrorRate percentage of failed operations as a string
+                      (e.g., "15.5%")
+                    type: string
+                  failedReconciles:
+                    description: FailedReconciles number of failed reconciliations
+                    format: int64
+                    type: integer
+                  lastReconcileTime:
+                    description: LastReconcileTime when the last reconciliation occurred
+                    format: date-time
+                    type: string
+                  reconcileCount:
+                    description: ReconcileCount total number of reconciliations
+                    format: int64
+                    type: integer
+                  reconcileDuration:
+                    description: ReconcileDuration how long the last reconciliation
+                      took
+                    type: string
+                  successfulReconciles:
+                    description: SuccessfulReconciles number of successful reconciliations
+                    format: int64
+                    type: integer
+                  throughputPerHour:
+                    description: ThroughputPerHour operations completed per hour
+                    format: int64
+                    type: integer
+                required:
+                - failedReconciles
+                - lastReconcileTime
+                - reconcileCount
+                - successfulReconciles
+                type: object
+              recentErrors:
+                description: RecentErrors tracks recent operational errors with context
+                items:
+                  description: DetailedError provides comprehensive error information
+                    with context
+                  properties:
+                    code:
+                      description: Code is a machine-readable error code
+                      type: string
+                    component:
+                      description: Component identifies which component generated
+                        the error
+                      enum:
+                      - Controller
+                      - ExtensionServer
+                      - TailscaleAPI
+                      - ServiceDiscovery
+                      - RouteGeneration
+                      - Validation
+                      - StatefulSet
+                      - HealthCheck
+                      - OAuth
+                      - PolicyEngine
+                      type: string
+                    context:
+                      additionalProperties:
+                        type: string
+                      description: Context provides additional context about the error
+                      type: object
+                    httpStatusCode:
+                      description: HTTPStatusCode provides HTTP status code for API-related
+                        errors
+                      format: int32
+                      type: integer
+                    lastRetry:
+                      description: LastRetry timestamp of the last retry attempt
+                      format: date-time
+                      type: string
+                    message:
+                      description: Message is a human-readable error message
+                      type: string
+                    resolutionHint:
+                      description: ResolutionHint provides guidance on how to resolve
+                        the error
+                      type: string
+                    resourceRef:
+                      description: ResourceRef identifies the specific resource that
+                        caused the error
+                      properties:
+                        group:
+                          description: Group is the group of the target resource.
+                          maxLength: 253
+                          pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                          type: string
+                        kind:
+                          description: Kind is the kind of the target resource.
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+                          type: string
+                        name:
+                          description: Name is the name of the target resource.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        namespace:
+                          description: Namespace is the namespace of the target resource.
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                        sectionName:
+                          description: SectionName is the name of a section within
+                            the target resource.
+                          maxLength: 253
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                          type: string
+                      required:
+                      - group
+                      - kind
+                      - name
+                      type: object
+                    retries:
+                      description: Retries indicates how many times this operation
+                        has been retried
+                      format: int32
+                      type: integer
+                    severity:
+                      description: Severity indicates the severity of the error
+                      enum:
+                      - Critical
+                      - High
+                      - Medium
+                      - Low
+                      - Info
+                      type: string
+                    timestamp:
+                      description: Timestamp when the error occurred
+                      format: date-time
+                      type: string
+                  required:
+                  - code
+                  - component
+                  - message
+                  - retries
+                  - timestamp
+                  type: object
+                type: array
+                x-kubernetes-list-type: atomic
               services:
                 description: Services tracks VIP services managed by this gateway
                 items:
                   description: ServiceInfo provides information about a VIP service
                     managed by this gateway
                   properties:
+                    consumerClusters:
+                      description: ConsumerClusters lists which clusters are consuming
+                        this service
+                      items:
+                        type: string
+                      type: array
                     consumerCount:
                       description: ConsumerCount is the number of clusters consuming
                         this service
                       type: integer
+                    createdAt:
+                      description: CreatedAt indicates when this service was created
+                      format: date-time
+                      type: string
+                    errorMessage:
+                      description: ErrorMessage provides context if the service is
+                        in an error state
+                      type: string
+                    lastUpdated:
+                      description: LastUpdated indicates when this service was last
+                        updated
+                      format: date-time
+                      type: string
                     name:
                       description: Name is the service name
                       type: string
                     ownerCluster:
                       description: OwnerCluster indicates which cluster/operator owns
                         this service
+                      type: string
+                    status:
+                      description: Status indicates the current state of this service
+                      enum:
+                      - Ready
+                      - Pending
+                      - Failed
+                      - Unknown
                       type: string
                     vipAddresses:
                       description: VIPAddresses are the VIP addresses allocated to
@@ -535,6 +1175,7 @@ spec:
                   - consumerCount
                   - name
                   - ownerCluster
+                  - status
                   type: object
                 type: array
               tailnetStatus:
@@ -543,6 +1184,157 @@ spec:
                   description: TailnetStatus provides status information for a specific
                     tailnet
                   properties:
+                    apiStatus:
+                      description: APIStatus provides details about Tailscale API
+                        communication
+                      properties:
+                        averageResponseTime:
+                          description: AverageResponseTime average API response time
+                          type: string
+                        baseURL:
+                          description: BaseURL the API base URL being used
+                          type: string
+                        capabilities:
+                          description: Capabilities lists available API capabilities
+                          items:
+                            type: string
+                          type: array
+                        connected:
+                          description: Connected indicates if API communication is
+                            working
+                          type: boolean
+                        lastError:
+                          description: LastError provides details about the most recent
+                            API error
+                          properties:
+                            code:
+                              description: Code is a machine-readable error code
+                              type: string
+                            component:
+                              description: Component identifies which component generated
+                                the error
+                              enum:
+                              - Controller
+                              - ExtensionServer
+                              - TailscaleAPI
+                              - ServiceDiscovery
+                              - RouteGeneration
+                              - Validation
+                              - StatefulSet
+                              - HealthCheck
+                              - OAuth
+                              - PolicyEngine
+                              type: string
+                            context:
+                              additionalProperties:
+                                type: string
+                              description: Context provides additional context about
+                                the error
+                              type: object
+                            httpStatusCode:
+                              description: HTTPStatusCode provides HTTP status code
+                                for API-related errors
+                              format: int32
+                              type: integer
+                            lastRetry:
+                              description: LastRetry timestamp of the last retry attempt
+                              format: date-time
+                              type: string
+                            message:
+                              description: Message is a human-readable error message
+                              type: string
+                            resolutionHint:
+                              description: ResolutionHint provides guidance on how
+                                to resolve the error
+                              type: string
+                            resourceRef:
+                              description: ResourceRef identifies the specific resource
+                                that caused the error
+                              properties:
+                                group:
+                                  description: Group is the group of the target resource.
+                                  maxLength: 253
+                                  pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                  type: string
+                                kind:
+                                  description: Kind is the kind of the target resource.
+                                  maxLength: 63
+                                  minLength: 1
+                                  pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+                                  type: string
+                                name:
+                                  description: Name is the name of the target resource.
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                                namespace:
+                                  description: Namespace is the namespace of the target
+                                    resource.
+                                  maxLength: 63
+                                  minLength: 1
+                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                  type: string
+                                sectionName:
+                                  description: SectionName is the name of a section
+                                    within the target resource.
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                  type: string
+                              required:
+                              - group
+                              - kind
+                              - name
+                              type: object
+                            retries:
+                              description: Retries indicates how many times this operation
+                                has been retried
+                              format: int32
+                              type: integer
+                            severity:
+                              description: Severity indicates the severity of the
+                                error
+                              enum:
+                              - Critical
+                              - High
+                              - Medium
+                              - Low
+                              - Info
+                              type: string
+                            timestamp:
+                              description: Timestamp when the error occurred
+                              format: date-time
+                              type: string
+                          required:
+                          - code
+                          - component
+                          - message
+                          - retries
+                          - timestamp
+                          type: object
+                        lastSuccessfulCall:
+                          description: LastSuccessfulCall timestamp of last successful
+                            API call
+                          format: date-time
+                          type: string
+                        rateLimitRemaining:
+                          description: RateLimitRemaining API rate limit remaining
+                          format: int32
+                          type: integer
+                        rateLimitReset:
+                          description: RateLimitReset when the rate limit resets
+                          format: date-time
+                          type: string
+                        requestCount:
+                          description: RequestCount total number of API requests made
+                          format: int64
+                          type: integer
+                        userAgent:
+                          description: UserAgent the user agent string being used
+                          type: string
+                      required:
+                      - connected
+                      type: object
                     conditions:
                       description: Conditions represent the current state of this
                         tailnet
@@ -609,6 +1401,114 @@ spec:
                       description: DiscoveredServices is the count of services discovered
                         in this tailnet
                       type: integer
+                    lastError:
+                      description: LastError provides context about the most recent
+                        error
+                      properties:
+                        code:
+                          description: Code is a machine-readable error code
+                          type: string
+                        component:
+                          description: Component identifies which component generated
+                            the error
+                          enum:
+                          - Controller
+                          - ExtensionServer
+                          - TailscaleAPI
+                          - ServiceDiscovery
+                          - RouteGeneration
+                          - Validation
+                          - StatefulSet
+                          - HealthCheck
+                          - OAuth
+                          - PolicyEngine
+                          type: string
+                        context:
+                          additionalProperties:
+                            type: string
+                          description: Context provides additional context about the
+                            error
+                          type: object
+                        httpStatusCode:
+                          description: HTTPStatusCode provides HTTP status code for
+                            API-related errors
+                          format: int32
+                          type: integer
+                        lastRetry:
+                          description: LastRetry timestamp of the last retry attempt
+                          format: date-time
+                          type: string
+                        message:
+                          description: Message is a human-readable error message
+                          type: string
+                        resolutionHint:
+                          description: ResolutionHint provides guidance on how to
+                            resolve the error
+                          type: string
+                        resourceRef:
+                          description: ResourceRef identifies the specific resource
+                            that caused the error
+                          properties:
+                            group:
+                              description: Group is the group of the target resource.
+                              maxLength: 253
+                              pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                              type: string
+                            kind:
+                              description: Kind is the kind of the target resource.
+                              maxLength: 63
+                              minLength: 1
+                              pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+                              type: string
+                            name:
+                              description: Name is the name of the target resource.
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            namespace:
+                              description: Namespace is the namespace of the target
+                                resource.
+                              maxLength: 63
+                              minLength: 1
+                              pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                              type: string
+                            sectionName:
+                              description: SectionName is the name of a section within
+                                the target resource.
+                              maxLength: 253
+                              minLength: 1
+                              pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                              type: string
+                          required:
+                          - group
+                          - kind
+                          - name
+                          type: object
+                        retries:
+                          description: Retries indicates how many times this operation
+                            has been retried
+                          format: int32
+                          type: integer
+                        severity:
+                          description: Severity indicates the severity of the error
+                          enum:
+                          - Critical
+                          - High
+                          - Medium
+                          - Low
+                          - Info
+                          type: string
+                        timestamp:
+                          description: Timestamp when the error occurred
+                          format: date-time
+                          type: string
+                      required:
+                      - code
+                      - component
+                      - message
+                      - retries
+                      - timestamp
+                      type: object
                     lastSync:
                       description: LastSync indicates when service discovery last
                         succeeded
@@ -617,6 +1517,151 @@ spec:
                     name:
                       description: Name identifies the tailnet
                       type: string
+                    serviceDiscoveryDetails:
+                      description: ServiceDiscoveryDetails provides detailed service
+                        discovery information
+                      properties:
+                        discoveryErrors:
+                          description: DiscoveryErrors any errors during service discovery
+                          items:
+                            description: DetailedError provides comprehensive error
+                              information with context
+                            properties:
+                              code:
+                                description: Code is a machine-readable error code
+                                type: string
+                              component:
+                                description: Component identifies which component
+                                  generated the error
+                                enum:
+                                - Controller
+                                - ExtensionServer
+                                - TailscaleAPI
+                                - ServiceDiscovery
+                                - RouteGeneration
+                                - Validation
+                                - StatefulSet
+                                - HealthCheck
+                                - OAuth
+                                - PolicyEngine
+                                type: string
+                              context:
+                                additionalProperties:
+                                  type: string
+                                description: Context provides additional context about
+                                  the error
+                                type: object
+                              httpStatusCode:
+                                description: HTTPStatusCode provides HTTP status code
+                                  for API-related errors
+                                format: int32
+                                type: integer
+                              lastRetry:
+                                description: LastRetry timestamp of the last retry
+                                  attempt
+                                format: date-time
+                                type: string
+                              message:
+                                description: Message is a human-readable error message
+                                type: string
+                              resolutionHint:
+                                description: ResolutionHint provides guidance on how
+                                  to resolve the error
+                                type: string
+                              resourceRef:
+                                description: ResourceRef identifies the specific resource
+                                  that caused the error
+                                properties:
+                                  group:
+                                    description: Group is the group of the target
+                                      resource.
+                                    maxLength: 253
+                                    pattern: ^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                    type: string
+                                  kind:
+                                    description: Kind is the kind of the target resource.
+                                    maxLength: 63
+                                    minLength: 1
+                                    pattern: ^[a-zA-Z]([-a-zA-Z0-9]*[a-zA-Z0-9])?$
+                                    type: string
+                                  name:
+                                    description: Name is the name of the target resource.
+                                    maxLength: 253
+                                    minLength: 1
+                                    type: string
+                                  namespace:
+                                    description: Namespace is the namespace of the
+                                      target resource.
+                                    maxLength: 63
+                                    minLength: 1
+                                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                                    type: string
+                                  sectionName:
+                                    description: SectionName is the name of a section
+                                      within the target resource.
+                                    maxLength: 253
+                                    minLength: 1
+                                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                    type: string
+                                required:
+                                - group
+                                - kind
+                                - name
+                                type: object
+                              retries:
+                                description: Retries indicates how many times this
+                                  operation has been retried
+                                format: int32
+                                type: integer
+                              severity:
+                                description: Severity indicates the severity of the
+                                  error
+                                enum:
+                                - Critical
+                                - High
+                                - Medium
+                                - Low
+                                - Info
+                                type: string
+                              timestamp:
+                                description: Timestamp when the error occurred
+                                format: date-time
+                                type: string
+                            required:
+                            - code
+                            - component
+                            - message
+                            - retries
+                            - timestamp
+                            type: object
+                          type: array
+                        filteredServices:
+                          description: FilteredServices services after applying include/exclude
+                            patterns
+                          type: integer
+                        lastDiscoveryDuration:
+                          description: LastDiscoveryDuration how long service discovery
+                            took
+                          type: string
+                        patternsExcluded:
+                          description: PatternsExcluded which patterns excluded services
+                          items:
+                            type: string
+                          type: array
+                        patternsMatched:
+                          description: PatternsMatched which patterns matched during
+                            discovery
+                          items:
+                            type: string
+                          type: array
+                        totalServices:
+                          description: TotalServices total number of services in the
+                            tailnet
+                          type: integer
+                      required:
+                      - filteredServices
+                      - totalServices
+                      type: object
                   required:
                   - discoveredServices
                   - name
