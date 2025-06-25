@@ -20,3 +20,8 @@ Thumbs.db
 # Test artifacts
 coverage.out
 *.test
+
+# Docs site (Docusaurus) artifacts
+site/node_modules/
+site/build/
+site/.docusaurus/
