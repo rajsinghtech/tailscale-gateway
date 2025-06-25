@@ -419,8 +419,9 @@ spec:
                   TargetRefs identifies the targets that this policy applies to.
                   Can target Gateways, HTTPRoutes, or TailscaleGateways.
                 items:
-                  description: LocalPolicyTargetReference identifies a target for
-                    policy attachment
+                  description: |-
+                    LocalPolicyTargetReference identifies a target for policy attachment
+                    This type is shared across multiple CRDs to ensure consistency and avoid circular dependencies
                   properties:
                     group:
                       description: Group is the group of the target resource.
