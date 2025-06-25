@@ -81,10 +81,12 @@ type ServiceDiscoveryConfig struct {
 	Enabled bool `json:"enabled"`
 
 	// Patterns defines glob patterns for services to include in discovery
+	// DEPRECATED: Use Gateway API routes with TailscaleEndpoints backendRefs instead of pattern-based discovery
 	// +optional
 	Patterns []string `json:"patterns,omitempty"`
 
 	// ExcludePatterns defines glob patterns for services to exclude from discovery
+	// DEPRECATED: Use Gateway API routes with TailscaleEndpoints backendRefs instead of pattern-based discovery
 	// +optional
 	ExcludePatterns []string `json:"excludePatterns,omitempty"`
 

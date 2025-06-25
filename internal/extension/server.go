@@ -169,6 +169,13 @@ type VIPServiceInfo struct {
 	ExternalTarget string    `json:"externalTarget"`
 }
 
+// GatewayInfo contains discovered gateway configuration
+type GatewayInfo struct {
+	Namespace string
+	Name      string
+	Tailnets  []string // List of configured tailnet names
+}
+
 // TailscaleManager manages multiple Tailscale client connections for service discovery
 type TailscaleManager struct {
 	clients map[string]tailscale.Client
@@ -542,6 +549,10 @@ func (s *TailscaleExtensionServer) PostHTTPListenerModify(ctx context.Context, r
 func (s *TailscaleExtensionServer) PostTranslateModify(ctx context.Context, req *pb.PostTranslateModifyRequest) (*pb.PostTranslateModifyResponse, error) {
 	s.logger.Info("PostTranslateModify called - comprehensive xDS service discovery", "clusters", len(req.Clusters))
 
+	// Error aggregation for comprehensive error reporting
+	var processingErrors []error
+	var criticalErrors []error
+
 	// Copy existing clusters
 	clusters := make([]*clusterv3.Cluster, len(req.Clusters))
 	copy(clusters, req.Clusters)
@@ -557,7 +568,7 @@ func (s *TailscaleExtensionServer) PostTranslateModify(ctx context.Context, req 
 			"error", err,
 			"clusters_count", len(req.Clusters),
 			"operation", "load_tailscale_endpoints")
-		// Continue processing - this is non-fatal following AI Gateway patterns
+		processingErrors = append(processingErrors, fmt.Errorf("load TailscaleEndpoints: %w", err))
 	}
 
 	// Process discovered endpoints for Tailscale integration with health-aware failover
@@ -568,7 +579,7 @@ func (s *TailscaleExtensionServer) PostTranslateModify(ctx context.Context, req 
 			"error", err,
 			"discovered_endpoints", len(discoveredEndpoints),
 			"operation", "create_tailscale_integrated_clusters")
-		// Continue processing - this is non-fatal following AI Gateway patterns
+		processingErrors = append(processingErrors, fmt.Errorf("create Tailscale integrated clusters: %w", err))
 	} else {
 		// Add Tailscale integrated clusters to the response
 		clusters = append(clusters, tailscaleIntegratedClusters...)
@@ -582,7 +593,24 @@ func (s *TailscaleExtensionServer) PostTranslateModify(ctx context.Context, req 
 		s.logger.Error("Failed to ensure VIP services",
 			"error", err,
 			"operation", "ensure_vip_services")
-		// Continue processing - VIP service creation is best-effort
+		// VIP service creation failures are non-critical since basic xDS functionality still works
+		processingErrors = append(processingErrors, fmt.Errorf("ensure VIP services: %w", err))
+	}
+
+	// Record processing metrics for status reporting
+	s.recordProcessingMetrics(len(processingErrors), len(criticalErrors))
+
+	// Log aggregated errors for better observability
+	if len(processingErrors) > 0 {
+		s.logger.Warn("PostTranslateModify completed with non-critical errors",
+			"error_count", len(processingErrors),
+			"critical_error_count", len(criticalErrors),
+			"errors", processingErrors)
+	}
+
+	// Only fail the request if there are critical errors that prevent basic functionality
+	if len(criticalErrors) > 0 {
+		return nil, fmt.Errorf("critical errors in PostTranslateModify: %v", criticalErrors)
 	}
 
 	s.logger.Info("PostTranslateModify completed",
@@ -2364,7 +2392,7 @@ func (s *TailscaleExtensionServer) processTailscaleEndpointsBackend(ctx context.
 	for _, endpoint := range endpoints.Spec.Endpoints {
 		if endpoint.ExternalTarget != "" {
 			// Create or attach to VIP service if ServiceCoordinator is available
-			if s.serviceCoordinator != nil {
+			if s.isServiceCoordinatorAvailable("processHTTPRouteBackend") {
 				routeName := fmt.Sprintf("%s/%s", route.Namespace, route.Name)
 				_, err := s.serviceCoordinator.EnsureServiceForRoute(ctx, routeName, endpoint.ExternalTarget)
 				if err != nil {
@@ -3137,9 +3165,8 @@ func (s *TailscaleExtensionServer) getCrossClusterVIPServiceMappings(ctx context
 	var mappings []CrossClusterVIPServiceMapping
 
 	// Use ServiceCoordinator to discover VIP services across clusters
-	if s.serviceCoordinator == nil {
-		s.logger.Info("ServiceCoordinator not available, skipping cross-cluster discovery")
-		return mappings, nil
+	if !s.isServiceCoordinatorAvailable("getCrossClusterVIPServiceMappings") {
+		return mappings, nil // Return empty list when ServiceCoordinator not available
 	}
 
 	// Get all VIP services from the tailnet
@@ -3217,21 +3244,31 @@ func (s *TailscaleExtensionServer) createCrossClusterVIPRoute(mapping CrossClust
 
 // ensureVIPServices coordinates the creation of VIP services for both main gateway and local backends
 func (s *TailscaleExtensionServer) ensureVIPServices(ctx context.Context) error {
-	// Ensure main Envoy Gateway service is published as VIP
-	// TODO: Extract gateway namespace and name from discovered configuration
-	gatewayNamespace := "default"      // Should be discovered from gateway context
-	gatewayName := "tailscale-gateway" // Should be discovered from gateway context
+	// Discover gateway information from TailscaleGateway resources
+	gatewayInfo, err := s.discoverGatewayConfiguration(ctx)
+	if err != nil {
+		s.logger.Warn("Failed to discover gateway configuration, using fallback",
+			"error", err,
+			"fallback_namespace", "default",
+			"fallback_name", "tailscale-gateway")
+		// Use fallback values for backward compatibility
+		gatewayInfo = &GatewayInfo{
+			Namespace: "default",
+			Name:      "tailscale-gateway",
+		}
+	}
 
-	envoyVIPService, err := s.ensureEnvoyGatewayVIPService(ctx, gatewayNamespace, gatewayName)
+	envoyVIPService, err := s.ensureEnvoyGatewayVIPService(ctx, gatewayInfo.Namespace, gatewayInfo.Name)
 	if err != nil {
 		s.logger.Error("Failed to ensure main Envoy Gateway VIP service",
 			"error", err,
-			"gateway", fmt.Sprintf("%s/%s", gatewayNamespace, gatewayName))
+			"gateway", fmt.Sprintf("%s/%s", gatewayInfo.Namespace, gatewayInfo.Name))
 		// Continue with local backends even if main gateway VIP fails
 	} else {
 		s.logger.Info("Successfully ensured main Envoy Gateway VIP service",
 			"serviceName", envoyVIPService.ServiceName,
-			"vipAddresses", envoyVIPService.VIPAddresses)
+			"vipAddresses", envoyVIPService.VIPAddresses,
+			"discoveredGateway", fmt.Sprintf("%s/%s", gatewayInfo.Namespace, gatewayInfo.Name))
 	}
 
 	// Ensure local backend services are published as VIPs
@@ -3249,8 +3286,8 @@ func (s *TailscaleExtensionServer) ensureVIPServices(ctx context.Context) error 
 
 // ensureEnvoyGatewayVIPService ensures the main Envoy Gateway service is published as a VIP
 func (s *TailscaleExtensionServer) ensureEnvoyGatewayVIPService(ctx context.Context, gatewayNamespace, gatewayName string) (*EnvoyGatewayVIPService, error) {
-	if s.serviceCoordinator == nil {
-		return nil, fmt.Errorf("ServiceCoordinator not available for VIP service creation")
+	if !s.isServiceCoordinatorAvailable("ensureEnvoyGatewayVIPService") {
+		return nil, fmt.Errorf("ServiceCoordinator required for VIP service creation - configure ServiceCoordinator for multi-cluster coordination")
 	}
 
 	// Generate VIP service name for the main gateway
@@ -3292,9 +3329,8 @@ func (s *TailscaleExtensionServer) ensureEnvoyGatewayVIPService(ctx context.Cont
 func (s *TailscaleExtensionServer) ensureLocalBackendVIPServices(ctx context.Context) ([]InboundVIPServiceMapping, error) {
 	var vipMappings []InboundVIPServiceMapping
 
-	if s.serviceCoordinator == nil {
-		s.logger.Info("ServiceCoordinator not available, skipping local backend VIP creation")
-		return vipMappings, nil
+	if !s.isServiceCoordinatorAvailable("ensureLocalBackendVIPServices") {
+		return vipMappings, nil // Return empty list when ServiceCoordinator not available
 	}
 
 	// Get all local Kubernetes services that should be exposed as VIPs
@@ -3443,8 +3479,8 @@ func (s *TailscaleExtensionServer) performCrossClusterBackendInjection(ctx conte
 func (s *TailscaleExtensionServer) discoverCrossClusterBackends(ctx context.Context, serviceName string, policy VIPAffinityPolicy) ([]HealthAwareEndpoint, error) {
 	var crossClusterBackends []HealthAwareEndpoint
 
-	if s.serviceCoordinator == nil {
-		return crossClusterBackends, nil
+	if !s.isServiceCoordinatorAvailable("discoverCrossClusterBackends") {
+		return crossClusterBackends, nil // Return empty list when ServiceCoordinator not available
 	}
 
 	// Discover VIP services across clusters
@@ -3698,5 +3734,77 @@ func (s *TailscaleExtensionServer) List(ctx context.Context, req *grpc_health_v1
 		Statuses: map[string]*grpc_health_v1.HealthCheckResponse{
 			"tailscale-extension-server": {Status: status},
 		},
+	}, nil
+}
+
+// isServiceCoordinatorAvailable checks if ServiceCoordinator is available and logs appropriate warnings
+func (s *TailscaleExtensionServer) isServiceCoordinatorAvailable(operation string) bool {
+	if s.serviceCoordinator == nil {
+		s.logger.Debug("ServiceCoordinator not available",
+			"operation", operation,
+			"impact", "VIP service features disabled",
+			"recommendation", "Configure ServiceCoordinator for multi-cluster VIP service coordination")
+		return false
+	}
+	return true
+}
+
+// recordProcessingMetrics records processing metrics for observability
+func (s *TailscaleExtensionServer) recordProcessingMetrics(errorCount, criticalErrorCount int) {
+	if s.metrics == nil {
+		return
+	}
+
+	s.metrics.mu.Lock()
+	defer s.metrics.mu.Unlock()
+
+	// Update error counters
+	if errorCount > 0 {
+		s.metrics.failedCalls++
+	} else {
+		s.metrics.successfulCalls++
+	}
+
+	// Track error rates for health reporting
+	s.metrics.totalHookCalls++
+}
+
+// discoverGatewayConfiguration discovers gateway namespace and name from TailscaleGateway resources
+func (s *TailscaleExtensionServer) discoverGatewayConfiguration(ctx context.Context) (*GatewayInfo, error) {
+	// List all TailscaleGateway resources in the cluster
+	var gatewayList gatewayv1alpha1.TailscaleGatewayList
+	if err := s.client.List(ctx, &gatewayList); err != nil {
+		return nil, fmt.Errorf("failed to list TailscaleGateway resources: %w", err)
+	}
+
+	if len(gatewayList.Items) == 0 {
+		return nil, fmt.Errorf("no TailscaleGateway resources found in cluster")
+	}
+
+	// Use the first TailscaleGateway found (in most cases there will be only one)
+	gateway := gatewayList.Items[0]
+	
+	// Extract tailnet names from the gateway configuration
+	var tailnets []string
+	for _, tailnetConfig := range gateway.Spec.Tailnets {
+		tailnets = append(tailnets, tailnetConfig.Name)
+	}
+
+	// Get the referenced Envoy Gateway information
+	gatewayRef := gateway.Spec.GatewayRef
+	gatewayNamespace := gateway.Namespace // Default to TailscaleGateway namespace
+	if gatewayRef.Namespace != nil {
+		gatewayNamespace = string(*gatewayRef.Namespace)
+	}
+
+	s.logger.Info("Discovered gateway configuration",
+		"tailscaleGateway", fmt.Sprintf("%s/%s", gateway.Namespace, gateway.Name),
+		"envoyGateway", fmt.Sprintf("%s/%s", gatewayNamespace, gatewayRef.Name),
+		"tailnets", tailnets)
+
+	return &GatewayInfo{
+		Namespace: gatewayNamespace,
+		Name:      string(gatewayRef.Name),
+		Tailnets:  tailnets,
 	}, nil
 }

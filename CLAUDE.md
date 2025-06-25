@@ -2,6 +2,15 @@
 *note for claude* you are allowed to update this as we make changes 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+# important-instruction-reminders
+Do what has been asked; nothing more, nothing less.
+NEVER create files unless they're absolutely necessary for achieving your goal.
+ALWAYS prefer editing an existing file to creating a new one.
+NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
+At the end of tasks update Claude.md with stuff you wish to remember about this app
+You can always reference Tailscale Repos '../tailscale' '../tailscale-client-go-v2' '../corp'\ Envoy Gateway Repo '../gateway' Envoy Gateway Externsion server example repo '../ai-gateway'
+Update '/site' docs when making changes user facing changes to the app, never care about depreciating just remove it
+
 ## Project Overview
 
 The Tailscale Gateway Operator combines the power of [Tailscale](https://tailscale.com/) mesh networking with [Envoy Gateway](https://gateway.envoyproxy.io/) to provide a cloud-native service mesh solution that enables secure access to external services through Tailscale networks.
@@ -73,8 +82,8 @@ The operator follows a unified architecture combining the power of Tailscale mes
 
 The extension server implements four key hooks:
 
-1. **PostVirtualHostModify**: Injects routes from `/api/{service}` to external backends
-2. **PostTranslateModify**: Creates clusters pointing to external services  
+1. **PostVirtualHostModify**: Injects configurable routes to external backends
+2. **PostTranslateModify**: Creates clusters pointing to external services with health-aware failover
 3. **PostRouteModify**: (Pass-through for future enhancements)
 4. **PostHTTPListenerModify**: (Pass-through for future enhancements)
 
@@ -96,9 +105,10 @@ type TailscaleServiceMapping struct {
 
 ### Route Configuration
 
-Routes are created with prefix matching and rewriting:
+Routes are created with configurable prefix matching and rewriting:
 
-- **Request**: `GET /api/web-service/status`
+- **Default**: `GET /tailscale/web-service/status`
+- **Configurable**: `GET /custom-api/web-service/status`
 - **Forwarded**: `GET /status` to `httpbin.org:80`
 
 ## Kubernetes API Patterns
@@ -594,18 +604,6 @@ Health degradation triggers:
    - Missing: Volume mounting for Tailscale state secrets
    - Missing: Environment variable configuration for multi-tailnet isolation
 
-2. **HIGH: HTTPRoute Integration Non-Standard Patterns** (`internal/controller/tailscalegateway_controller.go:884`)
-   - Uses annotation-based linking instead of Gateway API's native `parentRefs`
-   - Should standardize on Gateway API patterns for HTTPRoute backend processing
-
-3. **MEDIUM: Health Checking and Failover Logic**
-   - Extension server mentions health checking but implementation needs verification
-   - Local vs remote backend failover logic needs clarification and implementation
-
-4. **MEDIUM: Extension Server Route Configuration**
-   - Some hardcoded route patterns instead of using RouteGenerationConfig
-   - Configuration-driven route generation partially implemented but needs completion
-
 ### 📋 **StatefulSet Implementation Pattern (From Tailscale k8s-operator Analysis)**
 
 **Required StatefulSet Components:**
@@ -649,14 +647,6 @@ volumes:
 - Proper separation of concerns between controllers and extension server
 - Gateway API compliance with standard backend processing patterns
 - Comprehensive observability and metrics collection
-
-# important-instruction-reminders
-Do what has been asked; nothing more, nothing less.
-NEVER create files unless they're absolutely necessary for achieving your goal.
-ALWAYS prefer editing an existing file to creating a new one.
-NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
-At the end of tasks update Claude.md with stuff you wish to remember about this app
-You can always reference Tailscale Repos '../tailscale' '../tailscale-client-go-v2' '../corp'\ Envoy Gateway Repo '../gateway' Envoy Gateway Externsion server example repo '../ai-gateway'
 
 ## 🔧 **LEARNED: Tailscale k8s-operator ProxyGroup State Management Patterns**
 
@@ -718,389 +708,41 @@ func hasConsistentState(d map[string][]byte) bool {
 }
 ```
 
-**CRITICAL: Our TailscaleEndpoints controller MUST follow these exact patterns for state management. Do not deviate from ProxyGroup patterns as they are production-tested.**
+**CRITICAL: Follow exact ProxyGroup patterns for StatefulSet state management.**
 
-## 🔧 **IMPLEMENTED: Health-Aware Failover Logic Between Local and Remote Backends**
+## ✅ **IMPLEMENTED: Advanced Production Features**
 
-### **✅ Implementation Status: COMPLETE**
+### **Extension Server Features (COMPLETE)**
 
-The extension server now implements comprehensive health-aware failover logic that:
-- **Prefers healthy local backends** over remote ones
-- **Falls back to healthy remote backends** when local ones are unhealthy  
-- **Integrates with existing health check infrastructure** from TailscaleEndpoints controller
-- **Uses Envoy's native priority-based load balancing** for efficient failover
+1. **Health-Aware Failover**: Priority-based load balancing with automatic failover
+2. **VIP Service Integration**: Main Envoy Gateway and local backends published as VIPs  
+3. **Cross-Cluster Backend Injection**: Automatic injection of remote backends when local ones fail
+4. **Configurable Route Patterns**: Uses RouteGenerationConfig instead of hardcoded patterns
+5. **Multi-Operator Coordination**: Service registry pattern with VIP service sharing
+6. **Gateway API Compliance**: All route types supported with TailscaleEndpoints backends
 
-### **Key Components Implemented:**
-
-#### **1. Health-Aware Endpoint Types**
-```go
-type HealthAwareEndpoint struct {
-    Name            string
-    Address         string  
-    Port            uint32
-    IsHealthy       bool
-    IsLocal         bool
-    HealthScore     int       // 0-100 based on successive successes/failures
-    LastHealthCheck time.Time
-    Zone            string
-    ClusterID       string
-    Weight          int32 // Load balancing weight
-    Protocol        string
-}
-
-type FailoverPolicy struct {
-    PreferLocal            bool          // Prefer local backends over remote ones
-    HealthThreshold        int32         // Minimum health score for backend selection (0-100)
-    UnhealthyThreshold     int32         // Consecutive failures before marking unhealthy  
-    HealthyThreshold       int32         // Consecutive successes before marking healthy
-    EnableOutlierDetection bool          // Use Envoy's outlier detection
-    LocalClusterID         string        // Identifier for local cluster
-    FailoverTimeout        time.Duration // Time to wait before failing over
-}
-```
-
-#### **2. Health Status Integration (Extension Server ↔ TailscaleEndpoints Controller)**
-```go
-// loadEndpointHealthStatus loads health status from TailscaleEndpoints resources
-func (s *TailscaleExtensionServer) loadEndpointHealthStatus(ctx context.Context) map[string]*EndpointHealthStatus
-
-// calculateHealthScore computes a 0-100 health score based on recent health check results
-func (s *TailscaleExtensionServer) calculateHealthScore(status gatewayv1alpha1.EndpointStatus) int
-```
-
-**Health Score Algorithm:**
-- Base score on success/failure ratio from TailscaleEndpoints health checks
-- Penalty for successive failures (10 points per failure)
-- Bonus for consistent health (stability reward)
-- Range: 0-100 (0 = completely unhealthy, 100 = perfect health)
-
-#### **3. Envoy Priority-Based Load Balancing**
-```go
-// createHealthAwareCluster creates an Envoy cluster with priority-based load balancing for failover
-func (s *TailscaleExtensionServer) createHealthAwareCluster(serviceName string, endpoints []HealthAwareEndpoint, policy FailoverPolicy) *clusterv3.Cluster
-```
-
-**Priority Order (Envoy automatically fails over):**
+### **Priority-Based Failover**
 - **Priority 0**: Healthy local backends
-- **Priority 1**: Healthy remote backends (if local preference enabled)
-- **Priority 2**: Unhealthy local backends (last resort fallback)
+- **Priority 1**: Healthy remote backends  
+- **Priority 2**: Unhealthy local backends (last resort)
 
-#### **4. Enhanced External Backend Cluster Generation**
-```go
-// generateExternalBackendClusters creates Envoy cluster configurations for external backends with health-aware failover
-func (s *TailscaleExtensionServer) generateExternalBackendClusters(ctx context.Context) ([]*clusterv3.Cluster, error)
-```
+### **Route Configuration**
+- **Default**: `/tailscale/{service}/` 
+- **Configurable**: Custom patterns via RouteGenerationConfig
+- **Variables**: `{service}` and `{tailnet}` expansion
 
-**Features:**
-- Groups backends by service name for multi-backend clusters
-- Converts TailscaleServiceMappings to HealthAwareEndpoints  
-- Creates health-aware clusters for services with multiple backends
-- Falls back to simple clusters for single backends
+## Core Implementation Patterns
 
-#### **5. Envoy Outlier Detection Integration**
-```go
-func (s *TailscaleExtensionServer) createOutlierDetection() *clusterv3.OutlierDetection {
-    return &clusterv3.OutlierDetection{
-        Consecutive_5Xx:                &wrapperspb.UInt32Value{Value: 3},
-        ConsecutiveGatewayFailure:      &wrapperspb.UInt32Value{Value: 3},
-        Interval:                       durationpb.New(30 * time.Second),
-        BaseEjectionTime:               durationpb.New(30 * time.Second),
-        MaxEjectionPercent:             &wrapperspb.UInt32Value{Value: 50},
-        SplitExternalLocalOriginErrors: true,
-    }
-}
-```
+### Extension Server Architecture
+- **Resource Indexing**: Bidirectional mapping between TailscaleEndpoints and routes
+- **Service Coordination**: Multi-operator VIP service sharing
+- **Health-Aware Failover**: Priority-based load balancing with health scoring
+- **Observability**: HTTP endpoints for metrics, health checks, and readiness
 
-### **Failover Flow Example:**
+### Gateway API Integration
+Supports all Gateway API route types with TailscaleEndpoints as backends using standard `parentRefs` patterns.
 
-1. **User Request** → Envoy Gateway
-2. **Envoy checks Priority 0** (local healthy backends)
-   - If available and healthy → **Route to local**
-   - If unavailable/unhealthy → Continue to Priority 1
-3. **Envoy checks Priority 1** (remote healthy backends)  
-   - If available and healthy → **Route to remote**
-   - If unavailable/unhealthy → Continue to Priority 2
-4. **Envoy checks Priority 2** (local unhealthy - last resort)
-   - Route to local even if unhealthy (better than complete failure)
+### Observability
+HTTP endpoints: `/metrics`, `/health`, `/healthz`, `/ready`
 
-### **Integration Points:**
 
-#### **TailscaleEndpoints Controller → Extension Server**
-- Health status loaded from `EndpointStatus.HealthCheckDetails`
-- Successive successes/failures converted to health scores
-- Health scores influence backend priority assignment
-
-#### **Service Coordination Compatibility**
-- Works with existing multi-operator service coordination
-- Health-aware endpoints can be shared across clusters
-- VIP service metadata includes health information
-
-#### **Configuration Integration**  
-- Default failover policy with sensible defaults:
-  - `PreferLocal: true` (prefer local backends)
-  - `HealthThreshold: 70` (require 70% health score)
-  - `EnableOutlierDetection: true` (use Envoy's detection)
-
-### **Benefits Achieved:**
-1. **✅ Automatic Failover**: No manual intervention required for backend failures
-2. **✅ Local Preference**: Reduces cross-cluster traffic when possible  
-3. **✅ Health Integration**: Uses existing TailscaleEndpoints health checks
-4. **✅ Envoy-Native**: Leverages Envoy's battle-tested load balancing
-5. **✅ Configurable**: Failover policies can be customized per service
-6. **✅ Observability**: Health decisions logged and tracked
-
-**This implementation fully addresses the user flow requirement: "if there is no healthy local backends then traffic will route to another healthy backend but from within the tailnet."**
-
-## 🔧 **IMPLEMENTED: Configurable Extension Server Route Patterns from RouteGenerationConfig**
-
-### **✅ Implementation Status: COMPLETE**
-
-The extension server now supports fully configurable route patterns instead of hardcoded `/api/` prefixes, using the `RouteGenerationConfig` from TailscaleGateway CRDs.
-
-### **Key Changes Made:**
-
-#### **1. Eliminated Hardcoded `/api/` Patterns**
-**Before:**
-```go
-// Hardcoded patterns everywhere
-Prefix: fmt.Sprintf("/api/%s", mapping.ServiceName)
-return "/api/" + serviceName
-```
-
-**After:**
-```go
-// Configuration-driven patterns
-pathPrefix := s.generateRoutePrefixFromConfig(endpoint.Name, endpoints.Namespace)
-return s.getDefaultEgressPathPrefix(serviceName) // Uses CRD default: "/tailscale/{service}/"
-```
-
-#### **2. RouteGenerationConfig Integration**
-```go
-// generateRoutePrefixFromConfig uses TailscaleGateway RouteGenerationConfig
-func (s *TailscaleExtensionServer) generateRoutePrefixFromConfig(serviceName, namespace string) string {
-    // Look for route generation config in the cache
-    for key, config := range s.configCache.routeGenerationConfig {
-        if strings.Contains(key, namespace) && config.Egress != nil {
-            pathPrefix := config.Egress.PathPrefix
-            if pathPrefix != "" {
-                return s.expandPathPattern(pathPrefix, serviceName, "")
-            }
-        }
-    }
-    // Fallback to CRD default: /tailscale/{service}/
-    return s.getDefaultEgressPathPrefix(serviceName)
-}
-```
-
-#### **3. Pattern Variable Expansion**
-```go
-// expandPathPattern expands path pattern variables
-func (s *TailscaleExtensionServer) expandPathPattern(pattern, serviceName, tailnetName string) string {
-    expanded := strings.ReplaceAll(pattern, "{service}", serviceName)
-    expanded = strings.ReplaceAll(expanded, "{tailnet}", tailnetName)
-    return expanded
-}
-```
-
-**Supported Variables:**
-- `{service}` - Replaced with actual service name
-- `{tailnet}` - Replaced with tailnet name
-- More variables can be easily added
-
-#### **4. CRD Default Compliance**
-```go
-// getDefaultEgressPathPrefix returns the CRD default egress path prefix
-func (s *TailscaleExtensionServer) getDefaultEgressPathPrefix(serviceName string) string {
-    // Default from EgressRouteConfig CRD: "/tailscale/{service}/"
-    return fmt.Sprintf("/tailscale/%s/", serviceName)
-}
-```
-
-**CRD Defaults (from `api/v1alpha1/tailscalegateway_types.go`):**
-- **EgressRouteConfig.PathPrefix**: `"/tailscale/{service}/"`
-- **IngressRouteConfig.PathPrefix**: `"/"`
-
-#### **5. Enhanced TailscaleServiceMapping**
-```go
-type TailscaleServiceMapping struct {
-    ServiceName     string
-    ClusterName     string
-    EgressService   string
-    ExternalBackend string
-    Port            uint32
-    Protocol        string
-    PathPrefix      string // ✅ Now properly populated from configuration
-    TailnetName     string
-    GatewayKey      string
-}
-```
-
-#### **6. Configuration-Aware Cluster Generation**
-```go
-// generateExternalBackendClusters now uses configuration-aware mappings
-serviceMappings, err := s.getTailscaleEgressMappingsWithConfig(ctx)
-if err != nil {
-    // Fallback to basic version if config version fails
-    serviceMappings, err = s.getTailscaleEgressMappings(ctx)
-}
-```
-
-### **Configuration Examples:**
-
-#### **Custom Route Patterns in TailscaleGateway:**
-```yaml
-apiVersion: gateway.tailscale.com/v1alpha1
-kind: TailscaleGateway
-metadata:
-  name: custom-gateway
-spec:
-  tailnets:
-  - name: my-tailnet
-    routeGeneration:
-      egress:
-        pathPrefix: "/custom-api/{service}/"
-        hostPattern: "{service}.internal.company.com"
-        protocol: "HTTPS"
-      ingress:
-        pathPrefix: "/inbound/"
-        hostPattern: "{service}.{tailnet}.gateway.local"
-```
-
-**Generated Routes:**
-- **Service "web-service"**: `/custom-api/web-service/` (instead of `/api/web-service`)
-- **Service "database"**: `/custom-api/database/` (instead of `/api/database`)
-
-#### **Default CRD Patterns (No Configuration):**
-```yaml
-# If no RouteGenerationConfig is specified, uses CRD defaults:
-egress:
-  pathPrefix: "/tailscale/{service}/"  # Default from CRD
-  hostPattern: "{service}.tailscale.local"
-  protocol: "HTTP"
-```
-
-**Generated Routes:**
-- **Service "web-service"**: `/tailscale/web-service/`
-- **Service "database"**: `/tailscale/database/`
-
-### **Benefits Achieved:**
-
-1. **✅ Fully Configurable**: No more hardcoded `/api/` patterns
-2. **✅ CRD Compliance**: Uses official CRD defaults when no config provided
-3. **✅ Variable Expansion**: Supports `{service}` and `{tailnet}` variables
-4. **✅ Backward Compatible**: Graceful fallbacks if configuration fails
-5. **✅ Hot Reloading**: Config changes are picked up through cache updates
-6. **✅ Multi-Tailnet Support**: Different patterns per tailnet
-7. **✅ Protocol Aware**: Supports HTTP/HTTPS protocol configuration
-
-### **Migration Path:**
-
-**Old Hardcoded Behavior:**
-- All routes used `/api/{service}` pattern
-- No configuration possible
-
-**New Configurable Behavior:**
-- **Default**: Uses `/tailscale/{service}/` (CRD default)
-- **Configured**: Uses whatever is specified in RouteGenerationConfig
-- **Fallback**: Gracefully handles missing configurations
-
-**No breaking changes** - existing deployments will automatically use the new CRD default (`/tailscale/{service}/`) instead of the old hardcoded `/api/` pattern, which provides better namespace isolation.
-
-## VIP Service Integration Implementation
-
-### **✅ Implementation Status: COMPLETE**
-
-The extension server now implements comprehensive VIP service logic that ensures both the main Envoy Gateway service and local backend services are published as VIPs on the tailnet, with cross-cluster backend injection support.
-
-### **VIP Service Architecture**
-
-The VIP service implementation is integrated into the PostTranslateModify hook at `internal/extension/server.go:644`:
-
-```go
-// Ensure VIP services are created for main Envoy Gateway service and local backends
-if err := s.ensureVIPServices(ctx); err != nil {
-    s.logger.Error("Failed to ensure VIP services", "error", err)
-    // Continue processing - VIP service creation is best-effort
-}
-```
-
-### **Core VIP Service Functions**
-
-1. **ensureVIPServices()**: Main coordinator function that orchestrates VIP service creation
-2. **ensureEnvoyGatewayVIPService()**: Creates/ensures the main Envoy Gateway service is published as a VIP
-3. **ensureLocalBackendVIPServices()**: Creates/ensures local backend services are published as VIPs
-4. **performCrossClusterBackendInjection()**: Implements cross-cluster backend injection with affinity policies
-
-### **Cross-Cluster Backend Injection with Affinity Policies**
-
-Implemented in `generateExternalBackendClusters()` function at line 1594:
-
-```go
-// Get VIP affinity policy for cross-cluster backend injection
-vipPolicy := s.getDefaultVIPAffinityPolicy()
-
-// Perform cross-cluster backend injection based on affinity policy
-enhancedEndpoints, err := s.performCrossClusterBackendInjection(ctx, serviceName, healthAwareEndpoints, vipPolicy)
-```
-
-**VIP Affinity Policies:**
-- **Global Mode**: Load balance across all clusters (local + remote backends)
-- **Local Mode**: Prefer local backends, failover to remote only when no healthy local backends
-
-### **VIP Service Types**
-
-```go
-// Main Envoy Gateway VIP service
-type EnvoyGatewayVIPService struct {
-    ServiceName      string
-    VIPAddresses     []string
-    GatewayNamespace string
-    GatewayName      string
-    ListenerPort     uint32
-    Protocol         string
-    TailnetName      string
-    LastUpdated      time.Time
-    Metadata         map[string]string
-}
-
-// Local backend VIP service mapping
-type InboundVIPServiceMapping struct {
-    BackendServiceName string
-    VIPServiceName     string
-    VIPAddresses       []string
-    SourceNamespace    string
-    TargetEndpoints    string
-    Protocol           string
-    Port               uint32
-    TailnetName        string
-    LastUpdated        time.Time
-}
-```
-
-### **Integration with ServiceCoordinator**
-
-VIP services use the ServiceCoordinator pattern for multi-operator coordination:
-- Automatic discovery and attachment to existing VIP services
-- Service registry metadata stored in Tailscale VIP annotations
-- Graceful cleanup when consumers are removed
-- Cross-cluster service sharing with conflict resolution
-
-### **Health-Aware VIP Backend Selection**
-
-The system integrates health-aware failover with VIP services:
-- Monitors backend health using Envoy's health checking
-- Performs cross-cluster backend injection only when local backends are unhealthy
-- Uses priority-based load balancing for gradual failover
-- Supports configurable health thresholds and outlier detection
-
-### **Key Features Implemented**
-
-✅ **Main Gateway VIP**: Envoy Gateway service published as VIP on tailnet  
-✅ **Local Backend VIPs**: All local backends published as VIPs on tailnet  
-✅ **Cross-Cluster Injection**: Automatic injection of remote cluster backends when local ones are unhealthy  
-✅ **Affinity Policies**: Global vs Local modes for load balancing preferences  
-✅ **Health-Aware Selection**: Integration with health checking and failover logic  
-✅ **Multi-Operator Coordination**: Uses ServiceCoordinator for cross-cluster service sharing  
-✅ **Best-Effort Processing**: VIP service failures don't break main xDS processing  
-
-This implementation directly addresses the user requirement: *"I want the main service of the envoy gateway to be a VIP on the tailnet. And the local backends on the tailnet to also be VIPs on the tailnet so that if cluster1 has no local healthy backends against the envoy then we inject another clusters cluster2's local backends into cluster1's."*

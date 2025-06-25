@@ -3,12 +3,12 @@ import type { Config } from '@docusaurus/types';
 const config: Config = {
   title: 'Tailscale Gateway',
   tagline: 'Documentation for Tailscale Gateway Kubernetes Operator',
-  url: 'https://example.com',
-  baseUrl: '/',
+  url: 'https://rajsinghtech.github.io',
+  baseUrl: '/tailscale-gateway/',
   favicon: 'img/favicon.ico',
 
-  // GitHub pages deployment config (update as needed)
-  organizationName: 'tailscale',
+  // GitHub pages deployment config
+  organizationName: 'rajsinghtech',
   projectName: 'tailscale-gateway',
 
   onBrokenLinks: 'throw',
@@ -25,7 +25,7 @@ const config: Config = {
       {
         docs: {
           sidebarPath: require.resolve('./sidebars.ts'),
-          editUrl: 'https://github.com/tailscale/tailscale-gateway/tree/main/site/',
+          editUrl: 'https://github.com/rajsinghtech/tailscale-gateway/tree/main/site/',
         },
         blog: false,
         theme: {
@@ -50,7 +50,7 @@ const config: Config = {
           label: 'Docs',
         },
         {
-          href: 'https://github.com/tailscale/tailscale-gateway',
+          href: 'https://github.com/rajsinghtech/tailscale-gateway',
           label: 'GitHub',
           position: 'right',
         },
@@ -73,7 +73,7 @@ const config: Config = {
           items: [
             {
               label: 'GitHub Issues',
-              href: 'https://github.com/tailscale/tailscale-gateway/issues',
+              href: 'https://github.com/rajsinghtech/tailscale-gateway/issues',
             },
           ],
         },

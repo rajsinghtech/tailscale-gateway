@@ -6,7 +6,7 @@ sidebar_position: 1
 
 # Welcome to Tailscale Gateway Docs
 
-Tailscale Gateway is a Kubernetes operator that provisions and manages **Tailscale Exit Nodes** to expose cluster services and resources to your private Tailscale network.
+Tailscale Gateway is a Kubernetes operator that provisions and manages **Tailscale Nodes** to expose cluster services and resources to your private Tailscale network.
 
 These docs will help you:
 

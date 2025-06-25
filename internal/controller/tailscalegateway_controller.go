@@ -1241,9 +1241,13 @@ func (r *TailscaleGatewayReconciler) convertPatternsToTagSelectors(includePatter
 
 	// Log deprecation warning if patterns are actually used
 	if len(includePatterns) > 0 || len(excludePatterns) > 0 {
-		log.FromContext(context.Background()).Info("Pattern-based service discovery is deprecated. Consider using Gateway API routes with TailscaleEndpoints backendRefs for explicit service references.",
+		log.FromContext(context.Background()).Info("Pattern-based service discovery is deprecated and will be removed in a future version. "+
+			"Migrate to Gateway API routes with TailscaleEndpoints backendRefs for explicit, reliable service references. "+
+			"See examples/gateway-api-parentrefs-example.yaml for the recommended approach.",
 			"includePatterns", includePatterns,
-			"excludePatterns", excludePatterns)
+			"excludePatterns", excludePatterns,
+			"migrationPath", "Create HTTPRoute resources that reference TailscaleEndpoints as backendRefs",
+			"benefits", "Better reliability, explicit service selection, standard Gateway API patterns")
 	}
 
 	// Convert include patterns to tag selectors that look for service tags

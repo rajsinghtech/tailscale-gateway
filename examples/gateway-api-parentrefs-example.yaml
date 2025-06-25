@@ -1,5 +1,12 @@
 # Example demonstrating proper Gateway API parentRefs usage with Tailscale Gateway
-# This replaces the deprecated annotation-based approach
+# This is the RECOMMENDED approach - use HTTPRoute with TailscaleEndpoints backendRefs
+# instead of deprecated pattern-based service discovery.
+#
+# Key concepts:
+# 1. Define TailscaleEndpoints resources for your services
+# 2. Create HTTPRoute that references TailscaleEndpoints as backendRefs  
+# 3. Use standard Gateway API parentRefs (no custom annotations)
+# 4. Avoid deprecated serviceDiscovery.patterns - let Gateway API handle service selection
 
 ---
 # Standard Gateway API Gateway
@@ -52,11 +59,12 @@ spec:
   - name: production
     tailscaleTailnetRef:
       name: my-tailnet
-    serviceDiscovery:
-      enabled: true
-      patterns:
-      - "web-*"
-      - "api-*"
+    # serviceDiscovery patterns are DEPRECATED - use Gateway API routes with TailscaleEndpoints backendRefs instead
+    # serviceDiscovery:
+    #   enabled: true
+    #   patterns:
+    #   - "web-*"  # DEPRECATED: Use HTTPRoute with TailscaleEndpoints backendRefs
+    #   - "api-*"  # DEPRECATED: Use HTTPRoute with TailscaleEndpoints backendRefs
     routeGeneration:
       egress:
         pathPrefix: "/tailscale/{service}/"
