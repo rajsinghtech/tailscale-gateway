@@ -25,3 +25,4 @@ coverage.out
 site/node_modules/
 site/build/
 site/.docusaurus/
+extension-server

@@ -178,16 +178,16 @@ spec:
       routeGeneration:
         ingress:
           enabled: true
-          hostPattern: "{service}.company.ts.net"
+          hostPattern: "&#123;service&#125;.company.ts.net"
           pathPrefix: "/"
           defaultBackend:
             weight: 100
         egress:
           enabled: true
-          hostPattern: "{service}.internal.company.com"
-          pathPrefix: "/api/{service}/"
+          hostPattern: "&#123;service&#125;.internal.company.com"
+          pathPrefix: "/api/&#123;service&#125;/"
           rewriteRules:
-            - from: "/api/{service}/"
+            - from: "/api/&#123;service&#125;/"
               to: "/"
   
   # Service coordination
@@ -236,7 +236,7 @@ spec:
       routeGeneration:
         ingress:
           enabled: true
-          hostPattern: "{service}.prod.company.ts.net"
+          hostPattern: "&#123;service&#125;.prod.company.ts.net"
           pathPrefix: "/"
           filters:
             - type: "RequestHeaderModifier"
@@ -249,8 +249,8 @@ spec:
         
         egress:
           enabled: true
-          hostPattern: "{service}.prod.internal"
-          pathPrefix: "/prod/{service}/"
+          hostPattern: "&#123;service&#125;.prod.internal"
+          pathPrefix: "/prod/&#123;service&#125;/"
           timeout: "30s"
           retryPolicy:
             numRetries: 3
@@ -267,12 +267,12 @@ spec:
       routeGeneration:
         ingress:
           enabled: true
-          hostPattern: "{service}.staging.company.ts.net"
+          hostPattern: "&#123;service&#125;.staging.company.ts.net"
           pathPrefix: "/staging/"
         egress:
           enabled: true
-          hostPattern: "{service}.staging.internal"
-          pathPrefix: "/staging/{service}/"
+          hostPattern: "&#123;service&#125;.staging.internal"
+          pathPrefix: "/staging/&#123;service&#125;/"
   
   # Load balancing configuration
   loadBalancing:

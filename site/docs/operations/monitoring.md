@@ -212,7 +212,7 @@ data:
         "targets": [
           {
             "expr": "rate(controller_runtime_reconcile_total[5m])",
-            "legendFormat": "{{controller}} - {{result}}"
+            "legendFormat": "&#123;&#123;controller&#125;&#125; - &#123;&#123;result&#125;&#125;"
           }
         ],
         "yAxes": [
@@ -314,7 +314,7 @@ data:
             "targets": [
               {
                 "expr": "increase(grpc_server_request_duration_seconds_bucket[1m])",
-                "legendFormat": "{{le}}"
+                "legendFormat": "&#123;&#123;le&#125;&#125;"
               }
             ]
           }
@@ -579,7 +579,7 @@ data:
           component: controller
         annotations:
           summary: "High reconciliation error rate"
-          description: "Reconciliation error rate is {{ $value | humanizePercentage }} for controller {{ $labels.controller }}"
+          description: "Reconciliation error rate is &#123;&#123; $value | humanizePercentage &#125;&#125; for controller &#123;&#123; $labels.controller &#125;&#125;"
       
       # Extension server connectivity
       - alert: ExtensionServerDown
@@ -605,7 +605,7 @@ data:
           component: health-check
         annotations:
           summary: "High health check failure rate"
-          description: "Health check failure rate is {{ $value | humanizePercentage }} for service {{ $labels.service }}"
+          description: "Health check failure rate is &#123;&#123; $value | humanizePercentage &#125;&#125; for service &#123;&#123; $labels.service &#125;&#125;"
       
       # Memory usage
       - alert: HighMemoryUsage
@@ -620,7 +620,7 @@ data:
           component: operator
         annotations:
           summary: "High memory usage"
-          description: "Memory usage is {{ $value | humanizePercentage }} of limit."
+          description: "Memory usage is &#123;&#123; $value | humanizePercentage &#125;&#125; of limit."
       
       # gRPC request errors
       - alert: HighGRPCErrorRate
@@ -635,7 +635,7 @@ data:
           component: extension-server
         annotations:
           summary: "High gRPC error rate"
-          description: "gRPC error rate is {{ $value | humanizePercentage }}"
+          description: "gRPC error rate is &#123;&#123; $value | humanizePercentage &#125;&#125;"
 ```
 
 ### Alertmanager Configuration
@@ -673,13 +673,13 @@ data:
     - name: 'default'
       email_configs:
       - to: 'team@company.com'
-        subject: 'Tailscale Gateway Alert: {{ .GroupLabels.alertname }}'
+        subject: 'Tailscale Gateway Alert: &#123;&#123; .GroupLabels.alertname &#125;&#125;'
         body: |
-          {{ range .Alerts }}
-          Alert: {{ .Annotations.summary }}
-          Description: {{ .Annotations.description }}
-          Labels: {{ range .Labels.SortedPairs }} {{ .Name }}={{ .Value }} {{ end }}
-          {{ end }}
+          &#123;&#123; range .Alerts &#125;&#125;
+          Alert: &#123;&#123; .Annotations.summary &#125;&#125;
+          Description: &#123;&#123; .Annotations.description &#125;&#125;
+          Labels: &#123;&#123; range .Labels.SortedPairs &#125;&#125; &#123;&#123; .Name &#125;&#125;=&#123;&#123; .Value &#125;&#125; &#123;&#123; end &#125;&#125;
+          &#123;&#123; end &#125;&#125;
     
     - name: 'critical-alerts'
       email_configs:
@@ -689,7 +689,7 @@ data:
       - api_url: 'https://hooks.slack.com/services/...'
         channel: '#alerts'
         title: 'Critical Alert'
-        text: '{{ .CommonAnnotations.summary }}'
+        text: '&#123;&#123; .CommonAnnotations.summary &#125;&#125;'
     
     - name: 'platform-team'
       email_configs:
@@ -810,7 +810,7 @@ data:
             "targets": [
               {
                 "expr": "rate(container_cpu_usage_seconds_total{namespace=\"tailscale-system\"}[5m]) * 100",
-                "legendFormat": "{{ container }}"
+                "legendFormat": "&#123;&#123; container &#125;&#125;"
               }
             ]
           },
@@ -820,7 +820,7 @@ data:
             "targets": [
               {
                 "expr": "container_memory_working_set_bytes{namespace=\"tailscale-system\"} / 1024 / 1024",
-                "legendFormat": "{{ container }} MB"
+                "legendFormat": "&#123;&#123; container &#125;&#125; MB"
               }
             ]
           },
@@ -830,11 +830,11 @@ data:
             "targets": [
               {
                 "expr": "rate(container_network_receive_bytes_total{namespace=\"tailscale-system\"}[5m])",
-                "legendFormat": "RX {{ container }}"
+                "legendFormat": "RX &#123;&#123; container &#125;&#125;"
               },
               {
                 "expr": "rate(container_network_transmit_bytes_total{namespace=\"tailscale-system\"}[5m])",
-                "legendFormat": "TX {{ container }}"
+                "legendFormat": "TX &#123;&#123; container &#125;&#125;"
               }
             ]
           }
@@ -871,17 +871,17 @@ kubectl logs -n tailscale-system deployment/tailscale-gateway-operator | grep "h
   "query": {
     "bool": {
       "must": [
-        {"match": {"kubernetes.namespace": "tailscale-system"}},
-        {"match": {"component": "tailscale-gateway"}},
-        {"range": {"@timestamp": {"gte": "now-1h"}}}
+        {"match": {"kubernetes.namespace": "tailscale-system"&#125;&#125;,
+        {"match": {"component": "tailscale-gateway"&#125;&#125;,
+        {"range": {"@timestamp": {"gte": "now-1h"&#125;&#125;}
       ],
       "should": [
-        {"match": {"level": "ERROR"}},
-        {"match": {"level": "WARN"}}
+        {"match": {"level": "ERROR"&#125;&#125;,
+        {"match": {"level": "WARN"&#125;&#125;
       ]
     }
   },
-  "sort": [{"@timestamp": {"order": "desc"}}]
+  "sort": [{"@timestamp": {"order": "desc"&#125;&#125;]
 }
 ```
 

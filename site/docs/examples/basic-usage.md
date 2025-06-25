@@ -724,7 +724,7 @@ kubectl exec -it deployment/tailscale-gateway-operator -- tailscale ping 100.64.
 
 ## Next Steps
 
-- **[Multi-Protocol Examples](./multi-protocol)** - Advanced protocol configurations
+- **[Multi-Protocol Examples](../examples/multi-protocol)** - Advanced protocol configurations
 - **[Production Deployment](../operations/production)** - Production best practices
 - **[Monitoring Guide](../operations/monitoring)** - Set up observability
 - **[Troubleshooting](../operations/troubleshooting)** - Common issues and solutions

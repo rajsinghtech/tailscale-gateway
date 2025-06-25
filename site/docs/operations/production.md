@@ -612,8 +612,8 @@ spec:
     template:
       type: Opaque
       data:
-        client-id: "{{ .clientId }}"
-        client-secret: "{{ .clientSecret }}"
+        client-id: "&#123;&#123; .clientId &#125;&#125;"
+        client-secret: "&#123;&#123; .clientSecret &#125;&#125;"
   
   data:
   - secretKey: clientId

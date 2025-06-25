@@ -601,9 +601,45 @@ func TestMultiRouteTypeSupport(t *testing.T) {
 
 // TestTailscaleEndpointsBackendProcessing tests Gateway API compliance
 func TestTailscaleEndpointsBackendProcessing(t *testing.T) {
+	scheme := runtime.NewScheme()
+	gatewayv1alpha1.AddToScheme(scheme)
+	gwapiv1.AddToScheme(scheme)
+
 	t.Run("http_backend_processing", func(t *testing.T) {
+		// Create test TailscaleEndpoints
+		endpoints := &gatewayv1alpha1.TailscaleEndpoints{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-endpoints",
+				Namespace: "test-ns",
+			},
+			Spec: gatewayv1alpha1.TailscaleEndpointsSpec{
+				Tailnet: "test.tailnet.ts.net",
+				Endpoints: []gatewayv1alpha1.TailscaleEndpoint{
+					{
+						Name:           "test-service",
+						TailscaleIP:    "100.64.0.1",
+						TailscaleFQDN:  "test-service.test.tailnet.ts.net",
+						Port:           8080,
+						Protocol:       "HTTP",
+						ExternalTarget: "test-service.example.com:8080",
+					},
+				},
+			},
+		}
+
+		fc := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(endpoints).
+			Build()
+
 		server := &TailscaleExtensionServer{
+			client: fc,
 			logger: slog.New(slog.NewTextHandler(os.Stderr, nil)),
+			configCache: &ConfigCache{
+				routeGenerationConfig: make(map[string]*gatewayv1alpha1.RouteGenerationConfig),
+				tailscaleEndpoints:    make(map[string]*gatewayv1alpha1.TailscaleEndpoints),
+				gatewayConfigs:        make(map[string]*gatewayv1alpha1.TailscaleGateway),
+			},
 		}
 
 		backend := &gwapiv1.HTTPBackendRef{
@@ -639,8 +675,40 @@ func TestTailscaleEndpointsBackendProcessing(t *testing.T) {
 	})
 
 	t.Run("tcp_backend_processing", func(t *testing.T) {
+		// Create test TailscaleEndpoints
+		endpoints := &gatewayv1alpha1.TailscaleEndpoints{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-endpoints",
+				Namespace: "test-ns",
+			},
+			Spec: gatewayv1alpha1.TailscaleEndpointsSpec{
+				Tailnet: "test.tailnet.ts.net",
+				Endpoints: []gatewayv1alpha1.TailscaleEndpoint{
+					{
+						Name:           "tcp-service",
+						TailscaleIP:    "100.64.0.2",
+						TailscaleFQDN:  "tcp-service.test.tailnet.ts.net",
+						Port:           3306,
+						Protocol:       "TCP",
+						ExternalTarget: "tcp-service.example.com:3306",
+					},
+				},
+			},
+		}
+
+		fc := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(endpoints).
+			Build()
+
 		server := &TailscaleExtensionServer{
+			client: fc,
 			logger: slog.New(slog.NewTextHandler(os.Stderr, nil)),
+			configCache: &ConfigCache{
+				routeGenerationConfig: make(map[string]*gatewayv1alpha1.RouteGenerationConfig),
+				tailscaleEndpoints:    make(map[string]*gatewayv1alpha1.TailscaleEndpoints),
+				gatewayConfigs:        make(map[string]*gatewayv1alpha1.TailscaleGateway),
+			},
 		}
 
 		backend := &gwapiv1alpha2.BackendRef{
@@ -666,8 +734,40 @@ func TestTailscaleEndpointsBackendProcessing(t *testing.T) {
 	})
 
 	t.Run("udp_backend_processing", func(t *testing.T) {
+		// Create test TailscaleEndpoints
+		endpoints := &gatewayv1alpha1.TailscaleEndpoints{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-endpoints",
+				Namespace: "default",
+			},
+			Spec: gatewayv1alpha1.TailscaleEndpointsSpec{
+				Tailnet: "test.tailnet.ts.net",
+				Endpoints: []gatewayv1alpha1.TailscaleEndpoint{
+					{
+						Name:           "dns-service",
+						TailscaleIP:    "100.64.0.3",
+						TailscaleFQDN:  "dns-service.test.tailnet.ts.net",
+						Port:           53,
+						Protocol:       "UDP",
+						ExternalTarget: "dns-service.example.com:53",
+					},
+				},
+			},
+		}
+
+		fc := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(endpoints).
+			Build()
+
 		server := &TailscaleExtensionServer{
+			client: fc,
 			logger: slog.New(slog.NewTextHandler(os.Stderr, nil)),
+			configCache: &ConfigCache{
+				routeGenerationConfig: make(map[string]*gatewayv1alpha1.RouteGenerationConfig),
+				tailscaleEndpoints:    make(map[string]*gatewayv1alpha1.TailscaleEndpoints),
+				gatewayConfigs:        make(map[string]*gatewayv1alpha1.TailscaleGateway),
+			},
 		}
 
 		backend := &gwapiv1alpha2.BackendRef{
@@ -692,8 +792,40 @@ func TestTailscaleEndpointsBackendProcessing(t *testing.T) {
 	})
 
 	t.Run("tls_backend_processing", func(t *testing.T) {
+		// Create test TailscaleEndpoints
+		endpoints := &gatewayv1alpha1.TailscaleEndpoints{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-endpoints",
+				Namespace: "default",
+			},
+			Spec: gatewayv1alpha1.TailscaleEndpointsSpec{
+				Tailnet: "test.tailnet.ts.net",
+				Endpoints: []gatewayv1alpha1.TailscaleEndpoint{
+					{
+						Name:           "secure-service",
+						TailscaleIP:    "100.64.0.4",
+						TailscaleFQDN:  "secure-service.test.tailnet.ts.net",
+						Port:           443,
+						Protocol:       "TLS",
+						ExternalTarget: "secure-service.example.com:443",
+					},
+				},
+			},
+		}
+
+		fc := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(endpoints).
+			Build()
+
 		server := &TailscaleExtensionServer{
+			client: fc,
 			logger: slog.New(slog.NewTextHandler(os.Stderr, nil)),
+			configCache: &ConfigCache{
+				routeGenerationConfig: make(map[string]*gatewayv1alpha1.RouteGenerationConfig),
+				tailscaleEndpoints:    make(map[string]*gatewayv1alpha1.TailscaleEndpoints),
+				gatewayConfigs:        make(map[string]*gatewayv1alpha1.TailscaleGateway),
+			},
 		}
 
 		backend := &gwapiv1alpha2.BackendRef{
@@ -718,8 +850,40 @@ func TestTailscaleEndpointsBackendProcessing(t *testing.T) {
 	})
 
 	t.Run("grpc_backend_processing", func(t *testing.T) {
+		// Create test TailscaleEndpoints
+		endpoints := &gatewayv1alpha1.TailscaleEndpoints{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-endpoints",
+				Namespace: "default",
+			},
+			Spec: gatewayv1alpha1.TailscaleEndpointsSpec{
+				Tailnet: "test.tailnet.ts.net",
+				Endpoints: []gatewayv1alpha1.TailscaleEndpoint{
+					{
+						Name:           "grpc-service",
+						TailscaleIP:    "100.64.0.5",
+						TailscaleFQDN:  "grpc-service.test.tailnet.ts.net",
+						Port:           9090,
+						Protocol:       "GRPC",
+						ExternalTarget: "grpc-service.example.com:9090",
+					},
+				},
+			},
+		}
+
+		fc := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(endpoints).
+			Build()
+
 		server := &TailscaleExtensionServer{
+			client: fc,
 			logger: slog.New(slog.NewTextHandler(os.Stderr, nil)),
+			configCache: &ConfigCache{
+				routeGenerationConfig: make(map[string]*gatewayv1alpha1.RouteGenerationConfig),
+				tailscaleEndpoints:    make(map[string]*gatewayv1alpha1.TailscaleEndpoints),
+				gatewayConfigs:        make(map[string]*gatewayv1alpha1.TailscaleGateway),
+			},
 		}
 
 		backend := &gwapiv1.GRPCBackendRef{

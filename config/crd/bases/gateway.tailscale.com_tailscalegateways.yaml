@@ -327,18 +327,6 @@ spec:
                           description: Enabled controls whether service discovery
                             is active for this tailnet
                           type: boolean
-                        excludePatterns:
-                          description: ExcludePatterns defines glob patterns for services
-                            to exclude from discovery
-                          items:
-                            type: string
-                          type: array
-                        patterns:
-                          description: Patterns defines glob patterns for services
-                            to include in discovery
-                          items:
-                            type: string
-                          type: array
                         syncInterval:
                           default: 30s
                           description: SyncInterval defines how often to sync with
@@ -1637,24 +1625,12 @@ spec:
                             type: object
                           type: array
                         filteredServices:
-                          description: FilteredServices services after applying include/exclude
-                            patterns
+                          description: FilteredServices services after applying filters
                           type: integer
                         lastDiscoveryDuration:
                           description: LastDiscoveryDuration how long service discovery
                             took
                           type: string
-                        patternsExcluded:
-                          description: PatternsExcluded which patterns excluded services
-                          items:
-                            type: string
-                          type: array
-                        patternsMatched:
-                          description: PatternsMatched which patterns matched during
-                            discovery
-                          items:
-                            type: string
-                          type: array
                         totalServices:
                           description: TotalServices total number of services in the
                             tailnet

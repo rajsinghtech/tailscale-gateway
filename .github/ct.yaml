@@ -4,3 +4,5 @@ chart-repos:
 helm-extra-args: --timeout 600s
 check-version-increment: false
 validate-maintainers: false
+skip-missing-values: true
+helm-extra-set-args: --set installCRDs=false

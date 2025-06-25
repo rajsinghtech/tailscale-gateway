@@ -59,12 +59,6 @@ spec:
   - name: production
     tailscaleTailnetRef:
       name: my-tailnet
-    # serviceDiscovery patterns are DEPRECATED - use Gateway API routes with TailscaleEndpoints backendRefs instead
-    # serviceDiscovery:
-    #   enabled: true
-    #   patterns:
-    #   - "web-*"  # DEPRECATED: Use HTTPRoute with TailscaleEndpoints backendRefs
-    #   - "api-*"  # DEPRECATED: Use HTTPRoute with TailscaleEndpoints backendRefs
     routeGeneration:
       egress:
         pathPrefix: "/tailscale/{service}/"
@@ -221,23 +215,3 @@ spec:
       port: 9090
       weight: 100
 
----
-# DEPRECATED: Old annotation-based approach (NO LONGER SUPPORTED)
-# apiVersion: gateway.networking.k8s.io/v1
-# kind: HTTPRoute
-# metadata:
-#   name: old-style-route
-#   namespace: default
-#   annotations:
-#     # DON'T USE: This annotation approach is deprecated
-#     gateway.tailscale.com/gateway: my-tailscale-gateway
-# spec:
-#   # Routes without parentRefs won't be processed correctly
-#   rules:
-#   - matches:
-#     - path:
-#         type: PathPrefix
-#         value: "/old"
-#     backendRefs:
-#     - name: some-service
-#       port: 80

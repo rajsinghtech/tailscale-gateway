@@ -26,6 +26,7 @@ const config: Config = {
         docs: {
           sidebarPath: require.resolve('./sidebars.ts'),
           editUrl: 'https://github.com/rajsinghtech/tailscale-gateway/tree/main/site/',
+          routeBasePath: '/',
         },
         blog: false,
         theme: {
@@ -64,7 +65,7 @@ const config: Config = {
           items: [
             {
               label: 'Introduction',
-              to: '/docs/intro',
+              to: '/',
             },
           ],
         },

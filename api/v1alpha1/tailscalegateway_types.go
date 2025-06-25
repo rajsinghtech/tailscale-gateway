@@ -80,16 +80,6 @@ type ServiceDiscoveryConfig struct {
 	// +kubebuilder:default=true
 	Enabled bool `json:"enabled"`
 
-	// Patterns defines glob patterns for services to include in discovery
-	// DEPRECATED: Use Gateway API routes with TailscaleEndpoints backendRefs instead of pattern-based discovery
-	// +optional
-	Patterns []string `json:"patterns,omitempty"`
-
-	// ExcludePatterns defines glob patterns for services to exclude from discovery
-	// DEPRECATED: Use Gateway API routes with TailscaleEndpoints backendRefs instead of pattern-based discovery
-	// +optional
-	ExcludePatterns []string `json:"excludePatterns,omitempty"`
-
 	// SyncInterval defines how often to sync with Tailscale API
 	// +kubebuilder:default="30s"
 	// +optional
@@ -342,16 +332,8 @@ type ServiceDiscoveryDetails struct {
 	// TotalServices total number of services in the tailnet
 	TotalServices int `json:"totalServices"`
 
-	// FilteredServices services after applying include/exclude patterns
+	// FilteredServices services after applying filters
 	FilteredServices int `json:"filteredServices"`
-
-	// PatternsMatched which patterns matched during discovery
-	// +optional
-	PatternsMatched []string `json:"patternsMatched,omitempty"`
-
-	// PatternsExcluded which patterns excluded services
-	// +optional
-	PatternsExcluded []string `json:"patternsExcluded,omitempty"`
 
 	// LastDiscoveryDuration how long service discovery took
 	// +optional

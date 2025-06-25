@@ -430,7 +430,7 @@ kubectl logs -n tailscale-system deployment/tailscale-gateway-extension-server
 
 ## Related Resources
 
-- **[TailscaleGateway](./tailscale-gateway)** - Main gateway configuration
-- **[TailscaleRoutePolicy](./tailscale-route-policy)** - Advanced routing policies
-- **[TailscaleTailnet](./tailscale-tailnet)** - Tailnet configuration
+- **[TailscaleGateway](../api/tailscale-gateway)** - Main gateway configuration
+- **[TailscaleRoutePolicy](../api/tailscale-route-policy)** - Advanced routing policies
+- **[TailscaleTailnet](../api/tailscale-tailnet)** - Tailnet configuration
 - **[Configuration Guide](../configuration/overview)** - Advanced configuration options

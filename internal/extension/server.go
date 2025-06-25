@@ -1170,13 +1170,6 @@ func (s *TailscaleExtensionServer) createHTTPRouteBackendMappings(ctx context.Co
 	return mappings, nil
 }
 
-// createTailscaleEgressRoute creates a route using configured patterns from RouteGenerationConfig
-// DEPRECATED: Use createTailscaleEgressRouteWithConfig instead for configuration-driven routes
-func (s *TailscaleExtensionServer) createTailscaleEgressRoute(mapping TailscaleServiceMapping) *routev3.Route {
-	// This method now delegates to the configurable version
-	return s.createTailscaleEgressRouteWithConfig(mapping)
-}
-
 // loadEndpointHealthStatus loads health status from TailscaleEndpoints resources
 func (s *TailscaleExtensionServer) loadEndpointHealthStatus(ctx context.Context) map[string]*EndpointHealthStatus {
 	healthStatusMap := make(map[string]*EndpointHealthStatus)
@@ -3783,7 +3776,7 @@ func (s *TailscaleExtensionServer) discoverGatewayConfiguration(ctx context.Cont
 
 	// Use the first TailscaleGateway found (in most cases there will be only one)
 	gateway := gatewayList.Items[0]
-	
+
 	// Extract tailnet names from the gateway configuration
 	var tailnets []string
 	for _, tailnetConfig := range gateway.Spec.Tailnets {

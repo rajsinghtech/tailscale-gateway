@@ -1225,45 +1225,10 @@ func (r *TailscaleGatewayReconciler) buildTailscaleEndpoints(gateway *gatewayv1a
 		endpoints.Spec.AutoDiscovery = &gatewayv1alpha1.EndpointAutoDiscovery{
 			Enabled:      true,
 			SyncInterval: tailnetConfig.ServiceDiscovery.SyncInterval,
-			// Convert patterns to tag selectors if needed
-			TagSelectors: r.convertPatternsToTagSelectors(tailnetConfig.ServiceDiscovery.Patterns, tailnetConfig.ServiceDiscovery.ExcludePatterns),
 		}
 	}
 
 	return endpoints
-}
-
-// convertPatternsToTagSelectors converts legacy pattern-based discovery to tag selectors
-// DEPRECATED: Pattern-based service discovery is deprecated in favor of Gateway API backendRefs.
-// Use HTTPRoute/TCPRoute/etc. with TailscaleEndpoints backendRefs for explicit service references.
-func (r *TailscaleGatewayReconciler) convertPatternsToTagSelectors(includePatterns, excludePatterns []string) []gatewayv1alpha1.TagSelector {
-	var selectors []gatewayv1alpha1.TagSelector
-
-	// Log deprecation warning if patterns are actually used
-	if len(includePatterns) > 0 || len(excludePatterns) > 0 {
-		log.FromContext(context.Background()).Info("Pattern-based service discovery is deprecated and will be removed in a future version. "+
-			"Migrate to Gateway API routes with TailscaleEndpoints backendRefs for explicit, reliable service references. "+
-			"See examples/gateway-api-parentrefs-example.yaml for the recommended approach.",
-			"includePatterns", includePatterns,
-			"excludePatterns", excludePatterns,
-			"migrationPath", "Create HTTPRoute resources that reference TailscaleEndpoints as backendRefs",
-			"benefits", "Better reliability, explicit service selection, standard Gateway API patterns")
-	}
-
-	// Convert include patterns to tag selectors that look for service tags
-	for _, pattern := range includePatterns {
-		if pattern != "" {
-			selectors = append(selectors, gatewayv1alpha1.TagSelector{
-				Tag:      "tag:service",
-				Operator: "Exists",
-			})
-		}
-	}
-
-	// Note: Exclude patterns are more complex to convert and may require
-	// application-specific logic. For now, we'll use basic service tag existence.
-
-	return selectors
 }
 
 // Helper functions for resource management
