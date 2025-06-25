@@ -27,6 +27,11 @@ jobs:
         with:
           fetch-depth: 1  # Shallow clone for speed
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
@@ -43,129 +48,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Build operator image (single platform first to avoid hanging)
-      - name: Build operator image (amd64)
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: linux/amd64
-          push: false
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=min
-          build-args: |
-            TARGETOS=linux
-            TARGETARCH=amd64
-
-      # Build extension-server image (single platform first)
-      - name: Build extension-server image (amd64)
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./cmd/extension-server/Dockerfile
-          platforms: linux/amd64
-          push: false
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-extension-server:${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-extension-server:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=min
-          build-args: |
-            TARGETOS=linux
-            TARGETARCH=amd64
-
-      # Only push on main branch or tags (not PRs)
-      - name: Push operator image
-        if: github.event_name != 'pull_request'
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-          cache-from: type=gha
-          build-args: |
-            TARGETOS=linux
-            TARGETARCH=amd64
-
-      - name: Push extension-server image
-        if: github.event_name != 'pull_request'
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./cmd/extension-server/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-extension-server:${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-extension-server:latest
-          cache-from: type=gha
-          build-args: |
-            TARGETOS=linux
-            TARGETARCH=amd64
-
-  # Separate job for multi-arch builds to avoid complexity in main build
-  multi-arch-build:
-    runs-on: ubuntu-latest
-    needs: docker-build
-    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
-    timeout-minutes: 45
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver: docker-container
-          driver-opts: |
-            network=host
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Multi-arch build and push
-      - name: Build and push operator (multi-arch)
+      # Build and push operator image (multi-arch)
+      - name: Build and push operator image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}-multiarch
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-multiarch
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           cache-from: type=gha
+          cache-to: type=gha,mode=min
 
-      - name: Build and push extension-server (multi-arch)
+      # Build and push extension-server image (multi-arch)
+      - name: Build and push extension-server image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./cmd/extension-server/Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-extension-server:${{ github.sha }}-multiarch
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-extension-server:latest-multiarch
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-extension-server:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-extension-server:latest
           cache-from: type=gha
+          cache-to: type=gha,mode=min
+
