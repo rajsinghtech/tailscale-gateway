@@ -209,6 +209,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Setup TailscaleServices controller
+	servicesController := &controller.TailscaleServicesReconciler{
+		Client:                 mgr.GetClient(),
+		Scheme:                 mgr.GetScheme(),
+		Logger:                 logger.Named("services-controller"),
+		ServiceCoordinator:     nil, // Will be initialized with default settings
+		TailscaleClientManager: tailscale.NewMultiTailnetManager(),
+		EventChan:              nil, // Optional event channel for controller coordination
+	}
+
+	if err = servicesController.SetupWithManager(mgr); err != nil {
+		setupLog.Error("unable to create controller", "controller", "TailscaleServices", "error", err)
+		os.Exit(1)
+	}
+
 	//+kubebuilder:scaffold:builder
 
 	// Setup health checks

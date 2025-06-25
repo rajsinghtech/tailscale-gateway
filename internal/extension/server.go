@@ -69,6 +69,7 @@ type TailscaleExtensionServer struct {
 type ConfigCache struct {
 	routeGenerationConfig map[string]*gatewayv1alpha1.RouteGenerationConfig
 	tailscaleEndpoints    map[string]*gatewayv1alpha1.TailscaleEndpoints
+	tailscaleServices     map[string]*gatewayv1alpha1.TailscaleServices
 	gatewayConfigs        map[string]*gatewayv1alpha1.TailscaleGateway
 	lastUpdate            time.Time
 	mu                    sync.RWMutex
@@ -80,15 +81,29 @@ type ResourceIndex struct {
 	endpointsToHTTPRoutes map[string][]string // key: namespace/name -> []route-namespace/route-name
 	httpRoutesToEndpoints map[string][]string // key: route-namespace/route-name -> []endpoints-namespace/endpoints-name
 
+	// TailscaleServices to HTTPRoutes mapping
+	servicesToHTTPRoutes map[string][]string // key: namespace/name -> []route-namespace/route-name
+	httpRoutesToServices map[string][]string // key: route-namespace/route-name -> []services-namespace/services-name
+
+	// TailscaleServices to TailscaleEndpoints mapping (via selector)
+	servicesToEndpoints map[string][]string // key: services-namespace/services-name -> []endpoints-namespace/endpoints-name
+	endpointsToServices map[string][]string // key: endpoints-namespace/endpoints-name -> []services-namespace/services-name
+
 	// TailscaleEndpoints to VIP Services mapping
 	endpointsToVIPServices map[string][]VIPServiceReference // key: namespace/name -> []VIPServiceReference
 	vipServicesToEndpoints map[string][]string              // key: service-name -> []endpoints-namespace/endpoints-name
 
-	// Gateway API route type mappings
+	// Gateway API route type mappings for TailscaleEndpoints
 	endpointsToTCPRoutes  map[string][]string // key: namespace/name -> []route-namespace/route-name
 	endpointsToUDPRoutes  map[string][]string
 	endpointsToTLSRoutes  map[string][]string
 	endpointsToGRPCRoutes map[string][]string
+
+	// Gateway API route type mappings for TailscaleServices
+	servicesToTCPRoutes  map[string][]string // key: namespace/name -> []route-namespace/route-name
+	servicesToUDPRoutes  map[string][]string
+	servicesToTLSRoutes  map[string][]string
+	servicesToGRPCRoutes map[string][]string
 
 	// Service dependency tracking
 	serviceDependencies map[string][]string // key: service-name -> []dependent-service-names
@@ -1046,6 +1061,16 @@ func (s *TailscaleExtensionServer) discoverKubernetesServicesFromAllRoutes(ctx c
 func (s *TailscaleExtensionServer) processHTTPRouteBackends(ctx context.Context, route *gwapiv1.HTTPRoute, serviceMap map[string]*corev1.Service, tailscaleEndpointsMap map[string]*gatewayv1alpha1.TailscaleEndpoints) error {
 	for _, rule := range route.Spec.Rules {
 		for _, backendRef := range rule.BackendRefs {
+			// Process TailscaleServices backends (Gateway API compliance)
+			if backendRef.Group != nil && *backendRef.Group == "gateway.tailscale.com" &&
+				backendRef.Kind != nil && *backendRef.Kind == "TailscaleServices" {
+				if err := s.processTailscaleServicesBackend(ctx, &backendRef, route); err != nil {
+					s.logger.Warn("Failed to process TailscaleServices backend",
+						"backend", backendRef.Name, "error", err)
+				}
+				continue
+			}
+
 			// Process TailscaleEndpoints backends (Gateway API compliance)
 			if backendRef.Group != nil && *backendRef.Group == "gateway.tailscale.com" &&
 				backendRef.Kind != nil && *backendRef.Kind == "TailscaleEndpoints" {
@@ -2350,6 +2375,101 @@ func (s *TailscaleExtensionServer) GetResourceIndexStats() map[string]interface{
 		"endpointsCount":      len(s.resourceIndex.endpointsToHTTPRoutes),
 		"serviceDependencies": len(s.resourceIndex.serviceDependencies),
 	}
+}
+
+// processTailscaleServicesBackend processes TailscaleServices backends for Gateway API compliance
+func (s *TailscaleExtensionServer) processTailscaleServicesBackend(ctx context.Context, backendRef *gwapiv1.HTTPBackendRef, route *gwapiv1.HTTPRoute) error {
+	// Extract TailscaleServices reference
+	serviceName := string(backendRef.Name)
+	serviceNamespace := route.Namespace
+	if backendRef.Namespace != nil {
+		serviceNamespace = string(*backendRef.Namespace)
+	}
+
+	serviceKey := fmt.Sprintf("%s/%s", serviceNamespace, serviceName)
+
+	// Fetch TailscaleServices resource
+	tailscaleService := &gatewayv1alpha1.TailscaleServices{}
+	serviceObjectKey := types.NamespacedName{
+		Name:      serviceName,
+		Namespace: serviceNamespace,
+	}
+
+	if err := s.client.Get(ctx, serviceObjectKey, tailscaleService); err != nil {
+		return fmt.Errorf("failed to get TailscaleServices %s: %w", serviceKey, err)
+	}
+
+	// Cache the TailscaleServices resource
+	s.configCache.mu.Lock()
+	if s.configCache.tailscaleServices == nil {
+		s.configCache.tailscaleServices = make(map[string]*gatewayv1alpha1.TailscaleServices)
+	}
+	s.configCache.tailscaleServices[serviceKey] = tailscaleService
+	s.configCache.mu.Unlock()
+
+	// Process VIP service creation via ServiceCoordinator if available
+	if s.isServiceCoordinatorAvailable("processTailscaleServicesBackend") {
+		routeName := fmt.Sprintf("httproute-%s-%s", route.Namespace, route.Name)
+
+		// Determine VIP service name
+		vipServiceName := fmt.Sprintf("svc:%s", serviceName)
+		if tailscaleService.Spec.VIPService != nil && tailscaleService.Spec.VIPService.Name != "" {
+			vipServiceName = tailscaleService.Spec.VIPService.Name
+		}
+
+		// Build service metadata
+		metadata := &service.ServiceMetadata{
+			TailscaleServices: tailscaleService,
+			HTTPRoute:         route,
+		}
+
+		// Ensure VIP service exists
+		_, err := s.serviceCoordinator.EnsureServiceWithMetadata(ctx, routeName, vipServiceName, metadata)
+		if err != nil {
+			s.logger.Warn("Failed to ensure VIP service for TailscaleServices backend",
+				"service", serviceKey, "vipService", vipServiceName, "error", err)
+		} else {
+			s.logger.Debug("Successfully ensured VIP service for TailscaleServices backend",
+				"service", serviceKey, "vipService", vipServiceName)
+		}
+	}
+
+	// Update resource index
+	s.updateResourceIndexForTailscaleServices(serviceKey, route)
+
+	s.logger.Debug("Successfully processed TailscaleServices backend",
+		"service", serviceKey, "route", fmt.Sprintf("%s/%s", route.Namespace, route.Name))
+
+	return nil
+}
+
+// updateResourceIndexForTailscaleServices updates the resource index for TailscaleServices
+func (s *TailscaleExtensionServer) updateResourceIndexForTailscaleServices(serviceKey string, route *gwapiv1.HTTPRoute) {
+	s.resourceIndex.mu.Lock()
+	defer s.resourceIndex.mu.Unlock()
+
+	routeKey := fmt.Sprintf("%s/%s", route.Namespace, route.Name)
+
+	// Initialize maps if needed
+	if s.resourceIndex.servicesToHTTPRoutes == nil {
+		s.resourceIndex.servicesToHTTPRoutes = make(map[string][]string)
+	}
+	if s.resourceIndex.httpRoutesToServices == nil {
+		s.resourceIndex.httpRoutesToServices = make(map[string][]string)
+	}
+
+	// Update services to routes mapping
+	if !contains(s.resourceIndex.servicesToHTTPRoutes[serviceKey], routeKey) {
+		s.resourceIndex.servicesToHTTPRoutes[serviceKey] = append(s.resourceIndex.servicesToHTTPRoutes[serviceKey], routeKey)
+	}
+
+	// Update routes to services mapping
+	if !contains(s.resourceIndex.httpRoutesToServices[routeKey], serviceKey) {
+		s.resourceIndex.httpRoutesToServices[routeKey] = append(s.resourceIndex.httpRoutesToServices[routeKey], serviceKey)
+	}
+
+	s.resourceIndex.indexUpdateCount++
+	s.resourceIndex.lastIndexUpdate = time.Now()
 }
 
 // processTailscaleEndpointsBackend processes TailscaleEndpoints backends for Gateway API compliance
@@ -3800,4 +3920,14 @@ func (s *TailscaleExtensionServer) discoverGatewayConfiguration(ctx context.Cont
 		Name:      string(gatewayRef.Name),
 		Tailnets:  tailnets,
 	}, nil
+}
+
+// contains checks if a string slice contains a specific string
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }

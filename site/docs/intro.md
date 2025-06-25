@@ -25,7 +25,7 @@ Get up and running in under 5 minutes:
 1. **Install the Operator**
    ```bash
    helm install tailscale-gateway tailscale-gateway/tailscale-gateway \
-     --namespace tailscale-system --create-namespace
+     --namespace tailscale-gateway-system --create-namespace
    ```
 
 2. **Configure Your First Service**

@@ -55,7 +55,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: tailscale-gateway-operator
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
   labels:
     app: tailscale-gateway-operator
     version: v1.0.0
@@ -220,7 +220,7 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: tailscale-gateway-operator-pdb
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 spec:
   minAvailable: 2  # Keep at least 2 replicas running
   selector:
@@ -235,7 +235,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: tailscale-gateway-extension-server
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 spec:
   replicas: 2  # HA for extension server
   strategy:
@@ -335,7 +335,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: tailscale-gateway-extension-server
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
   labels:
     app: tailscale-gateway-extension-server
 spec:
@@ -364,7 +364,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: tailscale-gateway-operator
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
   labels:
     app: tailscale-gateway-operator
 
@@ -419,7 +419,7 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: tailscale-gateway-operator
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 
 ---
 # Extension server service account (even more restricted)
@@ -427,14 +427,14 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: tailscale-gateway-extension-server
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 
 ---
 # Extension server role (namespace-scoped)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
   name: tailscale-gateway-extension-server
 rules:
 - apiGroups: [""]
@@ -450,7 +450,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: tailscale-gateway-extension-server
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -458,7 +458,7 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: tailscale-gateway-extension-server
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 ```
 
 ### Network Policies
@@ -470,7 +470,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: tailscale-gateway-operator
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 spec:
   podSelector:
     matchLabels:
@@ -524,7 +524,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: tailscale-gateway-extension-server
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 spec:
   podSelector:
     matchLabels:
@@ -580,7 +580,7 @@ apiVersion: external-secrets.io/v1beta1
 kind: SecretStore
 metadata:
   name: vault-backend
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 spec:
   provider:
     vault:
@@ -599,7 +599,7 @@ apiVersion: external-secrets.io/v1beta1
 kind: ExternalSecret
 metadata:
   name: tailscale-oauth
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 spec:
   refreshInterval: 24h  # Refresh daily
   secretStoreRef:
@@ -635,7 +635,7 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: tailscale-gateway-backup
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 spec:
   schedule: "0 2 * * *"  # Daily at 2 AM
   jobTemplate:
@@ -663,7 +663,7 @@ spec:
               kubectl get tailscaletailnets -A -o yaml > /backup/$(date +%Y%m%d)/tailnets.yaml
               
               # Backup operator configuration
-              kubectl get configmaps -n tailscale-system -o yaml > /backup/$(date +%Y%m%d)/configmaps.yaml
+              kubectl get configmaps -n tailscale-gateway-system -o yaml > /backup/$(date +%Y%m%d)/configmaps.yaml
               
               # Upload to S3 (or your backup storage)
               aws s3 sync /backup/$(date +%Y%m%d) s3://company-backups/tailscale-gateway/$(date +%Y%m%d)/
@@ -704,7 +704,7 @@ spec:
 set -e
 
 BACKUP_DATE=${1:-$(date +%Y%m%d)}
-NAMESPACE=${2:-tailscale-system}
+NAMESPACE=${2:-tailscale-gateway-system}
 
 echo "Starting disaster recovery for date: $BACKUP_DATE"
 
@@ -798,7 +798,7 @@ apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: tailscale-gateway-operator-hpa
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
@@ -846,7 +846,7 @@ apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: tailscale-gateway-extension-server-hpa
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
@@ -880,7 +880,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: update-procedures
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 data:
   update.sh: |
     #!/bin/bash
@@ -900,41 +900,41 @@ data:
     echo "Creating pre-update backup..."
     kubectl create job backup-pre-update-$(date +%s) \
       --from=cronjob/tailscale-gateway-backup \
-      -n tailscale-system
+      -n tailscale-gateway-system
     
     # 2. Update operator with rollback capability
     echo "Updating operator..."
     kubectl patch deployment tailscale-gateway-operator \
-      -n tailscale-system \
+      -n tailscale-gateway-system \
       -p '{"spec":{"template":{"spec":{"containers":[{"name":"manager","image":"ghcr.io/rajsinghtech/tailscale-gateway:'$NEW_VERSION'"}]}}}}'
     
     # 3. Wait for rollout
     echo "Waiting for rollout to complete..."
     kubectl rollout status deployment/tailscale-gateway-operator \
-      -n tailscale-system \
+      -n tailscale-gateway-system \
       --timeout=600s
     
     # 4. Health check
     echo "Performing health check..."
     sleep 30
-    kubectl get pods -n tailscale-system -l app=tailscale-gateway-operator
+    kubectl get pods -n tailscale-gateway-system -l app=tailscale-gateway-operator
     
     # 5. Functional verification
     echo "Running functional tests..."
     if ! ./verify-functionality.sh; then
       echo "Functional tests failed! Rolling back..."
-      kubectl rollout undo deployment/tailscale-gateway-operator -n tailscale-system
+      kubectl rollout undo deployment/tailscale-gateway-operator -n tailscale-gateway-system
       exit 1
     fi
     
     # 6. Update extension server
     echo "Updating extension server..."
     kubectl patch deployment tailscale-gateway-extension-server \
-      -n tailscale-system \
+      -n tailscale-gateway-system \
       -p '{"spec":{"template":{"spec":{"containers":[{"name":"extension-server","image":"ghcr.io/rajsinghtech/tailscale-gateway-extension-server:'$NEW_VERSION'"}]}}}}'
     
     kubectl rollout status deployment/tailscale-gateway-extension-server \
-      -n tailscale-system \
+      -n tailscale-gateway-system \
       --timeout=600s
     
     echo "Update completed successfully!"
@@ -1042,7 +1042,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: incident-runbook
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 data:
   runbook.md: |
     # Tailscale Gateway Incident Response Runbook
@@ -1058,13 +1058,13 @@ data:
     **Investigation:**
     ```bash
     # Check pod status
-    kubectl get pods -n tailscale-system -l app=tailscale-gateway-operator
+    kubectl get pods -n tailscale-gateway-system -l app=tailscale-gateway-operator
     
     # Check logs
-    kubectl logs -n tailscale-system deployment/tailscale-gateway-operator --previous
+    kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator --previous
     
     # Check events
-    kubectl get events -n tailscale-system --sort-by='.lastTimestamp'
+    kubectl get events -n tailscale-gateway-system --sort-by='.lastTimestamp'
     ```
     
     **Common Causes & Solutions:**
@@ -1085,7 +1085,7 @@ data:
     curl http://tailscale-gateway-operator:8080/metrics | grep reconcile_errors
     
     # Check specific controller logs
-    kubectl logs -n tailscale-system deployment/tailscale-gateway-operator | grep ERROR
+    kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator | grep ERROR
     ```
     
     **Common Causes & Solutions:**
@@ -1118,25 +1118,25 @@ data:
     ### Complete Operator Restart
     ```bash
     # Scale down
-    kubectl scale deployment tailscale-gateway-operator --replicas=0 -n tailscale-system
+    kubectl scale deployment tailscale-gateway-operator --replicas=0 -n tailscale-gateway-system
     
     # Wait for pods to terminate
-    kubectl wait --for=delete pod -l app=tailscale-gateway-operator -n tailscale-system --timeout=60s
+    kubectl wait --for=delete pod -l app=tailscale-gateway-operator -n tailscale-gateway-system --timeout=60s
     
     # Scale back up
-    kubectl scale deployment tailscale-gateway-operator --replicas=3 -n tailscale-system
+    kubectl scale deployment tailscale-gateway-operator --replicas=3 -n tailscale-gateway-system
     ```
     
     ### Rollback to Previous Version
     ```bash
     # Check rollout history
-    kubectl rollout history deployment/tailscale-gateway-operator -n tailscale-system
+    kubectl rollout history deployment/tailscale-gateway-operator -n tailscale-gateway-system
     
     # Rollback to previous version
-    kubectl rollout undo deployment/tailscale-gateway-operator -n tailscale-system
+    kubectl rollout undo deployment/tailscale-gateway-operator -n tailscale-gateway-system
     
     # Monitor rollback
-    kubectl rollout status deployment/tailscale-gateway-operator -n tailscale-system
+    kubectl rollout status deployment/tailscale-gateway-operator -n tailscale-gateway-system
     ```
     
     ## Escalation Contacts
@@ -1155,7 +1155,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: performance-config
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 data:
   config.yaml: |
     # High-performance production configuration
@@ -1287,7 +1287,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: audit-config
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 data:
   audit.yaml: |
     audit:

@@ -30,7 +30,7 @@ apiVersion: gateway.tailscale.com/v1alpha1
 kind: TailscaleTailnet
 metadata:
   name: company-tailnet
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 spec:
   tailnet: "company.ts.net"
   oauth:
@@ -113,7 +113,7 @@ apiVersion: gateway.tailscale.com/v1alpha1
 kind: TailscaleTailnet
 metadata:
   name: prod-tailnet
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 spec:
   tailnet: "prod.company.ts.net"
   
@@ -200,7 +200,7 @@ apiVersion: gateway.tailscale.com/v1alpha1
 kind: TailscaleTailnet
 metadata:
   name: dev-tailnet
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 spec:
   tailnet: "dev.company.ts.net"
   
@@ -259,7 +259,7 @@ apiVersion: gateway.tailscale.com/v1alpha1
 kind: TailscaleTailnet
 metadata:
   name: global-tailnet
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 spec:
   tailnet: "global.company.ts.net"
   
@@ -334,7 +334,7 @@ apiVersion: gateway.tailscale.com/v1alpha1
 kind: TailscaleTailnet
 metadata:
   name: enterprise-tailnet
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 spec:
   tailnet: "enterprise.company.ts.net"
   
@@ -519,7 +519,7 @@ kubectl describe tailscaletailnet company-tailnet
 kubectl get tailscaletailnet company-tailnet -o yaml
 
 # Check operator logs
-kubectl logs -n tailscale-system deployment/tailscale-gateway-operator
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator
 ```
 
 #### 3. **ACL Configuration Problems**

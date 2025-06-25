@@ -753,7 +753,7 @@ spec:
 3. **UDP Packet Loss**
    ```bash
    # Check network statistics
-   kubectl logs -n tailscale-system deployment/tailscale-gateway-operator | grep UDP
+   kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator | grep UDP
    ```
 
 4. **gRPC Method Not Found**

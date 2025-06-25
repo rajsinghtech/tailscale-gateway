@@ -34,17 +34,14 @@ Choose the installation method that best fits your environment:
 
 The Helm chart provides the easiest way to install and manage the operator.
 
-#### Step 1: Add Helm Repository
+#### Step 1: Install from OCI Registry
 
-```bash
-helm repo add tailscale-gateway https://rajsinghtech.github.io/tailscale-gateway
-helm repo update
-```
+The Tailscale Gateway Operator is available as an OCI package:
 
 #### Step 2: Create Namespace
 
 ```bash
-kubectl create namespace tailscale-system
+kubectl create namespace tailscale-gateway-system
 ```
 
 #### Step 3: Configure OAuth Credentials
@@ -55,21 +52,23 @@ Create a Kubernetes secret with your Tailscale OAuth credentials:
 kubectl create secret generic tailscale-oauth \
   --from-literal=client-id=YOUR_CLIENT_ID \
   --from-literal=client-secret=YOUR_CLIENT_SECRET \
-  -n tailscale-system
+  -n tailscale-gateway-system
 ```
 
 #### Step 4: Install the Operator
 
 ```bash
-helm install tailscale-gateway tailscale-gateway/tailscale-gateway \
-  --namespace tailscale-system \
-  --set oauth.existingSecret=tailscale-oauth
+# Install Tailscale Gateway Operator from OCI registry with development version
+helm install tailscale-gateway-operator oci://ghcr.io/rajsinghtech/charts/tailscale-gateway-operator \
+  --namespace tailscale-gateway-system \
+  --create-namespace \
+  --version 0.0.0-latest
 ```
 
 #### Step 5: Verify Installation
 
 ```bash
-kubectl get pods -n tailscale-system
+kubectl get pods -n tailscale-gateway-system
 kubectl get crd | grep tailscale
 ```
 
@@ -88,12 +87,12 @@ curl -L -o tailscale-gateway.yaml \
 #### Step 2: Create OAuth Secret
 
 ```bash
-kubectl create namespace tailscale-system
+kubectl create namespace tailscale-gateway-system
 
 kubectl create secret generic tailscale-oauth \
   --from-literal=client-id=YOUR_CLIENT_ID \
   --from-literal=client-secret=YOUR_CLIENT_SECRET \
-  -n tailscale-system
+  -n tailscale-gateway-system
 ```
 
 #### Step 3: Apply Manifests
@@ -136,10 +135,12 @@ Tailscale Gateway requires Envoy Gateway to be installed first.
 
 ### Install Envoy Gateway
 
+Envoy Gateway is a prerequisite for Tailscale Gateway. Install it first:
+
 ```bash
-# Install Envoy Gateway using Helm
-helm install eg oci://docker.io/envoyproxy/gateway-helm \
-  --version v1.0.0 \
+# Install Envoy Gateway using Helm with latest development version
+helm install my-gateway-helm oci://docker.io/envoyproxy/gateway-helm \
+  --version 0.0.0-latest \
   -n envoy-gateway-system \
   --create-namespace
 
@@ -244,7 +245,7 @@ Install with custom values:
 
 ```bash
 helm install tailscale-gateway tailscale-gateway/tailscale-gateway \
-  --namespace tailscale-system \
+  --namespace tailscale-gateway-system \
   --values custom-values.yaml
 ```
 
@@ -276,7 +277,7 @@ helm install tailscale-gateway tailscale-gateway/tailscale-gateway \
 kubectl create secret generic tailscale-oauth \
   --from-literal=client-id=YOUR_CLIENT_ID \
   --from-literal=client-secret=YOUR_CLIENT_SECRET \
-  -n tailscale-system
+  -n tailscale-gateway-system
 ```
 
 ## Verification
@@ -285,13 +286,13 @@ kubectl create secret generic tailscale-oauth \
 
 ```bash
 # Check pod status
-kubectl get pods -n tailscale-system
+kubectl get pods -n tailscale-gateway-system
 
 # Check operator logs
-kubectl logs -n tailscale-system deployment/tailscale-gateway-operator
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator
 
 # Check extension server logs
-kubectl logs -n tailscale-system deployment/tailscale-gateway-extension-server
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-extension-server
 ```
 
 ### Verify CRDs
@@ -336,10 +337,10 @@ kubectl get tailscaletailnets
 **Solution**:
 ```bash
 # Verify secret exists and has correct keys
-kubectl get secret tailscale-oauth -n tailscale-system -o yaml
+kubectl get secret tailscale-oauth -n tailscale-gateway-system -o yaml
 
 # Check if credentials are valid
-kubectl logs -n tailscale-system deployment/tailscale-gateway-operator | grep oauth
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator | grep oauth
 ```
 
 #### 2. **CRD Installation Issues**
@@ -372,23 +373,23 @@ helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.0.0 -n envo
 kubectl get clusterrole,clusterrolebinding | grep tailscale
 
 # Verify service account permissions
-kubectl auth can-i create tailscaleendpoints --as=system:serviceaccount:tailscale-system:tailscale-gateway-operator
+kubectl auth can-i create tailscaleendpoints --as=system:serviceaccount:tailscale-gateway-system:tailscale-gateway-operator
 ```
 
 ### Debug Commands
 
 ```bash
 # Get comprehensive status
-kubectl get all -n tailscale-system
+kubectl get all -n tailscale-gateway-system
 
 # Check events for errors
-kubectl get events -n tailscale-system --sort-by='.lastTimestamp'
+kubectl get events -n tailscale-gateway-system --sort-by='.lastTimestamp'
 
 # Describe problematic resources
-kubectl describe pod -n tailscale-system -l app=tailscale-gateway-operator
+kubectl describe pod -n tailscale-gateway-system -l app=tailscale-gateway-operator
 
 # View detailed logs with timestamps
-kubectl logs -n tailscale-system deployment/tailscale-gateway-operator --timestamps=true
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator --timestamps=true
 ```
 
 ## Next Steps

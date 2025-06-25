@@ -11,6 +11,8 @@ import (
 	"time"
 
 	gatewayv1alpha1 "github.com/rajsinghtech/tailscale-gateway/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -145,9 +147,28 @@ func (m *MultiTailnetManager) createClientFromTailnet(ctx context.Context, k8sCl
 		secretNamespace = tailnet.Spec.OAuthSecretNamespace
 	}
 
-	// Build paths to OAuth credential files
-	clientIDPath := fmt.Sprintf("/var/secrets/%s/%s/client_id", secretNamespace, tailnet.Spec.OAuthSecretName)
-	clientSecretPath := fmt.Sprintf("/var/secrets/%s/%s/client_secret", secretNamespace, tailnet.Spec.OAuthSecretName)
+	// Read OAuth secret from Kubernetes API
+	secret := &corev1.Secret{}
+	err := k8sClient.Get(ctx, types.NamespacedName{
+		Name:      tailnet.Spec.OAuthSecretName,
+		Namespace: secretNamespace,
+	}, secret)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get OAuth secret %s/%s: %w", secretNamespace, tailnet.Spec.OAuthSecretName, err)
+	}
+
+	// Extract OAuth credentials from secret
+	clientIDBytes, ok := secret.Data["client_id"]
+	if !ok {
+		return nil, fmt.Errorf("client_id not found in secret %s/%s", secretNamespace, tailnet.Spec.OAuthSecretName)
+	}
+	clientSecretBytes, ok := secret.Data["client_secret"]
+	if !ok {
+		return nil, fmt.Errorf("client_secret not found in secret %s/%s", secretNamespace, tailnet.Spec.OAuthSecretName)
+	}
+
+	clientID := string(clientIDBytes)
+	clientSecret := string(clientSecretBytes)
 
 	// Determine tailnet identifier
 	tailnetID := tailnet.Spec.Tailnet
@@ -155,8 +176,15 @@ func (m *MultiTailnetManager) createClientFromTailnet(ctx context.Context, k8sCl
 		tailnetID = DefaultTailnet // Use default tailnet
 	}
 
-	// Create the client using secret files
-	return NewClientFromSecretFiles(ctx, tailnetID, DefaultAPIBaseURL, clientIDPath, clientSecretPath)
+	// Create the client using OAuth credentials
+	config := ClientConfig{
+		Tailnet:      tailnetID,
+		APIBaseURL:   DefaultAPIBaseURL,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+	}
+
+	return NewClient(ctx, config)
 }
 
 // cleanup runs periodic cleanup of unused clients

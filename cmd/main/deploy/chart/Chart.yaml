@@ -2,7 +2,7 @@ apiVersion: v2
 name: tailscale-gateway-operator
 description: A Helm chart for the Tailscale Gateway Kubernetes operator
 type: application
-version: 0.0.0
+version: 0.0.0-latest
 appVersion: "latest"
 keywords:
   - tailscale

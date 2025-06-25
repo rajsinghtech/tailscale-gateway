@@ -425,7 +425,7 @@ curl -v http://100.64.0.10:8080/health
 kubectl describe httproute api-route
 
 # Check extension server logs
-kubectl logs -n tailscale-system deployment/tailscale-gateway-extension-server
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-extension-server
 ```
 
 ## Related Resources

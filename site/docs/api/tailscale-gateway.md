@@ -193,7 +193,7 @@ spec:
       enabled: true
       certificateRef:
         name: "gateway-mtls-cert"
-        namespace: "tailscale-system"
+        namespace: "tailscale-gateway-system"
     accessControl:
       allowedTags:
         - "prod:server"
@@ -401,7 +401,7 @@ kubectl describe gateway envoy-gateway -n envoy-gateway-system
 kubectl get tailscaletailnets
 
 # Check operator logs
-kubectl logs -n tailscale-system deployment/tailscale-gateway-operator
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator
 ```
 
 #### 3. **Route Generation Problems**
@@ -410,7 +410,7 @@ kubectl logs -n tailscale-system deployment/tailscale-gateway-operator
 kubectl get httproutes,tcproutes -A
 
 # Check extension server logs
-kubectl logs -n tailscale-system deployment/tailscale-gateway-extension-server
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-extension-server
 ```
 
 ## Related Resources

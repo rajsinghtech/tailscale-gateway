@@ -85,15 +85,18 @@ var (
 func (name ServiceName) Validate() error {
 	nameStr := string(name)
 
-	// Must start with "svc:" prefix
-	if !strings.HasPrefix(nameStr, "svc:") {
-		return fmt.Errorf("service name must start with 'svc:' prefix, got: %s", nameStr)
+	// Allow both "svc:" prefixed and arbitrary service names
+	baseName := nameStr
+	if strings.HasPrefix(nameStr, "svc:") {
+		baseName = strings.TrimPrefix(nameStr, "svc:")
+		if baseName == "" {
+			return fmt.Errorf("service name cannot be empty after 'svc:' prefix")
+		}
 	}
 
-	// Extract the actual service name
-	baseName := strings.TrimPrefix(nameStr, "svc:")
+	// For non-prefixed names, use the full name for validation
 	if baseName == "" {
-		return fmt.Errorf("service name cannot be empty after 'svc:' prefix")
+		return fmt.Errorf("service name cannot be empty")
 	}
 
 	// Check length (DNS label limit)

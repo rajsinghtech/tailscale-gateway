@@ -56,6 +56,21 @@ Tailscale Gateway is a Kubernetes operator that:
                     └───────────────────────┘
 ```
 
+## Custom Resource Definitions (CRDs)
+
+The operator introduces several custom resources that work together to provide comprehensive Tailscale network integration:
+
+### Infrastructure Layer
+1. **TailscaleTailnet** - Defines connection to a Tailscale network with OAuth credentials
+2. **TailscaleEndpoints** - Infrastructure layer managing StatefulSet deployment for Tailscale proxy devices
+
+### Service Mesh Layer  
+3. **TailscaleServices** - Service mesh layer providing VIP service management with selector-based endpoint aggregation, load balancing, and auto-provisioning
+
+### Gateway Integration Layer
+4. **TailscaleGateway** - Integrates with Envoy Gateway for advanced traffic routing and Gateway API compliance
+5. **TailscaleRoutePolicy** - Advanced routing policies and traffic management rules
+
 ## Core Components
 
 ### 1. **Extension Server**
@@ -65,16 +80,21 @@ Tailscale Gateway is a Kubernetes operator that:
 - Real-time service discovery
 
 ### 2. **TailscaleEndpoints Controller**
-- Manages service discovery and StatefulSet creation
+- Manages infrastructure layer: StatefulSet creation and proxy device management
 - Handles external target mappings
-- Provides health checking and failover
+- Provides device status and health monitoring
 
-### 3. **TailscaleGateway Controller**
+### 3. **TailscaleServices Controller**
+- Service mesh layer: VIP service management and load balancing
+- Kubernetes-style selector pattern for endpoint aggregation
+- Auto-provisioning and intelligent cleanup of endpoints
+
+### 4. **TailscaleGateway Controller**
 - Processes Gateway API resources
 - Coordinates multi-operator deployments
 - Manages VIP service registration
 
-### 4. **Service Coordinator**
+### 5. **Service Coordinator**
 - Cross-cluster service sharing
 - VIP service registry management
 - Automatic service discovery and attachment

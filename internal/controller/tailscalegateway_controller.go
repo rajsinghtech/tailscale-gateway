@@ -496,33 +496,48 @@ func (r *TailscaleGatewayReconciler) gatherGatewayServiceMetadata(
 		Gateway: gateway,
 	}
 
-	// Try to get the Envoy Gateway service
-	gatewayServiceName := fmt.Sprintf("%s-envoy", envoyGateway.Name)
+	// Find the Envoy Gateway service using label-based discovery
 	kubeService := &corev1.Service{}
-	err := r.Get(ctx, types.NamespacedName{
-		Name:      gatewayServiceName,
-		Namespace: envoyGateway.Namespace,
-	}, kubeService)
-	if err != nil {
-		// Try alternative naming patterns
-		alternativeNames := []string{
-			envoyGateway.Name,
-			fmt.Sprintf("%s-gateway", envoyGateway.Name),
-			fmt.Sprintf("envoy-%s", envoyGateway.Name),
-		}
 
-		for _, altName := range alternativeNames {
-			err = r.Get(ctx, types.NamespacedName{
-				Name:      altName,
-				Namespace: envoyGateway.Namespace,
-			}, kubeService)
-			if err == nil {
-				break
-			}
-		}
+	// First try to find service using Envoy Gateway labels
+	serviceList := &corev1.ServiceList{}
+	err := r.List(ctx, serviceList, client.MatchingLabels(map[string]string{
+		"gateway.envoyproxy.io/owning-gateway-name":      envoyGateway.Name,
+		"gateway.envoyproxy.io/owning-gateway-namespace": envoyGateway.Namespace,
+	}))
+
+	if err == nil && len(serviceList.Items) > 0 {
+		// Found service via labels
+		kubeService = &serviceList.Items[0]
+	} else {
+		// Fallback to name-based discovery in gateway namespace
+		gatewayServiceName := fmt.Sprintf("%s-envoy", envoyGateway.Name)
+		err = r.Get(ctx, types.NamespacedName{
+			Name:      gatewayServiceName,
+			Namespace: envoyGateway.Namespace,
+		}, kubeService)
 
 		if err != nil {
-			return nil, fmt.Errorf("failed to find Envoy Gateway service in namespace %s: %w", envoyGateway.Namespace, err)
+			// Try alternative naming patterns
+			alternativeNames := []string{
+				envoyGateway.Name,
+				fmt.Sprintf("%s-gateway", envoyGateway.Name),
+				fmt.Sprintf("envoy-%s", envoyGateway.Name),
+			}
+
+			for _, altName := range alternativeNames {
+				err = r.Get(ctx, types.NamespacedName{
+					Name:      altName,
+					Namespace: envoyGateway.Namespace,
+				}, kubeService)
+				if err == nil {
+					break
+				}
+			}
+
+			if err != nil {
+				return nil, fmt.Errorf("failed to find Envoy Gateway service for gateway %s/%s: %w", envoyGateway.Namespace, envoyGateway.Name, err)
+			}
 		}
 	}
 	metadata.Service = kubeService

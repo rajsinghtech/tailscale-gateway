@@ -716,7 +716,7 @@ kubectl get tailscaleendpoints -o wide
 kubectl describe tailscaleendpoints web-services
 
 # Check operator logs
-kubectl logs -n tailscale-system deployment/tailscale-gateway-operator
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator
 
 # Test connectivity
 kubectl exec -it deployment/tailscale-gateway-operator -- tailscale ping 100.64.0.10

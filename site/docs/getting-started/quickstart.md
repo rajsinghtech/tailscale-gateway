@@ -20,11 +20,14 @@ Before you begin, ensure you have:
 
 ## Step 1: Install Envoy Gateway
 
-If you haven't already installed Envoy Gateway:
+Envoy Gateway is a prerequisite. If you haven't already installed it:
 
 ```bash
-# Install Envoy Gateway
-helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.0.0 -n envoy-gateway-system --create-namespace
+# Install Envoy Gateway using latest development version
+helm install my-gateway-helm oci://docker.io/envoyproxy/gateway-helm \
+  --version 0.0.0-latest \
+  -n envoy-gateway-system \
+  --create-namespace
 
 # Wait for it to be ready
 kubectl wait --timeout=5m -n envoy-gateway-system deployment/envoy-gateway --for=condition=Available
@@ -44,23 +47,20 @@ kubectl wait --timeout=5m -n envoy-gateway-system deployment/envoy-gateway --for
 ## Step 3: Install Tailscale Gateway Operator
 
 ```bash
-# Add the Helm repository
-helm repo add tailscale-gateway https://rajsinghtech.github.io/tailscale-gateway
-helm repo update
-
 # Create the namespace
-kubectl create namespace tailscale-system
+kubectl create namespace tailscale-gateway-system
 
 # Create OAuth secret
 kubectl create secret generic tailscale-oauth \
   --from-literal=client-id=YOUR_CLIENT_ID \
   --from-literal=client-secret=YOUR_CLIENT_SECRET \
-  -n tailscale-system
+  -n tailscale-gateway-system
 
-# Install the operator
-helm install tailscale-gateway tailscale-gateway/tailscale-gateway \
-  --namespace tailscale-system \
-  --set oauth.existingSecret=tailscale-oauth
+# Install the operator from OCI registry
+helm install tailscale-gateway-operator oci://ghcr.io/rajsinghtech/charts/tailscale-gateway-operator \
+  --namespace tailscale-gateway-system \
+  --create-namespace \
+  --version 0.0.0-latest
 ```
 
 ## Step 4: Configure Your First Gateway
@@ -164,8 +164,8 @@ kubectl apply -f route.yaml
 
 1. **Check operator status**:
    ```bash
-   kubectl get pods -n tailscale-system
-   kubectl logs -n tailscale-system deployment/tailscale-gateway-operator
+   kubectl get pods -n tailscale-gateway-system
+   kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator
    ```
 
 2. **Verify resources**:
@@ -204,12 +204,12 @@ If something isn't working:
 
 1. **Check operator logs**:
    ```bash
-   kubectl logs -n tailscale-system deployment/tailscale-gateway-operator -f
+   kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator -f
    ```
 
 2. **Verify OAuth credentials**:
    ```bash
-   kubectl get secret tailscale-oauth -n tailscale-system -o yaml
+   kubectl get secret tailscale-oauth -n tailscale-gateway-system -o yaml
    ```
 
 3. **Check Envoy Gateway status**:

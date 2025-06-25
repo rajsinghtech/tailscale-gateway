@@ -21,18 +21,201 @@ import (
 )
 
 // TailscaleEndpointsSpec defines the desired state of TailscaleEndpoints
+// TailscaleEndpoints now focuses on StatefulSet/proxy infrastructure management
 type TailscaleEndpointsSpec struct {
 	// Tailnet identifies which tailnet these endpoints belong to
 	// +kubebuilder:validation:Required
 	Tailnet string `json:"tailnet"`
 
+	// Tags for the Tailscale machines (used in ACL policies)
+	// +optional
+	Tags []string `json:"tags,omitempty"`
+
+	// Proxy configuration for StatefulSet creation
+	// +optional
+	Proxy *ProxyConfig `json:"proxy,omitempty"`
+
+	// Ports that the proxy StatefulSets should serve
+	// +optional
+	Ports []PortMapping `json:"ports,omitempty"`
+
 	// Endpoints defines the mapping between Tailscale services and their network details
 	// +optional
+	// Deprecated: Use TailscaleServices for VIP service management
 	Endpoints []TailscaleEndpoint `json:"endpoints,omitempty"`
 
 	// AutoDiscovery configures automatic endpoint discovery
 	// +optional
+	// Deprecated: Use TailscaleServices for VIP service management
 	AutoDiscovery *EndpointAutoDiscovery `json:"autoDiscovery,omitempty"`
+}
+
+// ProxyConfig defines configuration for Tailscale proxy StatefulSets
+type ProxyConfig struct {
+	// Number of proxy replicas
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=2
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// Connection type: ingress, egress, or bidirectional
+	// +kubebuilder:validation:Enum=ingress;egress;bidirectional
+	// +kubebuilder:default="bidirectional"
+	// +optional
+	ConnectionType string `json:"connectionType,omitempty"`
+
+	// Image for the Tailscale proxy containers
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// Resources for the proxy containers
+	// +optional
+	Resources *ResourceRequirements `json:"resources,omitempty"`
+
+	// NodeSelector for StatefulSet pods
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Tolerations for StatefulSet pods
+	// +optional
+	Tolerations []Toleration `json:"tolerations,omitempty"`
+
+	// Affinity for StatefulSet pods
+	// +optional
+	Affinity *Affinity `json:"affinity,omitempty"`
+}
+
+// PortMapping defines port configuration for proxy StatefulSets
+type PortMapping struct {
+	// Port number
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port"`
+
+	// Protocol (TCP or UDP)
+	// +kubebuilder:validation:Enum=TCP;UDP
+	// +kubebuilder:default="TCP"
+	// +optional
+	Protocol string `json:"protocol,omitempty"`
+
+	// Name for the port (used in Service creation)
+	// +optional
+	Name string `json:"name,omitempty"`
+
+	// TargetPort on the backend service
+	// If not specified, defaults to Port
+	// +optional
+	TargetPort *int32 `json:"targetPort,omitempty"`
+}
+
+// ResourceRequirements defines resource requirements for proxy containers
+type ResourceRequirements struct {
+	// Limits describes the maximum amount of resources required
+	// +optional
+	Limits map[string]string `json:"limits,omitempty"`
+
+	// Requests describes the minimum amount of resources required
+	// +optional
+	Requests map[string]string `json:"requests,omitempty"`
+}
+
+// Toleration defines toleration for StatefulSet pods
+type Toleration struct {
+	// Key is the taint key that the toleration applies to
+	// +optional
+	Key string `json:"key,omitempty"`
+
+	// Operator represents a key's relationship to the value
+	// +kubebuilder:validation:Enum=Exists;Equal
+	// +optional
+	Operator string `json:"operator,omitempty"`
+
+	// Value is the taint value the toleration matches to
+	// +optional
+	Value string `json:"value,omitempty"`
+
+	// Effect indicates the taint effect to match
+	// +kubebuilder:validation:Enum=NoSchedule;PreferNoSchedule;NoExecute
+	// +optional
+	Effect string `json:"effect,omitempty"`
+
+	// TolerationSeconds represents the period of time the toleration
+	// +optional
+	TolerationSeconds *int64 `json:"tolerationSeconds,omitempty"`
+}
+
+// Affinity defines affinity settings for StatefulSet pods
+type Affinity struct {
+	// NodeAffinity describes node affinity scheduling rules
+	// +optional
+	NodeAffinity *NodeAffinity `json:"nodeAffinity,omitempty"`
+
+	// PodAffinity describes pod affinity scheduling rules
+	// +optional
+	PodAffinity *PodAffinity `json:"podAffinity,omitempty"`
+
+	// PodAntiAffinity describes pod anti-affinity scheduling rules
+	// +optional
+	PodAntiAffinity *PodAntiAffinity `json:"podAntiAffinity,omitempty"`
+}
+
+// NodeAffinity is a simplified version of corev1.NodeAffinity
+type NodeAffinity struct {
+	// RequiredDuringSchedulingIgnoredDuringExecution specifies hard node constraints
+	// +optional
+	RequiredDuringSchedulingIgnoredDuringExecution *NodeSelector `json:"requiredDuringSchedulingIgnoredDuringExecution,omitempty"`
+}
+
+// NodeSelector is a simplified version of corev1.NodeSelector
+type NodeSelector struct {
+	// NodeSelectorTerms is a list of node selector terms
+	NodeSelectorTerms []NodeSelectorTerm `json:"nodeSelectorTerms"`
+}
+
+// NodeSelectorTerm is a simplified version of corev1.NodeSelectorTerm
+type NodeSelectorTerm struct {
+	// MatchExpressions is a list of node selector requirements by node's labels
+	// +optional
+	MatchExpressions []NodeSelectorRequirement `json:"matchExpressions,omitempty"`
+}
+
+// NodeSelectorRequirement is a simplified version of corev1.NodeSelectorRequirement
+type NodeSelectorRequirement struct {
+	// Key is the label key that the selector applies to
+	Key string `json:"key"`
+
+	// Operator represents a key's relationship to a set of values
+	// +kubebuilder:validation:Enum=In;NotIn;Exists;DoesNotExist;Gt;Lt
+	Operator string `json:"operator"`
+
+	// Values is an array of string values
+	// +optional
+	Values []string `json:"values,omitempty"`
+}
+
+// PodAffinity is a simplified version of corev1.PodAffinity
+type PodAffinity struct {
+	// RequiredDuringSchedulingIgnoredDuringExecution specifies hard pod constraints
+	// +optional
+	RequiredDuringSchedulingIgnoredDuringExecution []PodAffinityTerm `json:"requiredDuringSchedulingIgnoredDuringExecution,omitempty"`
+}
+
+// PodAntiAffinity is a simplified version of corev1.PodAntiAffinity
+type PodAntiAffinity struct {
+	// RequiredDuringSchedulingIgnoredDuringExecution specifies hard pod anti-constraints
+	// +optional
+	RequiredDuringSchedulingIgnoredDuringExecution []PodAffinityTerm `json:"requiredDuringSchedulingIgnoredDuringExecution,omitempty"`
+}
+
+// PodAffinityTerm is a simplified version of corev1.PodAffinityTerm
+type PodAffinityTerm struct {
+	// LabelSelector is a label query over a set of resources
+	// +optional
+	LabelSelector *metav1.LabelSelector `json:"labelSelector,omitempty"`
+
+	// TopologyKey is the key of node labels
+	TopologyKey string `json:"topologyKey"`
 }
 
 // TailscaleEndpoint represents a service accessible via Tailscale
@@ -214,6 +397,15 @@ type TailscaleEndpointsStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Devices contains information about Tailscale machines created by this resource
+	// Similar to ProxyGroup devices in the official Tailscale k8s-operator
+	// +optional
+	Devices []TailscaleDevice `json:"devices,omitempty"`
+
+	// StatefulSets contains information about the created StatefulSets
+	// +optional
+	StatefulSets []StatefulSetInfo `json:"statefulSets,omitempty"`
 
 	// DiscoveredEndpoints is the count of endpoints discovered via auto-discovery
 	DiscoveredEndpoints int `json:"discoveredEndpoints"`
@@ -501,6 +693,72 @@ type TagSelectorResult struct {
 	// MatchedDeviceNames names of devices that matched (for debugging)
 	// +optional
 	MatchedDeviceNames []string `json:"matchedDeviceNames,omitempty"`
+}
+
+// TailscaleDevice represents a Tailscale machine/device created by the operator
+// Similar to the ProxyGroup device status in the official Tailscale k8s-operator
+type TailscaleDevice struct {
+	// Hostname is the Tailscale hostname of the device
+	// +optional
+	Hostname string `json:"hostname,omitempty"`
+
+	// TailscaleIP is the Tailscale IP address assigned to the device
+	// +optional
+	TailscaleIP string `json:"tailscaleIP,omitempty"`
+
+	// TailscaleFQDN is the fully qualified domain name in the tailnet
+	// +optional
+	TailscaleFQDN string `json:"tailscaleFQDN,omitempty"`
+
+	// NodeID is the Tailscale node ID
+	// +optional
+	NodeID string `json:"nodeID,omitempty"`
+
+	// StatefulSetPod is the name of the pod backing this device
+	// +optional
+	StatefulSetPod string `json:"statefulSetPod,omitempty"`
+
+	// Connected indicates if the device is currently connected to the tailnet
+	// +optional
+	Connected bool `json:"connected,omitempty"`
+
+	// Online indicates if the device is currently online
+	// +optional
+	Online bool `json:"online,omitempty"`
+
+	// LastSeen is when the device was last seen online
+	// +optional
+	LastSeen *metav1.Time `json:"lastSeen,omitempty"`
+
+	// Tags are the Tailscale tags applied to this device
+	// +optional
+	Tags []string `json:"tags,omitempty"`
+}
+
+// StatefulSetInfo provides information about created StatefulSets
+type StatefulSetInfo struct {
+	// Name of the StatefulSet
+	Name string `json:"name"`
+
+	// Namespace of the StatefulSet
+	Namespace string `json:"namespace"`
+
+	// Type indicates the StatefulSet type (ingress, egress, bidirectional)
+	Type string `json:"type"`
+
+	// Replicas is the desired number of replicas
+	Replicas int32 `json:"replicas"`
+
+	// ReadyReplicas is the number of ready replicas
+	ReadyReplicas int32 `json:"readyReplicas"`
+
+	// Service is the name of the associated Service
+	// +optional
+	Service string `json:"service,omitempty"`
+
+	// CreatedAt is when the StatefulSet was created
+	// +optional
+	CreatedAt *metav1.Time `json:"createdAt,omitempty"`
 }
 
 func init() {

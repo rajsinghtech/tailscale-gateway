@@ -72,6 +72,8 @@ type ServiceMetadata struct {
 	TailscaleEndpoints *gatewayv1alpha1.TailscaleEndpoints
 	// TailscaleTailnet provides tailnet configuration
 	TailscaleTailnet *gatewayv1alpha1.TailscaleTailnet
+	// TailscaleServices provides service-level configuration
+	TailscaleServices *gatewayv1alpha1.TailscaleServices
 }
 
 // Utility functions - defined early to avoid forward declaration issues
@@ -295,7 +297,7 @@ func (sc *ServiceCoordinator) attachToExistingService(
 	return registry, nil
 }
 
-// extractTagsFromMetadata extracts tags from TailscaleEndpoints and TailscaleTailnet
+// extractTagsFromMetadata extracts tags from TailscaleServices, TailscaleEndpoints and TailscaleTailnet
 func (sc *ServiceCoordinator) extractTagsFromMetadata(metadata *ServiceMetadata) []string {
 	var tags []string
 
@@ -304,6 +306,11 @@ func (sc *ServiceCoordinator) extractTagsFromMetadata(metadata *ServiceMetadata)
 
 	if metadata == nil {
 		return defaultTags
+	}
+
+	// Extract tags from TailscaleServices (highest priority)
+	if metadata.TailscaleServices != nil && metadata.TailscaleServices.Spec.VIPService != nil && len(metadata.TailscaleServices.Spec.VIPService.Tags) > 0 {
+		tags = append(tags, metadata.TailscaleServices.Spec.VIPService.Tags...)
 	}
 
 	// Extract tags from TailscaleTailnet
@@ -335,7 +342,7 @@ func (sc *ServiceCoordinator) extractTagsFromMetadata(metadata *ServiceMetadata)
 	return removeDuplicateStrings(tags)
 }
 
-// extractPortsFromMetadata extracts ports from HTTPRoute and Service
+// extractPortsFromMetadata extracts ports from TailscaleServices, HTTPRoute and Service
 func (sc *ServiceCoordinator) extractPortsFromMetadata(metadata *ServiceMetadata) []string {
 	var ports []string
 
@@ -346,14 +353,38 @@ func (sc *ServiceCoordinator) extractPortsFromMetadata(metadata *ServiceMetadata
 		return defaultPorts
 	}
 
+	// Extract ports from TailscaleServices (highest priority)
+	if metadata.TailscaleServices != nil && metadata.TailscaleServices.Spec.VIPService != nil && len(metadata.TailscaleServices.Spec.VIPService.Ports) > 0 {
+		ports = append(ports, metadata.TailscaleServices.Spec.VIPService.Ports...)
+	}
+
 	// Extract ports from Kubernetes Service
-	if metadata.Service != nil {
+	if metadata.Service != nil && len(ports) == 0 {
 		for _, port := range metadata.Service.Spec.Ports {
 			protocol := strings.ToLower(string(port.Protocol))
 			if protocol == "" {
 				protocol = "tcp"
 			}
 			ports = append(ports, fmt.Sprintf("%s:%d", protocol, port.Port))
+		}
+	}
+
+	// Extract ports from TailscaleEndpoints if available
+	if metadata.TailscaleEndpoints != nil && metadata.Service != nil && len(ports) == 0 {
+		serviceName := metadata.Service.Name
+		for _, endpoint := range metadata.TailscaleEndpoints.Spec.Endpoints {
+			// Check if this endpoint matches our service
+			if endpoint.ExternalTarget != "" {
+				// Parse external target to see if it matches our service
+				if strings.Contains(endpoint.ExternalTarget, serviceName) {
+					protocol := strings.ToLower(endpoint.Protocol)
+					if protocol == "" {
+						protocol = "tcp"
+					}
+					ports = append(ports, fmt.Sprintf("%s:%d", protocol, endpoint.Port))
+					break
+				}
+			}
 		}
 	}
 
@@ -441,13 +472,16 @@ func (sc *ServiceCoordinator) createNewService(
 		LastUpdated: time.Now(),
 	}
 
-	// Create VIP service with registry metadata
+	// Create VIP service with dynamic configuration
+	tags := []string{"tag:k8s-operator", "tag:gateway"}
+	ports := []string{"tcp:80", "tcp:443"}
+
 	vipService := &tailscale.VIPService{
 		Name:        serviceName,
-		Tags:        []string{"tag:k8s-operator", "tag:test"},
+		Tags:        tags,
 		Comment:     fmt.Sprintf("Multi-cluster service: %s", targetBackend),
 		Annotations: sc.encodeServiceRegistry(registry),
-		Ports:       []string{"tcp:80", "tcp:443"},
+		Ports:       ports,
 	}
 
 	if err := sc.tsClient.CreateOrUpdateVIPService(ctx, vipService); err != nil {

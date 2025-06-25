@@ -18,7 +18,9 @@ The Tailscale Gateway Operator uses a layered configuration approach:
 ├─────────────────────────────────┤
 │      TailscaleGateway           │  ← Gateway-level configuration
 ├─────────────────────────────────┤
-│     TailscaleEndpoints          │  ← Service-specific settings
+│     TailscaleServices           │  ← Service mesh layer with selectors
+├─────────────────────────────────┤
+│     TailscaleEndpoints          │  ← Infrastructure layer settings
 ├─────────────────────────────────┤
 │    TailscaleRoutePolicy         │  ← Advanced routing rules
 └─────────────────────────────────┘
@@ -35,7 +37,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: tailscale-gateway-operator
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 spec:
   template:
     spec:
@@ -56,7 +58,7 @@ spec:
         
         # Operator Settings
         - name: OPERATOR_NAMESPACE
-          value: "tailscale-system"
+          value: "tailscale-gateway-system"
         - name: METRICS_BIND_ADDRESS
           value: ":8080"
         - name: HEALTH_PROBE_BIND_ADDRESS
@@ -104,11 +106,11 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: tailscale-gateway-config
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 data:
   config.yaml: |
     operator:
-      namespace: "tailscale-system"
+      namespace: "tailscale-gateway-system"
       metricsBindAddress: ":8080"
       healthProbeBindAddress: ":8081"
       leaderElection: true
@@ -291,7 +293,7 @@ spec:
       enabled: true
       certificateRef:
         name: "tailscale-mtls-cert"
-        namespace: "tailscale-system"
+        namespace: "tailscale-gateway-system"
     
     # Access control
     accessControl:
@@ -317,6 +319,132 @@ spec:
       level: "info"
       accessLogs: true
       errorLogs: true
+```
+
+## TailscaleServices Configuration
+
+### Basic Service Configuration
+
+```yaml title="basic-service.yaml"
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleServices
+metadata:
+  name: web-service
+  namespace: production
+spec:
+  # Kubernetes-style selector
+  selector:
+    matchLabels:
+      service-type: web
+      environment: production
+    matchExpressions:
+      - key: region
+        operator: In
+        values: ["east", "west"]
+  
+  # VIP service configuration
+  vipService:
+    name: "svc:web-service"
+    ports: ["tcp:80", "tcp:443"]
+    tags: ["tag:web-service", "tag:production"]
+    comment: "Production web service"
+    autoApprove: true
+  
+  # Load balancing strategy
+  loadBalancing:
+    strategy: round-robin
+    healthCheck:
+      enabled: true
+      path: "/health"
+      interval: "30s"
+      timeout: "5s"
+      healthyThreshold: 2
+      unhealthyThreshold: 3
+```
+
+### Advanced Service Configuration
+
+```yaml title="advanced-service.yaml"
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleServices
+metadata:
+  name: enterprise-service
+  namespace: production
+spec:
+  selector:
+    matchLabels:
+      tier: backend
+      app: enterprise-app
+    matchExpressions:
+      - key: performance-tier
+        operator: In
+        values: ["high", "premium"]
+  
+  vipService:
+    name: "svc:enterprise-backend"
+    ports: ["tcp:8080", "tcp:8443"]
+    tags: ["tag:enterprise", "tag:backend", "tag:high-availability"]
+    comment: "Enterprise backend service with failover"
+    autoApprove: true
+    annotations:
+      team: "platform"
+      criticality: "high"
+      monitoring: "required"
+  
+  # Failover load balancing
+  loadBalancing:
+    strategy: failover
+    healthCheck:
+      enabled: true
+      path: "/api/health"
+      interval: "15s"
+      timeout: "3s"
+      healthyThreshold: 2
+      unhealthyThreshold: 3
+    failoverConfig:
+      primaryEndpoints: ["backend-primary"]
+      secondaryEndpoints: ["backend-secondary", "backend-dr"]
+      failbackDelay: "300s"
+    weights:
+      backend-primary: 100
+      backend-secondary: 50
+      backend-dr: 25
+  
+  # Service discovery and external integration
+  serviceDiscovery:
+    discoverVIPServices: true
+    vipServiceSelector:
+      tags: ["tag:shared-infrastructure"]
+      serviceNames: ["svc:database-cluster", "svc:cache-cluster"]
+    externalServices:
+      - name: legacy-system
+        address: legacy.internal.company.com
+        port: 8080
+        protocol: HTTP
+        weight: 10
+      - name: cloud-api
+        address: api.cloud-provider.com
+        port: 443
+        protocol: HTTPS
+        weight: 20
+  
+  # Auto-provisioning template
+  endpointTemplate:
+    tailnet: production-tailnet
+    tags: ["tag:auto-backend", "tag:k8s-proxy"]
+    proxy:
+      replicas: 3
+      connectionType: bidirectional
+    ports:
+      - port: 8080
+        protocol: TCP
+      - port: 8443
+        protocol: TCP
+    labels:
+      tier: backend
+      app: enterprise-app
+      performance-tier: high
+      auto-provisioned: "true"
 ```
 
 ## TailscaleEndpoints Configuration
@@ -706,7 +834,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: performance-config
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 data:
   config.yaml: |
     operator:
@@ -773,7 +901,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: tailscale-gateway-operator
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 spec:
   template:
     spec:
@@ -808,7 +936,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: tls-config
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 data:
   tls.yaml: |
     tls:
@@ -868,7 +996,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: validation-config
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 data:
   validation.yaml: |
     validation:
@@ -925,5 +1053,7 @@ data:
 ## Next Steps
 
 - **[API Reference](../api/tailscale-endpoints)** - Complete API documentation
+- **[TailscaleServices API](../api/tailscale-services)** - Service mesh layer documentation
 - **[Examples](../examples/basic-usage)** - Working configuration examples
+- **[TailscaleServices Examples](../examples/tailscale-services)** - Service mesh examples
 - **[Operations Guide](../operations/monitoring)** - Production deployment and monitoring

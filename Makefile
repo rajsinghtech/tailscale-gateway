@@ -208,3 +208,29 @@ GOBIN=$(LOCALBIN) go install $${package} ;\
 mv "$$(echo "$(1)" | sed "s/-$(3)$$//")" $(1) ;\
 }
 endef 
+
+##@ Local Development
+
+.PHONY: kind-setup
+kind-setup: ## Create kind cluster with Envoy Gateway for local development
+	@echo "Creating kind cluster with Envoy Gateway..."
+	kind create cluster --name tailscale-gateway-dev
+	@echo "Installing Envoy Gateway..."
+	helm install my-gateway-helm oci://docker.io/envoyproxy/gateway-helm --version 0.0.0-latest -n envoy-gateway-system --create-namespace
+	@echo "Installing CRDs..."
+	kubectl apply -f config/crd/bases/
+	kubectl apply -f examples/0-oauth-secret.yaml
+	kubectl apply -f examples/1-tailnet.yaml -f examples/2-gateway.yaml -f examples/3-tailscalegateway.yaml
+	make run
+
+.PHONY: kind-cleanup
+kind-cleanup: ## Delete kind cluster
+	@echo "Deleting kind cluster..."
+	kind delete cluster --name tailscale-gateway-dev
+	@echo "✅ Kind cluster 'tailscale-gateway-dev' deleted"
+
+.PHONY: dev-setup
+dev-setup: kind-setup ## Complete development setup (alias for kind-setup)
+
+.PHONY: dev-reset
+dev-reset: kind-cleanup kind-setup ## Reset development environment (delete and recreate cluster)

@@ -63,10 +63,14 @@ spec:
           metadata:
             type: object
           spec:
-            description: TailscaleEndpointsSpec defines the desired state of TailscaleEndpoints
+            description: |-
+              TailscaleEndpointsSpec defines the desired state of TailscaleEndpoints
+              TailscaleEndpoints now focuses on StatefulSet/proxy infrastructure management
             properties:
               autoDiscovery:
-                description: AutoDiscovery configures automatic endpoint discovery
+                description: |-
+                  AutoDiscovery configures automatic endpoint discovery
+                  Deprecated: Use TailscaleServices for VIP service management
                 properties:
                   enabled:
                     default: true
@@ -134,8 +138,9 @@ spec:
                 - enabled
                 type: object
               endpoints:
-                description: Endpoints defines the mapping between Tailscale services
-                  and their network details
+                description: |-
+                  Endpoints defines the mapping between Tailscale services and their network details
+                  Deprecated: Use TailscaleServices for VIP service management
                 items:
                   description: TailscaleEndpoint represents a service accessible via
                     Tailscale
@@ -235,6 +240,310 @@ spec:
                   - tailscaleFQDN
                   - tailscaleIP
                   type: object
+                type: array
+              ports:
+                description: Ports that the proxy StatefulSets should serve
+                items:
+                  description: PortMapping defines port configuration for proxy StatefulSets
+                  properties:
+                    name:
+                      description: Name for the port (used in Service creation)
+                      type: string
+                    port:
+                      description: Port number
+                      format: int32
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                    protocol:
+                      default: TCP
+                      description: Protocol (TCP or UDP)
+                      enum:
+                      - TCP
+                      - UDP
+                      type: string
+                    targetPort:
+                      description: |-
+                        TargetPort on the backend service
+                        If not specified, defaults to Port
+                      format: int32
+                      type: integer
+                  required:
+                  - port
+                  type: object
+                type: array
+              proxy:
+                description: Proxy configuration for StatefulSet creation
+                properties:
+                  affinity:
+                    description: Affinity for StatefulSet pods
+                    properties:
+                      nodeAffinity:
+                        description: NodeAffinity describes node affinity scheduling
+                          rules
+                        properties:
+                          requiredDuringSchedulingIgnoredDuringExecution:
+                            description: RequiredDuringSchedulingIgnoredDuringExecution
+                              specifies hard node constraints
+                            properties:
+                              nodeSelectorTerms:
+                                description: NodeSelectorTerms is a list of node selector
+                                  terms
+                                items:
+                                  description: NodeSelectorTerm is a simplified version
+                                    of corev1.NodeSelectorTerm
+                                  properties:
+                                    matchExpressions:
+                                      description: MatchExpressions is a list of node
+                                        selector requirements by node's labels
+                                      items:
+                                        description: NodeSelectorRequirement is a
+                                          simplified version of corev1.NodeSelectorRequirement
+                                        properties:
+                                          key:
+                                            description: Key is the label key that
+                                              the selector applies to
+                                            type: string
+                                          operator:
+                                            description: Operator represents a key's
+                                              relationship to a set of values
+                                            enum:
+                                            - In
+                                            - NotIn
+                                            - Exists
+                                            - DoesNotExist
+                                            - Gt
+                                            - Lt
+                                            type: string
+                                          values:
+                                            description: Values is an array of string
+                                              values
+                                            items:
+                                              type: string
+                                            type: array
+                                        required:
+                                        - key
+                                        - operator
+                                        type: object
+                                      type: array
+                                  type: object
+                                type: array
+                            required:
+                            - nodeSelectorTerms
+                            type: object
+                        type: object
+                      podAffinity:
+                        description: PodAffinity describes pod affinity scheduling
+                          rules
+                        properties:
+                          requiredDuringSchedulingIgnoredDuringExecution:
+                            description: RequiredDuringSchedulingIgnoredDuringExecution
+                              specifies hard pod constraints
+                            items:
+                              description: PodAffinityTerm is a simplified version
+                                of corev1.PodAffinityTerm
+                              properties:
+                                labelSelector:
+                                  description: LabelSelector is a label query over
+                                    a set of resources
+                                  properties:
+                                    matchExpressions:
+                                      description: matchExpressions is a list of label
+                                        selector requirements. The requirements are
+                                        ANDed.
+                                      items:
+                                        description: |-
+                                          A label selector requirement is a selector that contains values, a key, and an operator that
+                                          relates the key and values.
+                                        properties:
+                                          key:
+                                            description: key is the label key that
+                                              the selector applies to.
+                                            type: string
+                                          operator:
+                                            description: |-
+                                              operator represents a key's relationship to a set of values.
+                                              Valid operators are In, NotIn, Exists and DoesNotExist.
+                                            type: string
+                                          values:
+                                            description: |-
+                                              values is an array of string values. If the operator is In or NotIn,
+                                              the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                              the values array must be empty. This array is replaced during a strategic
+                                              merge patch.
+                                            items:
+                                              type: string
+                                            type: array
+                                            x-kubernetes-list-type: atomic
+                                        required:
+                                        - key
+                                        - operator
+                                        type: object
+                                      type: array
+                                      x-kubernetes-list-type: atomic
+                                    matchLabels:
+                                      additionalProperties:
+                                        type: string
+                                      description: |-
+                                        matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                        map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                        operator is "In", and the values array contains only "value". The requirements are ANDed.
+                                      type: object
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                                topologyKey:
+                                  description: TopologyKey is the key of node labels
+                                  type: string
+                              required:
+                              - topologyKey
+                              type: object
+                            type: array
+                        type: object
+                      podAntiAffinity:
+                        description: PodAntiAffinity describes pod anti-affinity scheduling
+                          rules
+                        properties:
+                          requiredDuringSchedulingIgnoredDuringExecution:
+                            description: RequiredDuringSchedulingIgnoredDuringExecution
+                              specifies hard pod anti-constraints
+                            items:
+                              description: PodAffinityTerm is a simplified version
+                                of corev1.PodAffinityTerm
+                              properties:
+                                labelSelector:
+                                  description: LabelSelector is a label query over
+                                    a set of resources
+                                  properties:
+                                    matchExpressions:
+                                      description: matchExpressions is a list of label
+                                        selector requirements. The requirements are
+                                        ANDed.
+                                      items:
+                                        description: |-
+                                          A label selector requirement is a selector that contains values, a key, and an operator that
+                                          relates the key and values.
+                                        properties:
+                                          key:
+                                            description: key is the label key that
+                                              the selector applies to.
+                                            type: string
+                                          operator:
+                                            description: |-
+                                              operator represents a key's relationship to a set of values.
+                                              Valid operators are In, NotIn, Exists and DoesNotExist.
+                                            type: string
+                                          values:
+                                            description: |-
+                                              values is an array of string values. If the operator is In or NotIn,
+                                              the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                              the values array must be empty. This array is replaced during a strategic
+                                              merge patch.
+                                            items:
+                                              type: string
+                                            type: array
+                                            x-kubernetes-list-type: atomic
+                                        required:
+                                        - key
+                                        - operator
+                                        type: object
+                                      type: array
+                                      x-kubernetes-list-type: atomic
+                                    matchLabels:
+                                      additionalProperties:
+                                        type: string
+                                      description: |-
+                                        matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                        map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                        operator is "In", and the values array contains only "value". The requirements are ANDed.
+                                      type: object
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                                topologyKey:
+                                  description: TopologyKey is the key of node labels
+                                  type: string
+                              required:
+                              - topologyKey
+                              type: object
+                            type: array
+                        type: object
+                    type: object
+                  connectionType:
+                    default: bidirectional
+                    description: 'Connection type: ingress, egress, or bidirectional'
+                    enum:
+                    - ingress
+                    - egress
+                    - bidirectional
+                    type: string
+                  image:
+                    description: Image for the Tailscale proxy containers
+                    type: string
+                  nodeSelector:
+                    additionalProperties:
+                      type: string
+                    description: NodeSelector for StatefulSet pods
+                    type: object
+                  replicas:
+                    default: 2
+                    description: Number of proxy replicas
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  resources:
+                    description: Resources for the proxy containers
+                    properties:
+                      limits:
+                        additionalProperties:
+                          type: string
+                        description: Limits describes the maximum amount of resources
+                          required
+                        type: object
+                      requests:
+                        additionalProperties:
+                          type: string
+                        description: Requests describes the minimum amount of resources
+                          required
+                        type: object
+                    type: object
+                  tolerations:
+                    description: Tolerations for StatefulSet pods
+                    items:
+                      description: Toleration defines toleration for StatefulSet pods
+                      properties:
+                        effect:
+                          description: Effect indicates the taint effect to match
+                          enum:
+                          - NoSchedule
+                          - PreferNoSchedule
+                          - NoExecute
+                          type: string
+                        key:
+                          description: Key is the taint key that the toleration applies
+                            to
+                          type: string
+                        operator:
+                          description: Operator represents a key's relationship to
+                            the value
+                          enum:
+                          - Exists
+                          - Equal
+                          type: string
+                        tolerationSeconds:
+                          description: TolerationSeconds represents the period of
+                            time the toleration
+                          format: int64
+                          type: integer
+                        value:
+                          description: Value is the taint value the toleration matches
+                            to
+                          type: string
+                      type: object
+                    type: array
+                type: object
+              tags:
+                description: Tags for the Tailscale machines (used in ACL policies)
+                items:
+                  type: string
                 type: array
               tailnet:
                 description: Tailnet identifies which tailnet these endpoints belong
@@ -597,6 +906,51 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              devices:
+                description: |-
+                  Devices contains information about Tailscale machines created by this resource
+                  Similar to ProxyGroup devices in the official Tailscale k8s-operator
+                items:
+                  description: |-
+                    TailscaleDevice represents a Tailscale machine/device created by the operator
+                    Similar to the ProxyGroup device status in the official Tailscale k8s-operator
+                  properties:
+                    connected:
+                      description: Connected indicates if the device is currently
+                        connected to the tailnet
+                      type: boolean
+                    hostname:
+                      description: Hostname is the Tailscale hostname of the device
+                      type: string
+                    lastSeen:
+                      description: LastSeen is when the device was last seen online
+                      format: date-time
+                      type: string
+                    nodeID:
+                      description: NodeID is the Tailscale node ID
+                      type: string
+                    online:
+                      description: Online indicates if the device is currently online
+                      type: boolean
+                    statefulSetPod:
+                      description: StatefulSetPod is the name of the pod backing this
+                        device
+                      type: string
+                    tags:
+                      description: Tags are the Tailscale tags applied to this device
+                      items:
+                        type: string
+                      type: array
+                    tailscaleFQDN:
+                      description: TailscaleFQDN is the fully qualified domain name
+                        in the tailnet
+                      type: string
+                    tailscaleIP:
+                      description: TailscaleIP is the Tailscale IP address assigned
+                        to the device
+                      type: string
+                  type: object
+                type: array
               discoveredEndpoints:
                 description: DiscoveredEndpoints is the count of endpoints discovered
                   via auto-discovery
@@ -1282,6 +1636,45 @@ spec:
                   - endpointName
                   - name
                   - namespace
+                  type: object
+                type: array
+              statefulSets:
+                description: StatefulSets contains information about the created StatefulSets
+                items:
+                  description: StatefulSetInfo provides information about created
+                    StatefulSets
+                  properties:
+                    createdAt:
+                      description: CreatedAt is when the StatefulSet was created
+                      format: date-time
+                      type: string
+                    name:
+                      description: Name of the StatefulSet
+                      type: string
+                    namespace:
+                      description: Namespace of the StatefulSet
+                      type: string
+                    readyReplicas:
+                      description: ReadyReplicas is the number of ready replicas
+                      format: int32
+                      type: integer
+                    replicas:
+                      description: Replicas is the desired number of replicas
+                      format: int32
+                      type: integer
+                    service:
+                      description: Service is the name of the associated Service
+                      type: string
+                    type:
+                      description: Type indicates the StatefulSet type (ingress, egress,
+                        bidirectional)
+                      type: string
+                  required:
+                  - name
+                  - namespace
+                  - readyReplicas
+                  - replicas
+                  - type
                   type: object
                 type: array
               tagSelectorResults:

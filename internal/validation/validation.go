@@ -65,9 +65,13 @@ func validateTailscaleEndpointsSpec(spec *gatewayv1alpha1.TailscaleEndpointsSpec
 		return errors.NewValidationError("tailnet", spec.Tailnet, "tailnet name must be a valid DNS name").BuildError()
 	}
 
-	// Must have either static endpoints or auto-discovery
-	if len(spec.Endpoints) == 0 && (spec.AutoDiscovery == nil || !spec.AutoDiscovery.Enabled) {
-		return errors.NewValidationError("configuration", "empty", "must specify either static endpoints or enable auto-discovery").BuildError()
+	// Must have either static endpoints, auto-discovery, or proxy configuration
+	hasStaticEndpoints := len(spec.Endpoints) > 0
+	hasAutoDiscovery := spec.AutoDiscovery != nil && spec.AutoDiscovery.Enabled
+	hasProxyConfig := spec.Proxy != nil && len(spec.Ports) > 0
+
+	if !hasStaticEndpoints && !hasAutoDiscovery && !hasProxyConfig {
+		return errors.NewValidationError("configuration", "empty", "must specify either static endpoints, enable auto-discovery, or provide proxy configuration with ports").BuildError()
 	}
 
 	return nil

@@ -14,14 +14,14 @@ Common issues and solutions for the Tailscale Gateway Operator.
 
 ```bash
 # Check operator status
-kubectl get pods -n tailscale-system
+kubectl get pods -n tailscale-gateway-system
 kubectl get tailscalegateways,tailscaleendpoints -A
 
 # Check operator logs
-kubectl logs -n tailscale-system deployment/tailscale-gateway-operator --tail=100
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator --tail=100
 
 # Check extension server logs
-kubectl logs -n tailscale-system deployment/tailscale-gateway-extension-server --tail=100
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-extension-server --tail=100
 
 # Check custom resource status
 kubectl describe tailscalegateway <gateway-name>
@@ -55,13 +55,13 @@ kubectl exec -it deployment/tailscale-gateway-operator -- curl -I https://api.ta
 **Diagnosis:**
 ```bash
 # Check pod status
-kubectl get pods -n tailscale-system -l app=tailscale-gateway-operator
+kubectl get pods -n tailscale-gateway-system -l app=tailscale-gateway-operator
 
 # Check recent logs
-kubectl logs -n tailscale-system deployment/tailscale-gateway-operator --previous
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator --previous
 
 # Check events
-kubectl get events -n tailscale-system --sort-by='.lastTimestamp'
+kubectl get events -n tailscale-gateway-system --sort-by='.lastTimestamp'
 ```
 
 **Common Causes & Solutions:**
@@ -69,37 +69,37 @@ kubectl get events -n tailscale-system --sort-by='.lastTimestamp'
 1. **Missing OAuth Credentials**
    ```bash
    # Check if secret exists
-   kubectl get secret tailscale-oauth -n tailscale-system
+   kubectl get secret tailscale-oauth -n tailscale-gateway-system
    
    # Verify secret contents
-   kubectl get secret tailscale-oauth -n tailscale-system -o yaml
+   kubectl get secret tailscale-oauth -n tailscale-gateway-system -o yaml
    
    # Create missing secret
    kubectl create secret generic tailscale-oauth \
      --from-literal=client-id=YOUR_CLIENT_ID \
      --from-literal=client-secret=YOUR_CLIENT_SECRET \
-     -n tailscale-system
+     -n tailscale-gateway-system
    ```
 
 2. **RBAC Permission Issues**
    ```bash
    # Check service account
-   kubectl get serviceaccount tailscale-gateway-operator -n tailscale-system
+   kubectl get serviceaccount tailscale-gateway-operator -n tailscale-gateway-system
    
    # Check cluster role binding
    kubectl get clusterrolebinding tailscale-gateway-operator
    
    # Verify permissions
-   kubectl auth can-i create tailscaleendpoints --as=system:serviceaccount:tailscale-system:tailscale-gateway-operator
+   kubectl auth can-i create tailscaleendpoints --as=system:serviceaccount:tailscale-gateway-system:tailscale-gateway-operator
    ```
 
 3. **Resource Limits Exceeded**
    ```bash
    # Check resource usage
-   kubectl top pods -n tailscale-system
+   kubectl top pods -n tailscale-gateway-system
    
    # Increase resource limits
-   kubectl patch deployment tailscale-gateway-operator -n tailscale-system -p '
+   kubectl patch deployment tailscale-gateway-operator -n tailscale-gateway-system -p '
    {
      "spec": {
        "template": {
@@ -150,8 +150,8 @@ kubectl get crd tailscaleendpoints.gateway.tailscale.com -o yaml
 **Diagnosis:**
 ```bash
 # Check OAuth secret
-kubectl get secret tailscale-oauth -n tailscale-system -o jsonpath='{.data.client-id}' | base64 -d
-kubectl get secret tailscale-oauth -n tailscale-system -o jsonpath='{.data.client-secret}' | base64 -d
+kubectl get secret tailscale-oauth -n tailscale-gateway-system -o jsonpath='{.data.client-id}' | base64 -d
+kubectl get secret tailscale-oauth -n tailscale-gateway-system -o jsonpath='{.data.client-secret}' | base64 -d
 
 # Test API connectivity
 kubectl exec -it deployment/tailscale-gateway-operator -- curl -H "Authorization: Bearer $(echo -n 'CLIENT_ID:CLIENT_SECRET' | base64)" https://api.tailscale.com/api/v2/tailnet
@@ -169,14 +169,14 @@ kubectl exec -it deployment/tailscale-gateway-operator -- curl -H "Authorization
 
 2. **Recreate OAuth Secret**
    ```bash
-   kubectl delete secret tailscale-oauth -n tailscale-system
+   kubectl delete secret tailscale-oauth -n tailscale-gateway-system
    kubectl create secret generic tailscale-oauth \
      --from-literal=client-id=YOUR_CORRECT_CLIENT_ID \
      --from-literal=client-secret=YOUR_CORRECT_CLIENT_SECRET \
-     -n tailscale-system
+     -n tailscale-gateway-system
    
    # Restart operator
-   kubectl rollout restart deployment/tailscale-gateway-operator -n tailscale-system
+   kubectl rollout restart deployment/tailscale-gateway-operator -n tailscale-gateway-system
    ```
 
 #### Problem: Device Registration Failures
@@ -191,7 +191,7 @@ kubectl exec -it deployment/tailscale-gateway-operator -- curl -H "Authorization
 kubectl get tailscaletailnets -o yaml
 
 # Check device creation logs
-kubectl logs -n tailscale-system deployment/tailscale-gateway-operator | grep "device"
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator | grep "device"
 ```
 
 **Solutions:**
@@ -231,10 +231,10 @@ kubectl logs -n tailscale-system deployment/tailscale-gateway-operator | grep "d
 **Diagnosis:**
 ```bash
 # Check extension server status
-kubectl get pods -n tailscale-system -l app=tailscale-gateway-extension-server
+kubectl get pods -n tailscale-gateway-system -l app=tailscale-gateway-extension-server
 
 # Check gRPC health
-grpcurl -plaintext tailscale-gateway-extension-server.tailscale-system:5005 grpc.health.v1.Health/Check
+grpcurl -plaintext tailscale-gateway-extension-server.tailscale-gateway-system:5005 grpc.health.v1.Health/Check
 
 # Check Envoy Gateway configuration
 kubectl get envoyproxy -A -o yaml | grep -A 20 extensionManager
@@ -244,16 +244,16 @@ kubectl get envoyproxy -A -o yaml | grep -A 20 extensionManager
 
 1. **Restart Extension Server**
    ```bash
-   kubectl rollout restart deployment/tailscale-gateway-extension-server -n tailscale-system
+   kubectl rollout restart deployment/tailscale-gateway-extension-server -n tailscale-gateway-system
    ```
 
 2. **Check Network Policies**
    ```bash
    # Verify network policy allows gRPC traffic
-   kubectl get networkpolicy -n tailscale-system
+   kubectl get networkpolicy -n tailscale-gateway-system
    
    # Test connectivity from Envoy Gateway
-   kubectl exec -n envoy-gateway-system deployment/envoy-gateway -- nc -zv tailscale-gateway-extension-server.tailscale-system 5005
+   kubectl exec -n envoy-gateway-system deployment/envoy-gateway -- nc -zv tailscale-gateway-extension-server.tailscale-gateway-system 5005
    ```
 
 3. **Verify Envoy Gateway Extension Configuration**
@@ -268,7 +268,7 @@ kubectl get envoyproxy -A -o yaml | grep -A 20 extensionManager
      extensionManager:
        service:
          fqdn:
-           hostname: tailscale-gateway-extension-server.tailscale-system.svc.cluster.local
+           hostname: tailscale-gateway-extension-server.tailscale-gateway-system.svc.cluster.local
            port: 5005
    ```
 
@@ -287,7 +287,7 @@ kubectl describe httproute <route-name>
 kubectl describe tailscaleendpoints <endpoints-name>
 
 # Check extension server logs for route processing
-kubectl logs -n tailscale-system deployment/tailscale-gateway-extension-server | grep "route"
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-extension-server | grep "route"
 ```
 
 **Solutions:**
@@ -305,7 +305,7 @@ kubectl logs -n tailscale-system deployment/tailscale-gateway-extension-server |
 2. **Check Extension Server Permissions**
    ```bash
    # Verify extension server can read TailscaleEndpoints
-   kubectl auth can-i get tailscaleendpoints --as=system:serviceaccount:tailscale-system:tailscale-gateway-extension-server
+   kubectl auth can-i get tailscaleendpoints --as=system:serviceaccount:tailscale-gateway-system:tailscale-gateway-extension-server
    ```
 
 ### 4. Service Discovery Issues
@@ -326,7 +326,7 @@ kubectl get tailscaleendpoints -o wide
 kubectl describe tailscaleendpoints <endpoints-name> | grep -A 10 "Health"
 
 # Check service coordinator logs
-kubectl logs -n tailscale-system deployment/tailscale-gateway-operator | grep "ServiceCoordinator"
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator | grep "ServiceCoordinator"
 ```
 
 **Solutions:**
@@ -373,7 +373,7 @@ kubectl logs -n tailscale-system deployment/tailscale-gateway-operator | grep "S
 **Diagnosis:**
 ```bash
 # Check service coordinator status
-kubectl logs -n tailscale-system deployment/tailscale-gateway-operator | grep "coordination"
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator | grep "coordination"
 
 # Check VIP service annotations
 tailscale serve status
@@ -411,7 +411,7 @@ kubectl get tailscaleendpoints -A -o jsonpath='{range .items[*]}{.metadata.name}
 **Diagnosis:**
 ```bash
 # Check resource usage
-kubectl top pods -n tailscale-system
+kubectl top pods -n tailscale-gateway-system
 
 # Check metrics
 curl http://tailscale-gateway-operator:8080/metrics | grep -E "(cpu|memory|reconcile)"
@@ -510,7 +510,7 @@ curl http://tailscale-gateway-extension-server:8080/metrics | grep grpc_duration
 tailscale ping 100.64.0.10
 
 # Check StatefulSet status
-kubectl get statefulsets -n tailscale-system
+kubectl get statefulsets -n tailscale-gateway-system
 
 # Check Tailscale node status
 tailscale status
@@ -551,7 +551,7 @@ nslookup service.company.ts.net
 
 ```bash
 # Enable debug logging
-kubectl patch deployment tailscale-gateway-operator -n tailscale-system -p '
+kubectl patch deployment tailscale-gateway-operator -n tailscale-gateway-system -p '
 {
   "spec": {
     "template": {
@@ -573,7 +573,7 @@ kubectl patch deployment tailscale-gateway-operator -n tailscale-system -p '
 }'
 
 # Get operator metrics
-kubectl port-forward -n tailscale-system deployment/tailscale-gateway-operator 8080:8080
+kubectl port-forward -n tailscale-gateway-system deployment/tailscale-gateway-operator 8080:8080
 curl http://localhost:8080/metrics
 
 # Get pprof data
@@ -590,7 +590,7 @@ grpcurl -plaintext localhost:5005 grpc.health.v1.Health/Check
 grpcurl -plaintext localhost:5005 list
 
 # Enable extension server debug logging
-kubectl patch deployment tailscale-gateway-extension-server -n tailscale-system -p '
+kubectl patch deployment tailscale-gateway-extension-server -n tailscale-gateway-system -p '
 {
   "spec": {
     "template": {
@@ -695,13 +695,13 @@ mkdir -p tailscale-gateway-logs
 cd tailscale-gateway-logs
 
 # Operator information
-kubectl get pods -n tailscale-system > pods.txt
+kubectl get pods -n tailscale-gateway-system > pods.txt
 kubectl get tailscalegateways,tailscaleendpoints -A > resources.txt
-kubectl describe deployment tailscale-gateway-operator -n tailscale-system > operator-deployment.txt
+kubectl describe deployment tailscale-gateway-operator -n tailscale-gateway-system > operator-deployment.txt
 
 # Logs
-kubectl logs -n tailscale-system deployment/tailscale-gateway-operator --tail=1000 > operator.log
-kubectl logs -n tailscale-system deployment/tailscale-gateway-extension-server --tail=1000 > extension-server.log
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator --tail=1000 > operator.log
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-extension-server --tail=1000 > extension-server.log
 
 # Events
 kubectl get events -A --sort-by='.lastTimestamp' > events.txt

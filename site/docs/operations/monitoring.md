@@ -27,7 +27,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: monitoring-config
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 data:
   config.yaml: |
     metrics:
@@ -62,7 +62,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: tailscale-gateway-operator
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
   labels:
     app: tailscale-gateway-operator
 spec:
@@ -169,14 +169,14 @@ data:
       # Tailscale Gateway Operator
       - job_name: 'tailscale-gateway-operator'
         static_configs:
-          - targets: ['tailscale-gateway-operator.tailscale-system:8080']
+          - targets: ['tailscale-gateway-operator.tailscale-gateway-system:8080']
         scrape_interval: 30s
         metrics_path: /metrics
         
       # Extension Server
       - job_name: 'tailscale-gateway-extension-server'
         static_configs:
-          - targets: ['tailscale-gateway-extension-server.tailscale-system:8080']
+          - targets: ['tailscale-gateway-extension-server.tailscale-gateway-system:8080']
         scrape_interval: 30s
         
       # Kubernetes components
@@ -332,7 +332,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: logging-config
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 data:
   logging.yaml: |
     logging:
@@ -445,7 +445,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: otel-config
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 data:
   config.yaml: |
     tracing:
@@ -473,7 +473,7 @@ data:
           service.version: "v1.0.0"
           deployment.environment: "production"
           k8s.cluster.name: "main-cluster"
-          k8s.namespace.name: "tailscale-system"
+          k8s.namespace.name: "tailscale-gateway-system"
       
       # Instrumentation
       instrumentation:
@@ -611,8 +611,8 @@ data:
       - alert: HighMemoryUsage
         expr: |
           (
-            container_memory_working_set_bytes{container="manager", namespace="tailscale-system"} / 
-            container_spec_memory_limit_bytes{container="manager", namespace="tailscale-system"}
+            container_memory_working_set_bytes{container="manager", namespace="tailscale-gateway-system"} / 
+            container_spec_memory_limit_bytes{container="manager", namespace="tailscale-gateway-system"}
           ) > 0.8
         for: 10m
         labels:
@@ -709,7 +709,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: tailscale-gateway-operator
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 spec:
   template:
     spec:
@@ -754,7 +754,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: health-check-config
-  namespace: tailscale-system
+  namespace: tailscale-gateway-system
 data:
   health.yaml: |
     healthChecks:
@@ -809,7 +809,7 @@ data:
             "type": "graph",
             "targets": [
               {
-                "expr": "rate(container_cpu_usage_seconds_total{namespace=\"tailscale-system\"}[5m]) * 100",
+                "expr": "rate(container_cpu_usage_seconds_total{namespace=\"tailscale-gateway-system\"}[5m]) * 100",
                 "legendFormat": "&#123;&#123; container &#125;&#125;"
               }
             ]
@@ -819,7 +819,7 @@ data:
             "type": "graph",
             "targets": [
               {
-                "expr": "container_memory_working_set_bytes{namespace=\"tailscale-system\"} / 1024 / 1024",
+                "expr": "container_memory_working_set_bytes{namespace=\"tailscale-gateway-system\"} / 1024 / 1024",
                 "legendFormat": "&#123;&#123; container &#125;&#125; MB"
               }
             ]
@@ -829,11 +829,11 @@ data:
             "type": "graph",
             "targets": [
               {
-                "expr": "rate(container_network_receive_bytes_total{namespace=\"tailscale-system\"}[5m])",
+                "expr": "rate(container_network_receive_bytes_total{namespace=\"tailscale-gateway-system\"}[5m])",
                 "legendFormat": "RX &#123;&#123; container &#125;&#125;"
               },
               {
-                "expr": "rate(container_network_transmit_bytes_total{namespace=\"tailscale-system\"}[5m])",
+                "expr": "rate(container_network_transmit_bytes_total{namespace=\"tailscale-gateway-system\"}[5m])",
                 "legendFormat": "TX &#123;&#123; container &#125;&#125;"
               }
             ]
@@ -849,19 +849,19 @@ data:
 
 ```bash
 # View operator startup logs
-kubectl logs -n tailscale-system deployment/tailscale-gateway-operator | grep "Starting"
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator | grep "Starting"
 
 # Monitor reconciliation errors
-kubectl logs -n tailscale-system deployment/tailscale-gateway-operator | grep "ERROR.*reconcile"
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator | grep "ERROR.*reconcile"
 
 # Check extension server gRPC logs
-kubectl logs -n tailscale-system deployment/tailscale-gateway-extension-server | grep "grpc"
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-extension-server | grep "grpc"
 
 # Monitor service coordination
-kubectl logs -n tailscale-system deployment/tailscale-gateway-operator | grep "ServiceCoordinator"
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator | grep "ServiceCoordinator"
 
 # Track health check failures
-kubectl logs -n tailscale-system deployment/tailscale-gateway-operator | grep "health.*failed"
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator | grep "health.*failed"
 ```
 
 ### Kibana/Elasticsearch Queries
@@ -871,7 +871,7 @@ kubectl logs -n tailscale-system deployment/tailscale-gateway-operator | grep "h
   "query": {
     "bool": {
       "must": [
-        {"match": {"kubernetes.namespace": "tailscale-system"&#125;&#125;,
+        {"match": {"kubernetes.namespace": "tailscale-gateway-system"&#125;&#125;,
         {"match": {"component": "tailscale-gateway"&#125;&#125;,
         {"range": {"@timestamp": {"gte": "now-1h"&#125;&#125;}
       ],
@@ -892,7 +892,7 @@ kubectl logs -n tailscale-system deployment/tailscale-gateway-operator | grep "h
 1. **High CPU Usage**:
    ```bash
    # Check CPU metrics
-   kubectl top pods -n tailscale-system
+   kubectl top pods -n tailscale-gateway-system
    
    # Analyze reconciliation rate
    curl http://tailscale-gateway-operator:8080/metrics | grep reconcile_total
@@ -901,7 +901,7 @@ kubectl logs -n tailscale-system deployment/tailscale-gateway-operator | grep "h
 2. **Memory Leaks**:
    ```bash
    # Monitor memory growth
-   kubectl top pods -n tailscale-system --containers
+   kubectl top pods -n tailscale-gateway-system --containers
    
    # Check for goroutine leaks
    curl http://tailscale-gateway-operator:8080/debug/pprof/goroutine

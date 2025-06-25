@@ -64,6 +64,7 @@ rules:
   - tailscaleendpoints
   - tailscalegateways
   - tailscaleroutepolicies
+  - tailscaleservices
   - tailscaletailnets
   verbs:
   - create
@@ -79,6 +80,7 @@ rules:
   - tailscaleendpoints/finalizers
   - tailscalegateways/finalizers
   - tailscaleroutepolicies/finalizers
+  - tailscaleservices/finalizers
   - tailscaletailnets/finalizers
   verbs:
   - update
@@ -88,6 +90,7 @@ rules:
   - tailscaleendpoints/status
   - tailscalegateways/status
   - tailscaleroutepolicies/status
+  - tailscaleservices/status
   - tailscaletailnets/status
   verbs:
   - get

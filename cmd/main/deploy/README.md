@@ -14,8 +14,29 @@ This directory contains deployment artifacts for the Tailscale Gateway Operator.
 
 The Helm chart provides the most flexible deployment option with customizable values.
 
+#### From OCI Registry (Production)
+
 ```bash
-# Install the operator
+# Install from published OCI registry (development version)
+helm install tailscale-gateway-operator oci://ghcr.io/rajsinghtech/charts/tailscale-gateway-operator \
+  --namespace tailscale-gateway-system \
+  --create-namespace \
+  --version 0.0.0-latest
+
+# Upgrade the operator
+helm upgrade tailscale-gateway-operator oci://ghcr.io/rajsinghtech/charts/tailscale-gateway-operator \
+  --namespace tailscale-gateway-system \
+  --version 0.0.0-latest
+
+# Uninstall the operator
+helm uninstall tailscale-gateway-operator \
+  --namespace tailscale-gateway-system
+```
+
+#### From Local Chart (Development)
+
+```bash
+# Install from local chart for development
 helm install tailscale-gateway-operator ./chart \
   --namespace tailscale-gateway-system \
   --create-namespace

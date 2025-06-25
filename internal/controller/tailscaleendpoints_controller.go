@@ -34,8 +34,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -605,6 +607,12 @@ func (r *TailscaleEndpointsReconciler) reconcileEndpoints(ctx context.Context, e
 
 	// Notify controllers about StatefulSet changes (routes may need to be updated)
 	r.notifyGatewayController(ctx, endpoints)
+
+	// Update device status after StatefulSets are reconciled
+	if err := r.updateDeviceStatus(ctx, endpoints); err != nil {
+		logger.Error(err, "Failed to update device status")
+		// Don't fail reconciliation on device status errors, just log them
+	}
 
 	// Perform health checks on all endpoints
 	if err := r.performHealthChecks(ctx, endpoints); err != nil {
@@ -1611,35 +1619,428 @@ func (r *TailscaleEndpointsReconciler) reconcileStatefulSets(ctx context.Context
 		return fmt.Errorf("failed to get Tailscale client: %w", err)
 	}
 
+	// Handle proxy-based structure only
+	if endpoints.Spec.Proxy != nil && len(endpoints.Spec.Ports) > 0 {
+		return r.reconcileProxyStatefulSets(ctx, endpoints, tsClient)
+	}
+
+	logger.Info("No proxy configuration found, skipping StatefulSet creation", "endpoints", endpoints.Name)
+	return nil
+}
+
+// reconcileProxyStatefulSets handles the new proxy-based structure
+func (r *TailscaleEndpointsReconciler) reconcileProxyStatefulSets(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, tsClient tailscale.Client) error {
+	logger := log.FromContext(ctx)
+
+	// Get proxy configuration
+	proxyConfig := endpoints.Spec.Proxy
+	if proxyConfig == nil {
+		return fmt.Errorf("proxy configuration is nil")
+	}
+
+	// Set defaults
+	replicas := int32(2)
+	if proxyConfig.Replicas != nil {
+		replicas = *proxyConfig.Replicas
+	}
+
+	connectionType := "bidirectional"
+	if proxyConfig.ConnectionType != "" {
+		connectionType = proxyConfig.ConnectionType
+	}
+
 	var statefulSetRefs []gatewayv1alpha1.StatefulSetReference
 
-	// Create StatefulSets for each endpoint
-	for _, endpoint := range endpoints.Spec.Endpoints {
-		// Create ingress StatefulSet
-		ingressRef, err := r.reconcileEndpointStatefulSet(ctx, endpoints, &endpoint, "ingress", tsClient)
+	// Create StatefulSets based on connection type
+	switch connectionType {
+	case "ingress":
+		ingressRef, err := r.reconcileProxyIngress(ctx, endpoints, tsClient, replicas)
 		if err != nil {
-			return fmt.Errorf("failed to reconcile ingress StatefulSet for endpoint %s: %w", endpoint.Name, err)
+			return fmt.Errorf("failed to reconcile ingress proxy: %w", err)
 		}
 		statefulSetRefs = append(statefulSetRefs, *ingressRef)
 
-		// Create egress StatefulSet
-		egressRef, err := r.reconcileEndpointStatefulSet(ctx, endpoints, &endpoint, "egress", tsClient)
+	case "egress":
+		egressRef, err := r.reconcileProxyEgress(ctx, endpoints, tsClient, replicas)
 		if err != nil {
-			return fmt.Errorf("failed to reconcile egress StatefulSet for endpoint %s: %w", endpoint.Name, err)
+			return fmt.Errorf("failed to reconcile egress proxy: %w", err)
 		}
 		statefulSetRefs = append(statefulSetRefs, *egressRef)
 
-		// Create Services for ingress and egress StatefulSets
-		if err := r.reconcileEndpointServices(ctx, endpoints, &endpoint, ingressRef, egressRef); err != nil {
-			return fmt.Errorf("failed to reconcile Services for endpoint %s: %w", endpoint.Name, err)
+	case "bidirectional":
+		// Create both ingress and egress
+		ingressRef, err := r.reconcileProxyIngress(ctx, endpoints, tsClient, replicas)
+		if err != nil {
+			return fmt.Errorf("failed to reconcile ingress proxy: %w", err)
 		}
+		statefulSetRefs = append(statefulSetRefs, *ingressRef)
+
+		egressRef, err := r.reconcileProxyEgress(ctx, endpoints, tsClient, replicas)
+		if err != nil {
+			return fmt.Errorf("failed to reconcile egress proxy: %w", err)
+		}
+		statefulSetRefs = append(statefulSetRefs, *egressRef)
+
+	default:
+		return fmt.Errorf("invalid connection type: %s", connectionType)
 	}
 
 	// Update status with StatefulSet references
 	endpoints.Status.StatefulSetRefs = statefulSetRefs
 
-	logger.Info("Successfully reconciled StatefulSets", "endpoints", endpoints.Name, "statefulSets", len(statefulSetRefs))
+	logger.Info("Successfully reconciled proxy StatefulSets",
+		"endpoints", endpoints.Name,
+		"connectionType", connectionType,
+		"replicas", replicas,
+		"statefulSets", len(statefulSetRefs))
+
 	return nil
+}
+
+// reconcileProxyIngress creates/updates ingress proxy StatefulSet
+func (r *TailscaleEndpointsReconciler) reconcileProxyIngress(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, tsClient tailscale.Client, replicas int32) (*gatewayv1alpha1.StatefulSetReference, error) {
+	return r.reconcileProxyStatefulSet(ctx, endpoints, tsClient, "ingress", replicas)
+}
+
+// reconcileProxyEgress creates/updates egress proxy StatefulSet
+func (r *TailscaleEndpointsReconciler) reconcileProxyEgress(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, tsClient tailscale.Client, replicas int32) (*gatewayv1alpha1.StatefulSetReference, error) {
+	return r.reconcileProxyStatefulSet(ctx, endpoints, tsClient, "egress", replicas)
+}
+
+// reconcileProxyStatefulSet creates/updates a proxy StatefulSet for the new structure
+func (r *TailscaleEndpointsReconciler) reconcileProxyStatefulSet(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, tsClient tailscale.Client, connectionType string, replicas int32) (*gatewayv1alpha1.StatefulSetReference, error) {
+	logger := log.FromContext(ctx)
+
+	// Generate names
+	name := fmt.Sprintf("%s-%s", endpoints.Name, connectionType)
+
+	// Create labels
+	labels := map[string]string{
+		"app.kubernetes.io/name":      "tailscale-proxy",
+		"app.kubernetes.io/instance":  endpoints.Name,
+		"app.kubernetes.io/component": connectionType,
+		"tailscale.com/tailnet":       r.sanitizeTailnetName(endpoints.Spec.Tailnet),
+		"tailscale.com/connection":    connectionType,
+	}
+
+	// Copy user labels
+	for k, v := range endpoints.Labels {
+		if !strings.HasPrefix(k, "app.kubernetes.io/") && !strings.HasPrefix(k, "tailscale.com/") {
+			labels[k] = v
+		}
+	}
+
+	// Create RBAC resources
+	if err := r.createRBACResources(ctx, endpoints, name, labels); err != nil {
+		return nil, fmt.Errorf("failed to create RBAC resources: %w", err)
+	}
+
+	// Create config secrets per replica (following ProxyGroup pattern)
+	if err := r.ensureConfigSecretsCreated(ctx, endpoints, name, connectionType, replicas, tsClient); err != nil {
+		return nil, fmt.Errorf("failed to create config secrets: %w", err)
+	}
+
+	// Create state secrets per replica (following ProxyGroup pattern)
+	if err := r.ensureStateSecretsCreated(ctx, endpoints, name, replicas, labels); err != nil {
+		return nil, fmt.Errorf("failed to create state secrets: %w", err)
+	}
+
+	// Create StatefulSet with per-replica config secrets
+	if err := r.createEndpointStatefulSet(ctx, endpoints, nil, name, connectionType, replicas, labels); err != nil {
+		return nil, fmt.Errorf("failed to create StatefulSet: %w", err)
+	}
+
+	// Create headless Service for StatefulSet
+	if err := r.createProxyService(ctx, endpoints, name, connectionType, labels); err != nil {
+		return nil, fmt.Errorf("failed to create Service: %w", err)
+	}
+
+	logger.Info("Successfully reconciled proxy StatefulSet",
+		"name", name,
+		"connectionType", connectionType,
+		"replicas", replicas)
+
+	return &gatewayv1alpha1.StatefulSetReference{
+		Name:            name,
+		Namespace:       endpoints.Namespace,
+		ConnectionType:  connectionType,
+		EndpointName:    endpoints.Name,
+		Status:          "Ready", // Will be updated by status reconciliation
+		DesiredReplicas: &replicas,
+	}, nil
+}
+
+// createProxyAuthKey creates an auth key for proxy with proper tags
+func (r *TailscaleEndpointsReconciler) createProxyAuthKey(ctx context.Context, tsClient tailscale.Client, endpoints *gatewayv1alpha1.TailscaleEndpoints) (string, error) {
+	logger := log.FromContext(ctx)
+
+	// Use tags from endpoints.Spec.Tags instead of individual endpoint tags
+	tags := endpoints.Spec.Tags
+	if len(tags) == 0 {
+		// Fallback to default tags if none specified
+		tags = []string{"tag:k8s-proxy"}
+	}
+
+	// Create persistent auth key for StatefulSet connections
+	capabilities := tailscaleclient.KeyCapabilities{}
+	capabilities.Devices.Create.Reusable = true
+	capabilities.Devices.Create.Ephemeral = false
+	capabilities.Devices.Create.Preauthorized = true
+	capabilities.Devices.Create.Tags = tags
+
+	logger.Info("Creating auth key for proxy", "endpoints", endpoints.Name, "tags", tags)
+	key, err := tsClient.CreateKey(ctx, capabilities)
+	if err != nil {
+		return "", fmt.Errorf("failed to create auth key with tags %v: %w", tags, err)
+	}
+
+	return key.Key, nil
+}
+
+// createProxyStatefulSet creates a StatefulSet for the new proxy structure
+func (r *TailscaleEndpointsReconciler) createProxyStatefulSet(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, name, connectionType, configSecretName, stateSecretName string, labels map[string]string, replicas int32) error {
+	// Get proxy configuration
+	proxyConfig := endpoints.Spec.Proxy
+	if proxyConfig == nil {
+		return fmt.Errorf("proxy configuration is nil")
+	}
+
+	// Convert PortMapping to container ports
+	var containerPorts []corev1.ContainerPort
+	for _, portMapping := range endpoints.Spec.Ports {
+		protocol := corev1.ProtocolTCP
+		if portMapping.Protocol == "UDP" {
+			protocol = corev1.ProtocolUDP
+		}
+
+		containerPorts = append(containerPorts, corev1.ContainerPort{
+			Name:          portMapping.Name,
+			ContainerPort: portMapping.Port,
+			Protocol:      protocol,
+		})
+	}
+
+	// Get container image
+	image := "tailscale/tailscale:latest"
+	if proxyConfig.Image != "" {
+		image = proxyConfig.Image
+	}
+
+	// Create StatefulSet similar to existing pattern but using proxy configuration
+	statefulSet := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: endpoints.Namespace,
+			Labels:    labels,
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: endpoints.APIVersion,
+					Kind:       endpoints.Kind,
+					Name:       endpoints.Name,
+					UID:        endpoints.UID,
+					Controller: &[]bool{true}[0],
+				},
+			},
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas:    &replicas,
+			ServiceName: name, // Headless service name
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labels,
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labels,
+				},
+				Spec: corev1.PodSpec{
+					ServiceAccountName: name,
+					Containers: []corev1.Container{
+						{
+							Name:         "tailscale",
+							Image:        image,
+							Ports:        containerPorts,
+							Env:          r.getProxyEnvironmentVariables(endpoints, name, connectionType, configSecretName, stateSecretName),
+							VolumeMounts: r.getProxyVolumeMounts(endpoints, connectionType),
+							Resources:    r.getProxyResources(proxyConfig),
+						},
+					},
+					Volumes:      r.getProxyVolumes(endpoints, name, configSecretName, stateSecretName),
+					NodeSelector: proxyConfig.NodeSelector,
+					Tolerations:  r.convertTolerationsToK8s(proxyConfig.Tolerations),
+					Affinity:     r.convertAffinityToK8s(proxyConfig.Affinity),
+				},
+			},
+		},
+	}
+
+	return r.createOrUpdate(ctx, statefulSet, func() {
+		// Update logic for StatefulSet
+		statefulSet.Spec.Replicas = &replicas
+	})
+}
+
+// createProxyService creates a headless Service for the proxy StatefulSet
+func (r *TailscaleEndpointsReconciler) createProxyService(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, name, connectionType string, labels map[string]string) error {
+	// Convert PortMapping to service ports
+	var servicePorts []corev1.ServicePort
+	for _, portMapping := range endpoints.Spec.Ports {
+		protocol := corev1.ProtocolTCP
+		if portMapping.Protocol == "UDP" {
+			protocol = corev1.ProtocolUDP
+		}
+
+		targetPort := portMapping.Port
+		if portMapping.TargetPort != nil {
+			targetPort = *portMapping.TargetPort
+		}
+
+		servicePorts = append(servicePorts, corev1.ServicePort{
+			Name:       portMapping.Name,
+			Port:       portMapping.Port,
+			TargetPort: intstr.FromInt(int(targetPort)),
+			Protocol:   protocol,
+		})
+	}
+
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: endpoints.Namespace,
+			Labels:    labels,
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion: endpoints.APIVersion,
+					Kind:       endpoints.Kind,
+					Name:       endpoints.Name,
+					UID:        endpoints.UID,
+					Controller: &[]bool{true}[0],
+				},
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Type:      corev1.ServiceTypeClusterIP,
+			ClusterIP: "None", // Headless service
+			Selector:  labels,
+			Ports:     servicePorts,
+		},
+	}
+
+	return r.createOrUpdate(ctx, service, func() {
+		// Update logic for Service
+		service.Spec.Ports = servicePorts
+	})
+}
+
+// Helper functions for proxy StatefulSet configuration
+
+func (r *TailscaleEndpointsReconciler) getProxyEnvironmentVariables(endpoints *gatewayv1alpha1.TailscaleEndpoints, name, connectionType, configSecretName, stateSecretName string) []corev1.EnvVar {
+	return []corev1.EnvVar{
+		{Name: "TS_KUBE_SECRET", Value: stateSecretName},
+		{Name: "TS_STATE", Value: "kube:" + stateSecretName},
+		{Name: "TS_EXPERIMENTAL_VERSIONED_CONFIG_DIR", Value: fmt.Sprintf("/etc/tsconfig/%s", r.sanitizeTailnetName(endpoints.Spec.Tailnet))},
+		{Name: "TS_USERSPACE", Value: "true"},
+		{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
+		{Name: "POD_UID", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.uid"}}},
+	}
+}
+
+func (r *TailscaleEndpointsReconciler) getProxyVolumeMounts(endpoints *gatewayv1alpha1.TailscaleEndpoints, connectionType string) []corev1.VolumeMount {
+	return []corev1.VolumeMount{
+		{
+			Name:      fmt.Sprintf("tailscaledconfig-%s", r.sanitizeTailnetName(endpoints.Spec.Tailnet)),
+			ReadOnly:  true,
+			MountPath: fmt.Sprintf("/etc/tsconfig/%s", r.sanitizeTailnetName(endpoints.Spec.Tailnet)),
+		},
+	}
+}
+
+func (r *TailscaleEndpointsReconciler) getProxyVolumes(endpoints *gatewayv1alpha1.TailscaleEndpoints, name, configSecretName, stateSecretName string) []corev1.Volume {
+	return []corev1.Volume{
+		{
+			Name: fmt.Sprintf("tailscaledconfig-%s", r.sanitizeTailnetName(endpoints.Spec.Tailnet)),
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: configSecretName,
+				},
+			},
+		},
+	}
+}
+
+func (r *TailscaleEndpointsReconciler) getProxyResources(proxyConfig *gatewayv1alpha1.ProxyConfig) corev1.ResourceRequirements {
+	if proxyConfig.Resources == nil {
+		return corev1.ResourceRequirements{}
+	}
+
+	resources := corev1.ResourceRequirements{}
+
+	if proxyConfig.Resources.Limits != nil {
+		resources.Limits = make(corev1.ResourceList)
+		for k, v := range proxyConfig.Resources.Limits {
+			resources.Limits[corev1.ResourceName(k)] = resource.MustParse(v)
+		}
+	}
+
+	if proxyConfig.Resources.Requests != nil {
+		resources.Requests = make(corev1.ResourceList)
+		for k, v := range proxyConfig.Resources.Requests {
+			resources.Requests[corev1.ResourceName(k)] = resource.MustParse(v)
+		}
+	}
+
+	return resources
+}
+
+func (r *TailscaleEndpointsReconciler) convertTolerationsToK8s(tolerations []gatewayv1alpha1.Toleration) []corev1.Toleration {
+	var k8sTolerations []corev1.Toleration
+	for _, t := range tolerations {
+		k8sToleration := corev1.Toleration{
+			Key:      t.Key,
+			Operator: corev1.TolerationOperator(t.Operator),
+			Value:    t.Value,
+			Effect:   corev1.TaintEffect(t.Effect),
+		}
+		if t.TolerationSeconds != nil {
+			k8sToleration.TolerationSeconds = t.TolerationSeconds
+		}
+		k8sTolerations = append(k8sTolerations, k8sToleration)
+	}
+	return k8sTolerations
+}
+
+func (r *TailscaleEndpointsReconciler) convertAffinityToK8s(affinity *gatewayv1alpha1.Affinity) *corev1.Affinity {
+	if affinity == nil {
+		return nil
+	}
+
+	k8sAffinity := &corev1.Affinity{}
+
+	if affinity.NodeAffinity != nil {
+		k8sAffinity.NodeAffinity = &corev1.NodeAffinity{}
+		if affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
+			k8sAffinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution = &corev1.NodeSelector{
+				NodeSelectorTerms: r.convertNodeSelectorTermsToK8s(affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms),
+			}
+		}
+	}
+
+	return k8sAffinity
+}
+
+func (r *TailscaleEndpointsReconciler) convertNodeSelectorTermsToK8s(terms []gatewayv1alpha1.NodeSelectorTerm) []corev1.NodeSelectorTerm {
+	var k8sTerms []corev1.NodeSelectorTerm
+	for _, term := range terms {
+		k8sTerm := corev1.NodeSelectorTerm{}
+		for _, expr := range term.MatchExpressions {
+			k8sTerm.MatchExpressions = append(k8sTerm.MatchExpressions, corev1.NodeSelectorRequirement{
+				Key:      expr.Key,
+				Operator: corev1.NodeSelectorOperator(expr.Operator),
+				Values:   expr.Values,
+			})
+		}
+		k8sTerms = append(k8sTerms, k8sTerm)
+	}
+	return k8sTerms
 }
 
 // reconcileEndpointStatefulSet creates/updates a StatefulSet for an endpoint connection
@@ -1674,26 +2075,19 @@ func (r *TailscaleEndpointsReconciler) reconcileEndpointStatefulSet(ctx context.
 		return nil, fmt.Errorf("failed to create RBAC resources: %w", err)
 	}
 
-	// Create auth key for this connection
-	authKey, err := r.createAuthKey(ctx, tsClient, endpoint)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create auth key: %w", err)
+	// Create config secrets per replica (following ProxyGroup pattern)
+	replicas := int32(3) // Default replicas for now
+	if err := r.ensureConfigSecretsCreated(ctx, endpoints, ssName, connectionType, replicas, tsClient); err != nil {
+		return nil, fmt.Errorf("failed to create config secrets: %w", err)
 	}
 
-	// Create config secret
-	configSecretName := ssName + "-config"
-	if err := r.createConfigSecret(ctx, endpoints, configSecretName, ssName, authKey, connectionType, labels); err != nil {
-		return nil, fmt.Errorf("failed to create config secret: %w", err)
+	// Create state secrets per replica (following ProxyGroup pattern)
+	if err := r.ensureStateSecretsCreated(ctx, endpoints, ssName, replicas, labels); err != nil {
+		return nil, fmt.Errorf("failed to create state secrets: %w", err)
 	}
 
-	// Create state secret
-	stateSecretName := ssName + "-state"
-	if err := r.createStateSecret(ctx, endpoints, stateSecretName, labels); err != nil {
-		return nil, fmt.Errorf("failed to create state secret: %w", err)
-	}
-
-	// Create StatefulSet
-	if err := r.createEndpointStatefulSet(ctx, endpoints, endpoint, ssName, connectionType, configSecretName, stateSecretName, labels); err != nil {
+	// Create StatefulSet with per-replica config secrets
+	if err := r.createEndpointStatefulSet(ctx, endpoints, endpoint, ssName, connectionType, replicas, labels); err != nil {
 		return nil, fmt.Errorf("failed to create StatefulSet: %w", err)
 	}
 
@@ -1708,8 +2102,14 @@ func (r *TailscaleEndpointsReconciler) reconcileEndpointStatefulSet(ctx context.
 }
 
 // createRBACResources creates ServiceAccount, Role, and RoleBinding
-// Following k8s-operator RBAC patterns
+// Following k8s-operator ProxyGroup RBAC patterns with per-replica secrets
 func (r *TailscaleEndpointsReconciler) createRBACResources(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, name string, labels map[string]string) error {
+	// Get replicas count
+	replicas := int32(2)
+	if endpoints.Spec.Proxy != nil && endpoints.Spec.Proxy.Replicas != nil {
+		replicas = *endpoints.Spec.Proxy.Replicas
+	}
+
 	// ServiceAccount
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1727,6 +2127,15 @@ func (r *TailscaleEndpointsReconciler) createRBACResources(ctx context.Context, 
 		return fmt.Errorf("failed to create ServiceAccount: %w", err)
 	}
 
+	// Build per-replica secret names following ProxyGroup pattern
+	var secretNames []string
+	for i := int32(0); i < replicas; i++ {
+		secretNames = append(secretNames,
+			fmt.Sprintf("%s-%d-config", name, i), // Config with auth key
+			fmt.Sprintf("%s-%d", name, i),        // State
+		)
+	}
+
 	// Role
 	role := &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1739,20 +2148,50 @@ func (r *TailscaleEndpointsReconciler) createRBACResources(ctx context.Context, 
 		},
 		Rules: []rbacv1.PolicyRule{
 			{
+				APIGroups: []string{""},
+				Resources: []string{"secrets"},
+				Verbs:     []string{"list"},
+			},
+			{
 				APIGroups:     []string{""},
 				Resources:     []string{"secrets"},
-				Verbs:         []string{"get", "list", "patch", "update"},
-				ResourceNames: []string{name + "-config", name + "-state"},
+				Verbs:         []string{"get", "patch", "update"},
+				ResourceNames: secretNames,
 			},
 			{
 				APIGroups: []string{""},
 				Resources: []string{"events"},
-				Verbs:     []string{"create", "patch"},
+				Verbs:     []string{"create", "patch", "get"},
 			},
 		},
 	}
 	if err := r.createOrUpdate(ctx, role, func() {
-		// Role rules are already set
+		// Update rules to match current replica count
+		var secretNames []string
+		for i := int32(0); i < replicas; i++ {
+			secretNames = append(secretNames,
+				fmt.Sprintf("%s-%d-config", name, i),
+				fmt.Sprintf("%s-%d", name, i),
+			)
+		}
+		role.Rules = []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"secrets"},
+				Verbs:     []string{"list"},
+			},
+			{
+				APIGroups:     []string{""},
+				Resources:     []string{"secrets"},
+				Verbs:         []string{"get", "patch", "update"},
+				ResourceNames: secretNames,
+			},
+			{
+				APIGroups: []string{""},
+				Resources: []string{"events"},
+				Verbs:     []string{"create", "patch", "get"},
+			},
+		}
 	}); err != nil {
 		return fmt.Errorf("failed to create Role: %w", err)
 	}
@@ -1819,8 +2258,14 @@ func (r *TailscaleEndpointsReconciler) createAuthKey(ctx context.Context, tsClie
 }
 
 // createConfigSecret creates the Tailscale configuration secret
-// Following k8s-operator config secret patterns
+// Following k8s-operator config secret patterns with proper ipn.ConfigVAlpha files
 func (r *TailscaleEndpointsReconciler) createConfigSecret(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, secretName, hostname, authKey, connectionType string, labels map[string]string) error {
+	// Create tailscaled configuration files for different capability versions
+	configData, err := r.createTailscaledConfigs(hostname, authKey, connectionType, endpoints)
+	if err != nil {
+		return fmt.Errorf("failed to create tailscaled configs: %w", err)
+	}
+
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,
@@ -1830,16 +2275,204 @@ func (r *TailscaleEndpointsReconciler) createConfigSecret(ctx context.Context, e
 				*metav1.NewControllerRef(endpoints, gatewayv1alpha1.GroupVersion.WithKind("TailscaleEndpoints")),
 			},
 		},
-		Data: map[string][]byte{
-			"authkey": []byte(authKey),
-		},
+		Data: configData,
 	}
 
 	return r.createOrUpdate(ctx, secret, func() {
-		secret.Data = map[string][]byte{
-			"authkey": []byte(authKey),
-		}
+		secret.Data = configData
 	})
+}
+
+// createTailscaledConfigs creates tailscaled configuration files for different capability versions
+// Following the exact pattern from Tailscale k8s-operator ProxyGroup implementation using ipn.ConfigVAlpha
+func (r *TailscaleEndpointsReconciler) createTailscaledConfigs(hostname, authKey, connectionType string, endpoints *gatewayv1alpha1.TailscaleEndpoints) (map[string][]byte, error) {
+	// Set AcceptRoutes based on connection type (use actual booleans)
+	acceptRoutes := false
+	if connectionType == "egress" {
+		acceptRoutes = true
+	}
+
+	// Base configuration structure - use proper types for JSON
+	baseConfig := map[string]interface{}{
+		"Version":             "alpha0",
+		"AcceptDNS":           false,        // boolean, not string
+		"AcceptRoutes":        acceptRoutes, // boolean, not string
+		"Locked":              false,        // boolean, not string
+		"Hostname":            hostname,     // string
+		"NoStatefulFiltering": true,         // boolean, not string
+		"AuthKey":             authKey,      // string
+	}
+
+	// Create configs for different capability versions
+	configs := make(map[string][]byte)
+
+	// Capability version 116+ (current)
+	config116JSON, err := json.Marshal(baseConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal cap-116 config: %w", err)
+	}
+	configs["cap-116.hujson"] = config116JSON
+
+	// Capability version 107 - similar to 116
+	config107JSON, err := json.Marshal(baseConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal cap-107 config: %w", err)
+	}
+	configs["cap-107.hujson"] = config107JSON
+
+	// Capability version 95 - legacy version
+	config95JSON, err := json.Marshal(baseConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal cap-95 config: %w", err)
+	}
+	configs["cap-95.hujson"] = config95JSON
+
+	return configs, nil
+}
+
+// ensureConfigSecretsCreated creates config secrets per replica following ProxyGroup pattern
+func (r *TailscaleEndpointsReconciler) ensureConfigSecretsCreated(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, baseName, connectionType string, replicas int32, tsClient tailscale.Client) error {
+	logger := log.FromContext(ctx)
+
+	for i := int32(0); i < replicas; i++ {
+		cfgSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("%s-%d-config", baseName, i),
+				Namespace: endpoints.Namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/name":       "tailscale-proxy",
+					"app.kubernetes.io/instance":   endpoints.Name,
+					"app.kubernetes.io/component":  "config",
+					"gateway.tailscale.com/type":   "secret",
+					"gateway.tailscale.com/secret": "config",
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					*metav1.NewControllerRef(endpoints, gatewayv1alpha1.GroupVersion.WithKind("TailscaleEndpoints")),
+				},
+			},
+		}
+
+		var existingCfgSecret *corev1.Secret
+		if err := r.Get(ctx, client.ObjectKeyFromObject(cfgSecret), cfgSecret); err == nil {
+			logger.Info("Config secret already exists", "name", cfgSecret.Name)
+			existingCfgSecret = cfgSecret.DeepCopy()
+		} else if !errors.IsNotFound(err) {
+			return err
+		}
+
+		var authKey string
+		if existingCfgSecret == nil {
+			logger.Info("Creating new auth key for replica", "replica", i)
+			var err error
+			authKey, err = r.createAuthKeyForReplica(ctx, tsClient, endpoints, connectionType)
+			if err != nil {
+				return fmt.Errorf("failed to create auth key for replica %d: %w", i, err)
+			}
+		} else {
+			// Extract auth key from existing config (for updates)
+			// For now, skip auth key extraction and create a new one for existing secrets too
+			logger.Info("Secret exists, creating new auth key for replica", "replica", i)
+			var err error
+			authKey, err = r.createAuthKeyForReplica(ctx, tsClient, endpoints, connectionType)
+			if err != nil {
+				return fmt.Errorf("failed to create auth key for replica %d: %w", i, err)
+			}
+		}
+
+		// Create hostname for this replica
+		hostname := fmt.Sprintf("%s-%d", baseName, i)
+
+		configs, err := r.createTailscaledConfigs(hostname, authKey, connectionType, endpoints)
+		if err != nil {
+			return fmt.Errorf("error creating tailscaled config for replica %d: %w", i, err)
+		}
+
+		if cfgSecret.Data == nil {
+			cfgSecret.Data = make(map[string][]byte)
+		}
+
+		for filename, configJSON := range configs {
+			cfgSecret.Data[filename] = configJSON
+		}
+
+		if existingCfgSecret != nil {
+			if !controllerutil.ContainsFinalizer(existingCfgSecret, cfgSecret.Name) {
+				logger.Info("Updating existing config secret", "name", cfgSecret.Name)
+				if err := r.Update(ctx, cfgSecret); err != nil {
+					return err
+				}
+			}
+		} else {
+			logger.Info("Creating new config secret", "name", cfgSecret.Name)
+			if err := r.Create(ctx, cfgSecret); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// createAuthKeyForReplica creates a new auth key for a specific replica
+func (r *TailscaleEndpointsReconciler) createAuthKeyForReplica(ctx context.Context, tsClient tailscale.Client, endpoints *gatewayv1alpha1.TailscaleEndpoints, connectionType string) (string, error) {
+	logger := log.FromContext(ctx)
+
+	// Use tags from endpoints.Spec.Tags or default
+	tags := endpoints.Spec.Tags
+	if len(tags) == 0 {
+		// Default tags including connection type
+		tags = []string{"tag:k8s", fmt.Sprintf("tag:%s", connectionType)}
+	}
+
+	// Create auth key with the same pattern as existing methods
+	capabilities := tailscaleclient.KeyCapabilities{}
+	capabilities.Devices.Create.Reusable = false     // Each replica gets unique key
+	capabilities.Devices.Create.Ephemeral = false    // Persistent for StatefulSet
+	capabilities.Devices.Create.Preauthorized = true // Pre-authorize for automation
+	capabilities.Devices.Create.Tags = tags
+
+	logger.Info("Creating auth key for replica", "connectionType", connectionType, "tags", tags)
+	keyResult, err := tsClient.CreateKey(ctx, capabilities)
+	if err != nil {
+		return "", fmt.Errorf("failed to create auth key: %w", err)
+	}
+
+	return keyResult.Key, nil
+}
+
+// ensureStateSecretsCreated creates state secrets per replica following ProxyGroup pattern
+func (r *TailscaleEndpointsReconciler) ensureStateSecretsCreated(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, baseName string, replicas int32, labels map[string]string) error {
+	logger := log.FromContext(ctx)
+
+	for i := int32(0); i < replicas; i++ {
+		stateSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("%s-%d", baseName, i), // e.g., "auto-web-service-proxies-egress-0"
+				Namespace: endpoints.Namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/name":       "tailscale-proxy",
+					"app.kubernetes.io/instance":   endpoints.Name,
+					"app.kubernetes.io/component":  "state",
+					"gateway.tailscale.com/type":   "secret",
+					"gateway.tailscale.com/secret": "state",
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					*metav1.NewControllerRef(endpoints, gatewayv1alpha1.GroupVersion.WithKind("TailscaleEndpoints")),
+				},
+			},
+			Data: map[string][]byte{},
+		}
+
+		if err := r.createOrUpdate(ctx, stateSecret, func() {
+			// State secret is just a placeholder for Tailscale to store state
+		}); err != nil {
+			return fmt.Errorf("failed to create state secret for replica %d: %w", i, err)
+		}
+
+		logger.Info("Created state secret for replica", "name", stateSecret.Name, "replica", i)
+	}
+
+	return nil
 }
 
 // createStateSecret creates the Tailscale state secret
@@ -1863,27 +2496,14 @@ func (r *TailscaleEndpointsReconciler) createStateSecret(ctx context.Context, en
 }
 
 // createEndpointStatefulSet creates the StatefulSet for an endpoint connection
-// Following k8s-operator StatefulSet patterns with proper state management
-func (r *TailscaleEndpointsReconciler) createEndpointStatefulSet(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, endpoint *gatewayv1alpha1.TailscaleEndpoint, name, connectionType, configSecretName, stateSecretName string, labels map[string]string) error {
-	// Use official Tailscale image (would need to be configurable in production)
+// Following k8s-operator ProxyGroup patterns with per-replica config secrets
+func (r *TailscaleEndpointsReconciler) createEndpointStatefulSet(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, endpoint *gatewayv1alpha1.TailscaleEndpoint, name, connectionType string, replicas int32, labels map[string]string) error {
+	// Use official Tailscale image
 	image := "tailscale/tailscale:v1.78.3"
 
-	// Build environment variables following EXACT ProxyGroup patterns from k8s-operator
+	// Build environment variables following EXACT ProxyGroup patterns
 	envVars := []corev1.EnvVar{
-		// CRITICAL: ProxyGroup state management pattern
-		{
-			Name:  "TS_KUBE_SECRET",
-			Value: stateSecretName, // Points to state secret
-		},
-		{
-			Name:  "TS_STATE",
-			Value: "kube:" + stateSecretName, // Tells tailscaled to use k8s secret for state
-		},
-		{
-			Name:  "TS_EXPERIMENTAL_VERSIONED_CONFIG_DIR",
-			Value: fmt.Sprintf("/etc/tsconfig/%s", endpoints.Spec.Tailnet), // Config mount path
-		},
-		// Standard Pod metadata (required for state management)
+		// Standard Pod metadata (required FIRST for variable expansion)
 		{
 			Name: "POD_NAME",
 			ValueFrom: &corev1.EnvVarSource{
@@ -1891,6 +2511,19 @@ func (r *TailscaleEndpointsReconciler) createEndpointStatefulSet(ctx context.Con
 					FieldPath: "metadata.name",
 				},
 			},
+		},
+		// CRITICAL: ProxyGroup state management pattern
+		{
+			Name:  "TS_KUBE_SECRET",
+			Value: "$(POD_NAME)", // Points to pod-specific state secret
+		},
+		{
+			Name:  "TS_STATE",
+			Value: "kube:$(POD_NAME)", // Each pod uses its own state secret
+		},
+		{
+			Name:  "TS_EXPERIMENTAL_VERSIONED_CONFIG_DIR",
+			Value: "/etc/tsconfig/$(POD_NAME)", // Each pod reads its own config
 		},
 		{
 			Name: "POD_UID",
@@ -1900,69 +2533,34 @@ func (r *TailscaleEndpointsReconciler) createEndpointStatefulSet(ctx context.Con
 				},
 			},
 		},
-		// Auth key from config secret
-		{
-			Name: "TS_AUTHKEY",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: configSecretName,
-					},
-					Key: "authkey",
-				},
-			},
-		},
-		// Hostname
-		{
-			Name:  "TS_HOSTNAME",
-			Value: name,
-		},
 		// Userspace mode for Kubernetes (following ProxyGroup pattern)
 		{
 			Name:  "TS_USERSPACE",
 			Value: "true",
 		},
-		// Auth once pattern
-		{
-			Name:  "TS_AUTH_ONCE",
-			Value: "true",
-		},
-		// Accept DNS configuration
-		{
-			Name:  "TS_ACCEPT_DNS",
-			Value: "false",
-		},
 	}
 
-	// Add connection-specific configuration
-	if connectionType == "egress" {
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  "TS_ACCEPT_ROUTES",
-			Value: "true",
+	// Note: When using TS_EXPERIMENTAL_VERSIONED_CONFIG_DIR, all other config
+	// comes from the config files, not environment variables
+
+	// Build volumes for each replica config (following ProxyGroup pattern)
+	volumes := []corev1.Volume{}
+	volumeMounts := []corev1.VolumeMount{}
+
+	for i := int32(0); i < replicas; i++ {
+		volumes = append(volumes, corev1.Volume{
+			Name: fmt.Sprintf("tailscaledconfig-%d", i),
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: fmt.Sprintf("%s-%d-config", name, i),
+				},
+			},
 		})
 
-		// Add destination configuration for egress proxy
-		if endpoint.ExternalTarget != "" {
-			// Use TS_EXPERIMENTAL_DEST_DNS_NAME for DNS-based targets
-			if strings.Contains(endpoint.ExternalTarget, ".svc.cluster.local") {
-				envVars = append(envVars, corev1.EnvVar{
-					Name:  "TS_EXPERIMENTAL_DEST_DNS_NAME",
-					Value: endpoint.ExternalTarget,
-				})
-			} else {
-				envVars = append(envVars, corev1.EnvVar{
-					Name:  "TS_DEST_IP",
-					Value: endpoint.ExternalTarget,
-				})
-			}
-		}
-	}
-
-	// Add VIP service publishing for ingress connections
-	if connectionType == "ingress" && r.shouldPublishVIPService(endpoint) {
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  "TS_SERVE_CONFIG",
-			Value: "/etc/tailscale/serve-config.json",
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      fmt.Sprintf("tailscaledconfig-%d", i),
+			ReadOnly:  true,
+			MountPath: fmt.Sprintf("/etc/tsconfig/%s-%d", name, i),
 		})
 	}
 
@@ -1976,7 +2574,7 @@ func (r *TailscaleEndpointsReconciler) createEndpointStatefulSet(ctx context.Con
 			},
 		},
 		Spec: appsv1.StatefulSetSpec{
-			Replicas: &[]int32{1}[0], // Single replica for now
+			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: labels,
 			},
@@ -1988,35 +2586,29 @@ func (r *TailscaleEndpointsReconciler) createEndpointStatefulSet(ctx context.Con
 					ServiceAccountName: name,
 					Containers: []corev1.Container{
 						{
-							Name:  "tailscale",
-							Image: image,
-							Env:   envVars,
+							Name:         "tailscale",
+							Image:        image,
+							Env:          envVars,
+							VolumeMounts: volumeMounts,
 							SecurityContext: &corev1.SecurityContext{
 								Capabilities: &corev1.Capabilities{
 									Add: []corev1.Capability{"NET_ADMIN"},
 								},
 							},
-							VolumeMounts: r.getVolumeMounts(connectionType, endpoint, endpoints),
 						},
 					},
-					Volumes: r.getVolumes(connectionType, endpoint, name, endpoints),
+					Volumes: volumes,
 				},
 			},
 		},
 	}
 
-	// Create serve config ConfigMap for VIP service publishing
-	if connectionType == "ingress" && r.shouldPublishVIPService(endpoint) {
-		if err := r.createServeConfigMap(ctx, endpoints, endpoint, name, labels); err != nil {
-			return fmt.Errorf("failed to create serve config: %w", err)
-		}
-	}
-
 	return r.createOrUpdate(ctx, ss, func() {
-		// Update the environment variables and spec
+		// Update the StatefulSet spec
+		ss.Spec.Replicas = &replicas
 		ss.Spec.Template.Spec.Containers[0].Env = envVars
-		ss.Spec.Template.Spec.Containers[0].VolumeMounts = r.getVolumeMounts(connectionType, endpoint, endpoints)
-		ss.Spec.Template.Spec.Volumes = r.getVolumes(connectionType, endpoint, name, endpoints)
+		ss.Spec.Template.Spec.Containers[0].VolumeMounts = volumeMounts
+		ss.Spec.Template.Spec.Volumes = volumes
 	})
 }
 
@@ -2624,6 +3216,242 @@ func (r *TailscaleEndpointsReconciler) isServiceAlreadyConfigured(svc *corev1.Se
 		}
 	}
 	return false
+}
+
+// updateDeviceStatus updates the device status fields following ProxyGroup patterns from official Tailscale k8s-operator
+func (r *TailscaleEndpointsReconciler) updateDeviceStatus(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints) error {
+	logger := log.FromContext(ctx)
+
+	// Skip device status update if TailscaleClientManager is not available (e.g., in tests)
+	if r.TailscaleClientManager == nil {
+		logger.Info("TailscaleClientManager not available, skipping device status update")
+		return nil
+	}
+
+	// Get Tailscale client for this tailnet
+	tsClient, err := r.TailscaleClientManager.GetClient(ctx, r.Client, endpoints.Spec.Tailnet, endpoints.Namespace)
+	if err != nil {
+		return fmt.Errorf("failed to get Tailscale client for device status update: %w", err)
+	}
+
+	var devices []gatewayv1alpha1.TailscaleDevice
+	var statefulSets []gatewayv1alpha1.StatefulSetInfo
+
+	// Update StatefulSet status
+	if err := r.updateStatefulSetStatus(ctx, endpoints, &statefulSets); err != nil {
+		logger.Error(err, "Failed to update StatefulSet status")
+		// Continue with device status update even if StatefulSet status fails
+	}
+
+	// Extract NodeIDs from state secrets and get device information
+	if err := r.extractDevicesFromStateSecrets(ctx, endpoints, tsClient, &devices); err != nil {
+		logger.Error(err, "Failed to extract devices from state secrets")
+		// Continue with partial status update
+	}
+
+	// Update the status
+	endpoints.Status.Devices = devices
+	endpoints.Status.StatefulSets = statefulSets
+
+	logger.Info("Updated device status",
+		"endpoints", endpoints.Name,
+		"devices", len(devices),
+		"statefulSets", len(statefulSets))
+
+	return nil
+}
+
+// updateStatefulSetStatus collects information about created StatefulSets
+func (r *TailscaleEndpointsReconciler) updateStatefulSetStatus(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, statefulSets *[]gatewayv1alpha1.StatefulSetInfo) error {
+	// List all StatefulSets with labels matching this resource
+	statefulSetList := &appsv1.StatefulSetList{}
+	labelSelector := client.MatchingLabels{
+		"app.kubernetes.io/managed-by":  "tailscale-gateway-operator",
+		"tailscale.com/parent-resource": endpoints.Name,
+	}
+
+	if err := r.List(ctx, statefulSetList, client.InNamespace(endpoints.Namespace), labelSelector); err != nil {
+		return fmt.Errorf("failed to list StatefulSets: %w", err)
+	}
+
+	for _, sts := range statefulSetList.Items {
+		// Determine StatefulSet type from labels
+		connectionType := "unknown"
+		if sts.Labels["tailscale.com/connection-type"] != "" {
+			connectionType = sts.Labels["tailscale.com/connection-type"]
+		}
+
+		// Find associated Service
+		serviceName := ""
+		serviceList := &corev1.ServiceList{}
+		serviceSelector := client.MatchingLabels{
+			"app.kubernetes.io/managed-by": "tailscale-gateway-operator",
+			"tailscale.com/statefulset":    sts.Name,
+		}
+		if err := r.List(ctx, serviceList, client.InNamespace(endpoints.Namespace), serviceSelector); err == nil && len(serviceList.Items) > 0 {
+			serviceName = serviceList.Items[0].Name
+		}
+
+		info := gatewayv1alpha1.StatefulSetInfo{
+			Name:          sts.Name,
+			Namespace:     sts.Namespace,
+			Type:          connectionType,
+			Replicas:      *sts.Spec.Replicas,
+			ReadyReplicas: sts.Status.ReadyReplicas,
+			Service:       serviceName,
+			CreatedAt:     &sts.CreationTimestamp,
+		}
+
+		*statefulSets = append(*statefulSets, info)
+	}
+
+	return nil
+}
+
+// extractDevicesFromStateSecrets extracts NodeIDs from state secrets and fetches device info from Tailscale API
+func (r *TailscaleEndpointsReconciler) extractDevicesFromStateSecrets(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, tsClient tailscale.Client, devices *[]gatewayv1alpha1.TailscaleDevice) error {
+	logger := log.FromContext(ctx)
+
+	// List all secrets with labels matching this resource
+	secretList := &corev1.SecretList{}
+	labelSelector := client.MatchingLabels{
+		"app.kubernetes.io/managed-by":  "tailscale-gateway-operator",
+		"tailscale.com/parent-resource": endpoints.Name,
+		"tailscale.com/secret-type":     "state",
+	}
+
+	if err := r.List(ctx, secretList, client.InNamespace(endpoints.Namespace), labelSelector); err != nil {
+		return fmt.Errorf("failed to list state secrets: %w", err)
+	}
+
+	for _, secret := range secretList.Items {
+		// Extract NodeID from state secret data (following ProxyGroup pattern)
+		nodeID, err := r.extractNodeIDFromStateSecret(&secret)
+		if err != nil {
+			logger.Error(err, "Failed to extract NodeID from state secret", "secret", secret.Name)
+			continue
+		}
+
+		if nodeID == "" {
+			// Secret exists but no NodeID yet (device not connected)
+			logger.Info("State secret has no NodeID yet", "secret", secret.Name)
+			continue
+		}
+
+		// Get device information from Tailscale API
+		device, err := r.getDeviceFromTailscaleAPI(ctx, tsClient, nodeID)
+		if err != nil {
+			logger.Error(err, "Failed to get device from Tailscale API", "nodeID", nodeID)
+			continue
+		}
+
+		// Convert to TailscaleDevice with StatefulSet pod mapping
+		tailscaleDevice := r.convertToTailscaleDevice(device, &secret)
+		*devices = append(*devices, tailscaleDevice)
+	}
+
+	return nil
+}
+
+// extractNodeIDFromStateSecret extracts the NodeID from a Tailscale state secret
+// Following the same pattern as ProxyGroup in official Tailscale k8s-operator
+func (r *TailscaleEndpointsReconciler) extractNodeIDFromStateSecret(secret *corev1.Secret) (string, error) {
+	// The state secret contains various keys, we need to find the NodeID
+	// This follows the same pattern as in ProxyGroup status updates
+
+	// Look for the NodeKey or NodeID in the secret data
+	if data, exists := secret.Data["_daemon.json"]; exists {
+		// Parse the daemon state to extract NodeID
+		var daemonState map[string]interface{}
+		if err := json.Unmarshal(data, &daemonState); err == nil {
+			if nodeData, ok := daemonState["NetMap"].(map[string]interface{}); ok {
+				if nodeKey, ok := nodeData["NodeKey"].(string); ok && nodeKey != "" {
+					// Convert NodeKey to NodeID format if needed
+					return nodeKey, nil
+				}
+			}
+		}
+	}
+
+	// Alternative: look for other state keys that might contain node information
+	for key, data := range secret.Data {
+		if strings.Contains(key, "node") || strings.Contains(key, "NodeKey") {
+			// This might contain node information
+			if len(data) > 0 {
+				return string(data), nil
+			}
+		}
+	}
+
+	// No NodeID found (device may not be connected yet)
+	return "", nil
+}
+
+// getDeviceFromTailscaleAPI fetches device information from the Tailscale API
+func (r *TailscaleEndpointsReconciler) getDeviceFromTailscaleAPI(ctx context.Context, tsClient tailscale.Client, nodeID string) (*tailscaleclient.Device, error) {
+	// Use the Tailscale client to get all devices, then find the one we want
+	devices, err := tsClient.Devices(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get devices from Tailscale API: %w", err)
+	}
+
+	// Find the device with matching NodeID
+	for i := range devices {
+		if devices[i].NodeID == nodeID {
+			return &devices[i], nil
+		}
+	}
+
+	return nil, fmt.Errorf("device with NodeID %s not found", nodeID)
+}
+
+// convertToTailscaleDevice converts a Tailscale API device to our TailscaleDevice status type
+func (r *TailscaleEndpointsReconciler) convertToTailscaleDevice(device *tailscaleclient.Device, secret *corev1.Secret) gatewayv1alpha1.TailscaleDevice {
+	// Extract StatefulSet pod name from secret labels
+	podName := ""
+	if secret.Labels["tailscale.com/statefulset-pod"] != "" {
+		podName = secret.Labels["tailscale.com/statefulset-pod"]
+	}
+
+	var tailscaleIP string
+	var tailscaleFQDN string
+
+	// Extract primary IP address
+	if len(device.Addresses) > 0 {
+		tailscaleIP = device.Addresses[0]
+	}
+
+	// Build FQDN from hostname and tailnet
+	if device.Name != "" {
+		// Extract tailnet from device's FQDN if available
+		if strings.Contains(device.Name, ".") {
+			tailscaleFQDN = device.Name
+		} else {
+			// Construct FQDN if we have enough information
+			tailscaleFQDN = device.Name
+		}
+	}
+
+	var lastSeen *metav1.Time
+	if !device.LastSeen.Time.IsZero() {
+		lastSeen = &metav1.Time{Time: device.LastSeen.Time}
+	}
+
+	// Determine if device is online based on connection status
+	// A device is considered online if it was authorized and recently seen
+	isOnline := device.Authorized && lastSeen != nil
+
+	return gatewayv1alpha1.TailscaleDevice{
+		Hostname:       device.Name,
+		TailscaleIP:    tailscaleIP,
+		TailscaleFQDN:  tailscaleFQDN,
+		NodeID:         device.NodeID,
+		StatefulSetPod: podName,
+		Connected:      isOnline,
+		Online:         isOnline,
+		LastSeen:       lastSeen,
+		Tags:           device.Tags,
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
