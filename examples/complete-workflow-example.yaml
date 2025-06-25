@@ -107,9 +107,9 @@ spec:
   
   # Extension server configuration (optional)
   extensionServer:
-    image: "tailscale-gateway-extension:latest"
+    image: "ghcr.io/rajsinghtech/tailscale-gateway-extension-server:latest"
     replicas: 2
-    port: 8443
+    port: 5005
     resources:
       requests:
         memory: "64Mi"

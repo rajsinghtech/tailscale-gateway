@@ -41,9 +41,27 @@ spec:
         {{- end }}
         - --log-level={{ .Values.logLevel }}
         env:
+        # Operator configuration
         - name: OPERATOR_NAMESPACE
           value: {{ include "tailscale-gateway-operator.namespace" . }}
+        # Port configuration (following centralized config patterns)
+        - name: METRICS_PORT
+          value: "{{ .Values.metrics.service.port }}"
+        - name: HEALTH_PROBE_PORT
+          value: "{{ .Values.healthProbe.service.port }}"
+        # Feature flags
+        - name: ENABLE_METRICS
+          value: "{{ .Values.metrics.enabled }}"
+        - name: ENABLE_HEALTH_CHECKS
+          value: "{{ .Values.healthProbe.enabled }}"
+        - name: LEADER_ELECTION
+          value: "{{ .Values.leaderElection.enabled }}"
+        - name: LOG_LEVEL
+          value: "{{ .Values.logLevel }}"
+        # Proxy configuration
         - name: PROXY_IMAGE
+          value: {{ .Values.proxy.image }}
+        - name: TAILSCALE_IMAGE
           value: {{ .Values.proxy.image }}
         - name: PROXY_RESOURCES_LIMITS_CPU
           value: {{ .Values.proxy.resources.limits.cpu }}
@@ -53,6 +71,9 @@ spec:
           value: {{ .Values.proxy.resources.requests.cpu }}
         - name: PROXY_RESOURCES_REQUESTS_MEMORY
           value: {{ .Values.proxy.resources.requests.memory }}
+        # Image configuration
+        - name: OPERATOR_IMAGE
+          value: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Chart.AppVersion }}"
         ports:
         {{- if .Values.metrics.enabled }}
         - name: metrics

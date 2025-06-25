@@ -10,7 +10,7 @@ spec:
     name: test-envoy-gateway
     namespace: default
   extensionServer:
-    port: 8443
+    port: 5005
     tls:
       insecureSkipVerify: true  # For testing only
   routeDiscovery:

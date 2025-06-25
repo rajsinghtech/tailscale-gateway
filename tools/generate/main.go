@@ -147,7 +147,7 @@ func replacePlaceholder(template, content string) string {
 		log.Printf("Warning: Could not find end of PLACEHOLDER_CRDS_START line")
 		return template
 	}
-	
+
 	// Position right after the newline of the placeholder start line
 	afterPlaceholderLine := startIdx + placeholderLineEnd + 1
 

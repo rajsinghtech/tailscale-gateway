@@ -115,7 +115,7 @@ func TestTailscaleGatewayController(t *testing.T) {
 					},
 				},
 				ExtensionServer: &gatewayv1alpha1.ExtensionServerConfig{
-					Image:    "tailscale-gateway-extension:latest",
+					Image:    "ghcr.io/rajsinghtech/tailscale-gateway-extension-server:latest",
 					Replicas: 2,
 				},
 			},
@@ -182,7 +182,7 @@ func TestTailscaleGatewayController(t *testing.T) {
 					},
 				},
 				ExtensionServer: &gatewayv1alpha1.ExtensionServerConfig{
-					Image:    "tailscale-gateway-extension:latest",
+					Image:    "ghcr.io/rajsinghtech/tailscale-gateway-extension-server:latest",
 					Replicas: 2,
 					Port:     int32Ptr(5005),
 				},
@@ -244,7 +244,7 @@ func TestTailscaleGatewayController(t *testing.T) {
 					},
 				},
 				ExtensionServer: &gatewayv1alpha1.ExtensionServerConfig{
-					Image:    "tailscale-gateway-extension:latest",
+					Image:    "ghcr.io/rajsinghtech/tailscale-gateway-extension-server:latest",
 					Replicas: 1,
 				},
 			},

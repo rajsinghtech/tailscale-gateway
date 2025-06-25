@@ -1,0 +1,235 @@
+# Example demonstrating proper Gateway API parentRefs usage with Tailscale Gateway
+# This replaces the deprecated annotation-based approach
+
+---
+# Standard Gateway API Gateway
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: my-envoy-gateway
+  namespace: default
+spec:
+  gatewayClassName: envoy-gateway
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+  - name: https
+    protocol: HTTPS
+    port: 443
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - kind: Secret
+        name: my-tls-cert
+
+---
+# TailscaleTailnet resource for authentication
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleTailnet
+metadata:
+  name: my-tailnet
+  namespace: default
+spec:
+  authKey:
+    secretRef:
+      name: tailscale-auth-key
+      key: authkey
+  tailnet: my-company.tailnet
+
+---
+# TailscaleGateway that references the Envoy Gateway
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleGateway
+metadata:
+  name: my-tailscale-gateway
+  namespace: default
+spec:
+  gatewayRef:
+    name: my-envoy-gateway
+    namespace: default
+  tailnets:
+  - name: production
+    tailscaleTailnetRef:
+      name: my-tailnet
+    serviceDiscovery:
+      enabled: true
+      patterns:
+      - "web-*"
+      - "api-*"
+    routeGeneration:
+      egress:
+        pathPrefix: "/tailscale/{service}/"
+        protocol: "HTTP"
+
+---
+# TailscaleEndpoints for discovered services
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleEndpoints
+metadata:
+  name: backend-services
+  namespace: default
+spec:
+  tailnet: production
+  endpoints:
+  - name: web-service
+    tailscaleIP: "100.64.0.10"
+    tailscaleFQDN: "web-service.my-company.tailnet"
+    port: 80
+    protocol: HTTP
+    tags:
+    - "tag:web"
+    - "tag:production"
+  - name: api-service  
+    tailscaleIP: "100.64.0.20"
+    tailscaleFQDN: "api-service.my-company.tailnet" 
+    port: 8080
+    protocol: HTTP
+    tags:
+    - "tag:api"
+    - "tag:production"
+
+---
+# HTTPRoute using Gateway API parentRefs (NEW STANDARD WAY)
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: web-route
+  namespace: default
+spec:
+  # Use Gateway API standard parentRefs instead of annotations
+  parentRefs:
+  - name: my-envoy-gateway
+    namespace: default
+    # Optional: specify specific listener
+    sectionName: http
+  hostnames:
+  - "web.example.com"
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: "/"
+    backendRefs:
+    # Reference TailscaleEndpoints as backend
+    - group: gateway.tailscale.com
+      kind: TailscaleEndpoints
+      name: backend-services
+      port: 80
+      weight: 100
+
+---
+# TCPRoute using Gateway API parentRefs
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TCPRoute
+metadata:
+  name: database-route
+  namespace: default  
+spec:
+  # Use Gateway API standard parentRefs
+  parentRefs:
+  - name: my-envoy-gateway
+    namespace: default
+    port: 5432
+  rules:
+  - backendRefs:
+    # Reference TailscaleEndpoints as backend
+    - group: gateway.tailscale.com
+      kind: TailscaleEndpoints
+      name: backend-services
+      port: 5432
+      weight: 100
+
+---
+# UDPRoute using Gateway API parentRefs  
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: UDPRoute
+metadata:
+  name: dns-route
+  namespace: default
+spec:
+  # Use Gateway API standard parentRefs
+  parentRefs:
+  - name: my-envoy-gateway
+    namespace: default
+    port: 53
+  rules:
+  - backendRefs:
+    # Reference TailscaleEndpoints as backend
+    - group: gateway.tailscale.com
+      kind: TailscaleEndpoints  
+      name: backend-services
+      port: 53
+      weight: 100
+
+---
+# TLSRoute using Gateway API parentRefs
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TLSRoute
+metadata:
+  name: secure-api-route
+  namespace: default
+spec:
+  # Use Gateway API standard parentRefs
+  parentRefs:
+  - name: my-envoy-gateway
+    namespace: default
+    sectionName: https
+  hostnames:
+  - "secure-api.example.com"
+  rules:
+  - backendRefs:
+    # Reference TailscaleEndpoints as backend
+    - group: gateway.tailscale.com
+      kind: TailscaleEndpoints
+      name: backend-services
+      port: 443
+      weight: 100
+
+---
+# GRPCRoute using Gateway API parentRefs
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata:
+  name: grpc-api-route
+  namespace: default
+spec:
+  # Use Gateway API standard parentRefs
+  parentRefs:
+  - name: my-envoy-gateway
+    namespace: default
+    sectionName: http
+  hostnames:
+  - "grpc-api.example.com"
+  rules:
+  - matches:
+    - method:
+        service: "api.UserService"
+    backendRefs:
+    # Reference TailscaleEndpoints as backend
+    - group: gateway.tailscale.com
+      kind: TailscaleEndpoints
+      name: backend-services
+      port: 9090
+      weight: 100
+
+---
+# DEPRECATED: Old annotation-based approach (NO LONGER SUPPORTED)
+# apiVersion: gateway.networking.k8s.io/v1
+# kind: HTTPRoute
+# metadata:
+#   name: old-style-route
+#   namespace: default
+#   annotations:
+#     # DON'T USE: This annotation approach is deprecated
+#     gateway.tailscale.com/gateway: my-tailscale-gateway
+# spec:
+#   # Routes without parentRefs won't be processed correctly
+#   rules:
+#   - matches:
+#     - path:
+#         type: PathPrefix
+#         value: "/old"
+#     backendRefs:
+#     - name: some-service
+#       port: 80

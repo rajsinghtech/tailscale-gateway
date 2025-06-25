@@ -31,7 +31,6 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/health"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -43,6 +42,7 @@ import (
 
 	pb "github.com/envoyproxy/gateway/proto/extension"
 	gatewayv1alpha1 "github.com/rajsinghtech/tailscale-gateway/api/v1alpha1"
+	"github.com/rajsinghtech/tailscale-gateway/internal/config"
 	"github.com/rajsinghtech/tailscale-gateway/internal/extension"
 )
 
@@ -56,17 +56,33 @@ func init() {
 }
 
 func main() {
+	// Create configuration with defaults
+	cfg := config.NewOperatorConfig()
+
 	var (
-		grpcPort             = flag.Int("grpc-port", 5005, "Port for the gRPC extension server")
-		healthProbeBindAddr  = flag.String("health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-		metricsBindAddr      = flag.String("metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
-		logLevel             = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
-		enableLeaderElection = flag.Bool("leader-elect", false, "Enable leader election for controller manager.")
+		grpcPort             = flag.Int("grpc-port", cfg.GRPCPort, "Port for the gRPC extension server")
+		healthProbeBindAddr  = flag.String("health-probe-bind-address", cfg.GetHealthProbeAddress(), "The address the probe endpoint binds to.")
+		metricsBindAddr      = flag.String("metrics-bind-address", cfg.GetMetricsAddress(), "The address the metric endpoint binds to.")
+		logLevel             = flag.String("log-level", cfg.LogLevel, "Log level (debug, info, warn, error)")
+		enableLeaderElection = flag.Bool("leader-elect", cfg.LeaderElection, "Enable leader election for controller manager.")
 	)
 	flag.Parse()
 
+	// Load configuration from environment
+	if err := cfg.LoadFromEnvironment(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Override gRPC port if provided via flag
+	cfg.GRPCPort = *grpcPort
+
 	// Setup structured logging
-	rawLogger := setupLogger(*logLevel)
+	rawLogger, err := setupLogger(*logLevel)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
+		os.Exit(1)
+	}
 	defer rawLogger.Sync()
 
 	ctrl.SetLogger(zapr.NewLogger(rawLogger))
@@ -89,7 +105,11 @@ func main() {
 	}))
 
 	// Create extension server
-	extensionServer := extension.NewTailscaleExtensionServer(kubeClient, structuredLogger)
+	extensionServer, err := extension.NewTailscaleExtensionServer(kubeClient, structuredLogger)
+	if err != nil {
+		setupLog.Error("Failed to create extension server", "error", err)
+		os.Exit(1)
+	}
 
 	// Setup metrics server (in a separate goroutine)
 	mgr, err := ctrl.NewManager(config, ctrl.Options{
@@ -128,10 +148,8 @@ func main() {
 	grpcServer := grpc.NewServer()
 	pb.RegisterEnvoyGatewayExtensionServer(grpcServer, extensionServer)
 
-	// Add health service
-	healthService := health.NewServer()
-	grpc_health_v1.RegisterHealthServer(grpcServer, healthService)
-	healthService.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
+	// Register extension server as health service (following AI Gateway pattern)
+	grpc_health_v1.RegisterHealthServer(grpcServer, extensionServer)
 
 	// Health checks are handled by controller-runtime manager
 
@@ -151,8 +169,7 @@ func main() {
 		<-quit
 		setupLog.Info("Shutting down extension server...")
 
-		// Stop health service
-		healthService.SetServingStatus("", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
+		// Health service will be stopped when gRPC server stops
 
 		// Graceful shutdown with timeout
 		stopped := make(chan struct{})
@@ -182,7 +199,7 @@ func main() {
 	}
 }
 
-func setupLogger(level string) *zap.Logger {
+func setupLogger(level string) (*zap.Logger, error) {
 	var zapLevel zapcore.Level
 	switch level {
 	case "debug":
@@ -204,10 +221,10 @@ func setupLogger(level string) *zap.Logger {
 
 	logger, err := config.Build()
 	if err != nil {
-		panic(fmt.Sprintf("Failed to initialize logger: %v", err))
+		return nil, fmt.Errorf("failed to build logger: %w", err)
 	}
 
-	return logger
+	return logger, nil
 }
 
 func parseLogLevel(level string) slog.Level {

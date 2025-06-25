@@ -725,6 +725,8 @@ func TestEndToEndGatewayAPIWorkflow(t *testing.T) {
 		ExternalBackend: "api.internal.company.com:8080",
 		Port:            8080,
 		Protocol:        "HTTP",
+		PathPrefix:      "/tailscale/api-server/",
+		TailnetName:     "production.company.ts.net",
 	}
 
 	if diff := cmp.Diff(mapping, expectedMapping); diff != "" {

@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	gatewayv1alpha1 "github.com/rajsinghtech/tailscale-gateway/api/v1alpha1"
+	"github.com/rajsinghtech/tailscale-gateway/internal/errors"
 	"github.com/rajsinghtech/tailscale-gateway/internal/tailscale"
 	corev1 "k8s.io/api/core/v1"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -72,6 +73,56 @@ type ServiceMetadata struct {
 	TailscaleTailnet *gatewayv1alpha1.TailscaleTailnet
 }
 
+// Utility functions - defined early to avoid forward declaration issues
+
+func isNotFoundError(err error) bool {
+	return apierrors.IsNotFound(err) || strings.Contains(err.Error(), "not found")
+}
+
+func appendUnique(slice []string, item string) []string {
+	for _, existing := range slice {
+		if existing == item {
+			return slice
+		}
+	}
+	return append(slice, item)
+}
+
+func removeString(slice []string, item string) []string {
+	var result []string
+	for _, s := range slice {
+		if s != item {
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+func mergeAnnotations(existing, new map[string]string) map[string]string {
+	if existing == nil {
+		existing = make(map[string]string)
+	}
+	for k, v := range new {
+		existing[k] = v
+	}
+	return existing
+}
+
+// removeDuplicateStrings removes duplicate strings from a slice
+func removeDuplicateStrings(strings []string) []string {
+	keys := make(map[string]bool)
+	result := []string{}
+
+	for _, str := range strings {
+		if !keys[str] {
+			keys[str] = true
+			result = append(result, str)
+		}
+	}
+
+	return result
+}
+
 // NewServiceCoordinator creates a new service coordinator
 func NewServiceCoordinator(tsClient tailscale.Client, kubeClient client.Client, operatorID, clusterID string, logger *zap.SugaredLogger) *ServiceCoordinator {
 	return &ServiceCoordinator{
@@ -90,12 +141,43 @@ func (sc *ServiceCoordinator) EnsureServiceWithMetadata(
 	targetBackend string,
 	metadata *ServiceMetadata,
 ) (*ServiceRegistration, error) {
+	// Validate inputs
+	if routeName == "" {
+		return nil, errors.NewValidationError("route_name", "empty", "route name cannot be empty").
+			WithContext("operation", "ensure_service_with_metadata").
+			WithContext("target_backend", targetBackend).
+			BuildError()
+	}
+	if targetBackend == "" {
+		return nil, errors.NewValidationError("target_backend", "empty", "target backend cannot be empty").
+			WithContext("operation", "ensure_service_with_metadata").
+			WithContext("route_name", routeName).
+			BuildError()
+	}
+
 	serviceName := sc.GenerateServiceName(targetBackend)
+
+	// Validate the generated service name
+	if err := serviceName.Validate(); err != nil {
+		return nil, errors.NewValidationError("service_name", string(serviceName), err.Error()).
+			WithContext("operation", "ensure_service_with_metadata").
+			WithContext("route_name", routeName).
+			WithContext("target_backend", targetBackend).
+			BuildError()
+	}
 
 	// First, check if service already exists
 	existingService, err := sc.tsClient.GetVIPService(ctx, serviceName)
 	if err != nil && !isNotFoundError(err) {
-		return nil, fmt.Errorf("failed to check existing service: %w", err)
+		return nil, errors.NewAPIError("GetVIPService", 0, err.Error()).
+			WithContext("service_name", string(serviceName)).
+			WithContext("operation", "check_existing_service_with_metadata").
+			WithContext("route_name", routeName).
+			WithContext("target_backend", targetBackend).
+			WithContext("cluster_id", sc.clusterID).
+			WithContext("operator_id", sc.operatorID).
+			WithResolutionHint("Check Tailscale API connectivity and service permissions").
+			BuildError()
 	}
 
 	if existingService != nil {
@@ -113,12 +195,43 @@ func (sc *ServiceCoordinator) EnsureServiceForRoute(
 	routeName string,
 	targetBackend string,
 ) (*ServiceRegistration, error) {
+	// Validate inputs
+	if routeName == "" {
+		return nil, errors.NewValidationError("route_name", "empty", "route name cannot be empty").
+			WithContext("operation", "ensure_service_for_route").
+			WithContext("target_backend", targetBackend).
+			BuildError()
+	}
+	if targetBackend == "" {
+		return nil, errors.NewValidationError("target_backend", "empty", "target backend cannot be empty").
+			WithContext("operation", "ensure_service_for_route").
+			WithContext("route_name", routeName).
+			BuildError()
+	}
+
 	serviceName := sc.GenerateServiceName(targetBackend)
+
+	// Validate the generated service name
+	if err := serviceName.Validate(); err != nil {
+		return nil, errors.NewValidationError("service_name", string(serviceName), err.Error()).
+			WithContext("operation", "ensure_service_for_route").
+			WithContext("route_name", routeName).
+			WithContext("target_backend", targetBackend).
+			BuildError()
+	}
 
 	// First, check if service already exists
 	existingService, err := sc.tsClient.GetVIPService(ctx, serviceName)
 	if err != nil && !isNotFoundError(err) {
-		return nil, fmt.Errorf("failed to check existing service: %w", err)
+		return nil, errors.NewAPIError("GetVIPService", 0, err.Error()).
+			WithContext("service_name", string(serviceName)).
+			WithContext("operation", "check_existing_service_for_route").
+			WithContext("route_name", routeName).
+			WithContext("target_backend", targetBackend).
+			WithContext("cluster_id", sc.clusterID).
+			WithContext("operator_id", sc.operatorID).
+			WithResolutionHint("Check Tailscale API connectivity and service permissions").
+			BuildError()
 	}
 
 	if existingService != nil {
@@ -139,7 +252,13 @@ func (sc *ServiceCoordinator) attachToExistingService(
 	// Parse existing service registry from annotations
 	registry, err := sc.parseServiceRegistry(service.Annotations)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse service registry: %w", err)
+		return nil, errors.NewValidationError("service_registry_annotations", "corrupted", err.Error()).
+			WithContext("service_name", string(service.Name)).
+			WithContext("operation", "attach_to_existing_service").
+			WithContext("cluster_id", sc.clusterID).
+			WithContext("operator_id", sc.operatorID).
+			WithResolutionHint("Check service annotations format and ensure they contain valid JSON").
+			BuildError()
 	}
 
 	// Add this operator as a consumer
@@ -160,7 +279,14 @@ func (sc *ServiceCoordinator) attachToExistingService(
 	service.Annotations = mergeAnnotations(service.Annotations, updatedAnnotations)
 
 	if err := sc.tsClient.CreateOrUpdateVIPService(ctx, service); err != nil {
-		return nil, fmt.Errorf("failed to update service registry: %w", err)
+		return nil, errors.NewAPIError("CreateOrUpdateVIPService", 0, err.Error()).
+			WithContext("service_name", string(service.Name)).
+			WithContext("operation", "update_service_registry").
+			WithContext("route_name", routeName).
+			WithContext("cluster_id", sc.clusterID).
+			WithContext("operator_id", sc.operatorID).
+			WithResolutionHint("Check Tailscale API connectivity and service update permissions").
+			BuildError()
 	}
 
 	sc.logger.Infof("Attached to existing service %s (owner: %s)",
@@ -276,7 +402,15 @@ func (sc *ServiceCoordinator) createNewServiceWithMetadata(
 
 	// Create the service
 	if err := sc.tsClient.CreateOrUpdateVIPService(ctx, vipService); err != nil {
-		return nil, fmt.Errorf("failed to create VIP service: %w", err)
+		return nil, errors.NewAPIError("CreateOrUpdateVIPService", 0, err.Error()).
+			WithContext("service_name", string(serviceName)).
+			WithContext("operation", "create_new_service_with_metadata").
+			WithContext("target_backend", targetBackend).
+			WithContext("route_name", routeName).
+			WithContext("cluster_id", sc.clusterID).
+			WithContext("operator_id", sc.operatorID).
+			WithResolutionHint("Check Tailscale API connectivity and VIP service creation permissions").
+			BuildError()
 	}
 
 	sc.logger.Infof("Created new service %s with tags %v and ports %v (owner: %s)",
@@ -316,13 +450,27 @@ func (sc *ServiceCoordinator) createNewService(
 	}
 
 	if err := sc.tsClient.CreateOrUpdateVIPService(ctx, vipService); err != nil {
-		return nil, fmt.Errorf("failed to create VIP service: %w", err)
+		return nil, errors.NewAPIError("CreateOrUpdateVIPService", 0, err.Error()).
+			WithContext("service_name", string(serviceName)).
+			WithContext("operation", "create_new_service").
+			WithContext("target_backend", targetBackend).
+			WithContext("route_name", routeName).
+			WithContext("cluster_id", sc.clusterID).
+			WithContext("operator_id", sc.operatorID).
+			WithResolutionHint("Check Tailscale API connectivity and VIP service creation permissions").
+			BuildError()
 	}
 
 	// Get the allocated VIP addresses
 	createdService, err := sc.tsClient.GetVIPService(ctx, serviceName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get created service: %w", err)
+		return nil, errors.NewAPIError("GetVIPService", 0, err.Error()).
+			WithContext("service_name", string(serviceName)).
+			WithContext("operation", "get_created_service_addresses").
+			WithContext("cluster_id", sc.clusterID).
+			WithContext("operator_id", sc.operatorID).
+			WithResolutionHint("Check Tailscale API connectivity and service visibility").
+			BuildError()
 	}
 
 	registry.VIPAddresses = createdService.Addrs
@@ -337,17 +485,44 @@ func (sc *ServiceCoordinator) DetachFromService(
 	serviceName tailscale.ServiceName,
 	routeName string,
 ) error {
+	// Validate inputs
+	if err := serviceName.Validate(); err != nil {
+		return errors.NewValidationError("service_name", string(serviceName), err.Error()).
+			WithContext("operation", "detach_from_service").
+			WithContext("route_name", routeName).
+			BuildError()
+	}
+	if routeName == "" {
+		return errors.NewValidationError("route_name", "empty", "route name cannot be empty").
+			WithContext("operation", "detach_from_service").
+			WithContext("service_name", string(serviceName)).
+			BuildError()
+	}
 	service, err := sc.tsClient.GetVIPService(ctx, serviceName)
 	if err != nil {
 		if isNotFoundError(err) {
 			return nil // Service already deleted
 		}
-		return fmt.Errorf("failed to get service: %w", err)
+		return errors.NewAPIError("GetVIPService", 0, err.Error()).
+			WithContext("service_name", string(serviceName)).
+			WithContext("operation", "detach_from_service").
+			WithContext("route_name", routeName).
+			WithContext("cluster_id", sc.clusterID).
+			WithContext("operator_id", sc.operatorID).
+			WithResolutionHint("Check Tailscale API connectivity and service visibility").
+			BuildError()
 	}
 
 	registry, err := sc.parseServiceRegistry(service.Annotations)
 	if err != nil {
-		return fmt.Errorf("failed to parse service registry: %w", err)
+		return errors.NewValidationError("service_registry_annotations", "corrupted", err.Error()).
+			WithContext("service_name", string(serviceName)).
+			WithContext("operation", "detach_from_service").
+			WithContext("route_name", routeName).
+			WithContext("cluster_id", sc.clusterID).
+			WithContext("operator_id", sc.operatorID).
+			WithResolutionHint("Check service annotations format and ensure they contain valid JSON").
+			BuildError()
 	}
 
 	consumerKey := fmt.Sprintf("%s-%s", sc.clusterID, sc.operatorID)
@@ -370,7 +545,14 @@ func (sc *ServiceCoordinator) DetachFromService(
 	if len(registry.ConsumerClusters) == 0 {
 		// No consumers left - delete the service
 		if err := sc.tsClient.DeleteVIPService(ctx, serviceName); err != nil {
-			return fmt.Errorf("failed to delete unused service: %w", err)
+			return errors.NewAPIError("DeleteVIPService", 0, err.Error()).
+				WithContext("service_name", string(serviceName)).
+				WithContext("operation", "delete_unused_service").
+				WithContext("route_name", routeName).
+				WithContext("cluster_id", sc.clusterID).
+				WithContext("operator_id", sc.operatorID).
+				WithResolutionHint("Check Tailscale API connectivity and service deletion permissions").
+				BuildError()
 		}
 		sc.logger.Infof("Deleted unused service %s", serviceName)
 		return nil
@@ -381,7 +563,14 @@ func (sc *ServiceCoordinator) DetachFromService(
 	service.Annotations = sc.encodeServiceRegistry(registry)
 
 	if err := sc.tsClient.CreateOrUpdateVIPService(ctx, service); err != nil {
-		return fmt.Errorf("failed to update service registry: %w", err)
+		return errors.NewAPIError("CreateOrUpdateVIPService", 0, err.Error()).
+			WithContext("service_name", string(serviceName)).
+			WithContext("operation", "update_service_registry_after_detach").
+			WithContext("route_name", routeName).
+			WithContext("cluster_id", sc.clusterID).
+			WithContext("operator_id", sc.operatorID).
+			WithResolutionHint("Check Tailscale API connectivity and service update permissions").
+			BuildError()
 	}
 
 	return nil
@@ -392,7 +581,12 @@ func (sc *ServiceCoordinator) CleanupStaleConsumers(ctx context.Context) error {
 	// Get all services managed by gateway operators
 	allServices, err := sc.tsClient.GetVIPServices(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get VIP services: %w", err)
+		return errors.NewAPIError("GetVIPServices", 0, err.Error()).
+			WithContext("operation", "cleanup_stale_consumers").
+			WithContext("cluster_id", sc.clusterID).
+			WithContext("operator_id", sc.operatorID).
+			WithResolutionHint("Check Tailscale API connectivity and service listing permissions").
+			BuildError()
 	}
 
 	for _, service := range allServices {
@@ -443,7 +637,13 @@ func (sc *ServiceCoordinator) CleanupStaleConsumers(ctx context.Context) error {
 func (sc *ServiceCoordinator) GetSharedServiceMappings(ctx context.Context, tailnetDomain string) ([]SharedServiceMapping, error) {
 	allServices, err := sc.tsClient.GetVIPServices(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get VIP services: %w", err)
+		return nil, errors.NewAPIError("GetVIPServices", 0, err.Error()).
+			WithContext("operation", "get_shared_service_mappings").
+			WithContext("tailnet_domain", tailnetDomain).
+			WithContext("cluster_id", sc.clusterID).
+			WithContext("operator_id", sc.operatorID).
+			WithResolutionHint("Check Tailscale API connectivity and service listing permissions").
+			BuildError()
 	}
 
 	var mappings []SharedServiceMapping
@@ -500,12 +700,19 @@ func (sc *ServiceCoordinator) encodeServiceRegistry(registry *ServiceRegistratio
 func (sc *ServiceCoordinator) parseServiceRegistry(annotations map[string]string) (*ServiceRegistration, error) {
 	registryJSON, exists := annotations["gateway.tailscale.com/service-registry"]
 	if !exists {
-		return nil, fmt.Errorf("service registry annotation not found")
+		return nil, errors.NewValidationError("service_registry_annotation", "missing", "annotation 'gateway.tailscale.com/service-registry' not found").
+			WithSeverity(gatewayv1alpha1.SeverityMedium).
+			WithResolutionHint("Ensure service has proper gateway operator annotations or recreate the service").
+			BuildError()
 	}
 
 	var registry ServiceRegistration
 	if err := json.Unmarshal([]byte(registryJSON), &registry); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal service registry: %w", err)
+		return nil, errors.NewValidationError("service_registry_json", registryJSON, err.Error()).
+			WithContext("json_content", registryJSON).
+			WithSeverity(gatewayv1alpha1.SeverityHigh).
+			WithResolutionHint("Check service registry JSON format and consider recreating the service").
+			BuildError()
 	}
 
 	return &registry, nil
@@ -513,13 +720,28 @@ func (sc *ServiceCoordinator) parseServiceRegistry(annotations map[string]string
 
 // GenerateServiceName generates a service name from target backend
 func (sc *ServiceCoordinator) GenerateServiceName(targetBackend string) tailscale.ServiceName {
+	// Validate input
+	if targetBackend == "" {
+		sc.logger.Warn("Empty target backend provided to GenerateServiceName")
+		return tailscale.ServiceName("svc:invalid")
+	}
+
 	// Convert to valid hostname format
 	hostname := strings.ToLower(targetBackend)
 	hostname = strings.ReplaceAll(hostname, ".", "-")
 	hostname = strings.ReplaceAll(hostname, "/", "-")
 	hostname = strings.Trim(hostname, "-")
 
-	return tailscale.ServiceName(fmt.Sprintf("svc:%s", hostname))
+	serviceName := tailscale.ServiceName(fmt.Sprintf("svc:%s", hostname))
+
+	// Validate the generated service name
+	if err := serviceName.Validate(); err != nil {
+		sc.logger.Warnf("Generated invalid service name %s from backend %s: %v", serviceName, targetBackend, err)
+		// Return a safe fallback
+		return tailscale.ServiceName("svc:invalid-backend")
+	}
+
+	return serviceName
 }
 
 // isGatewayOperatorService checks if service is managed by gateway operator
@@ -532,56 +754,6 @@ func (sc *ServiceCoordinator) isGatewayOperatorService(service *tailscale.VIPSer
 	return false
 }
 
-// Utility functions
-
-func isNotFoundError(err error) bool {
-	return apierrors.IsNotFound(err) || strings.Contains(err.Error(), "not found")
-}
-
-func appendUnique(slice []string, item string) []string {
-	for _, existing := range slice {
-		if existing == item {
-			return slice
-		}
-	}
-	return append(slice, item)
-}
-
-func removeString(slice []string, item string) []string {
-	var result []string
-	for _, s := range slice {
-		if s != item {
-			result = append(result, s)
-		}
-	}
-	return result
-}
-
-func mergeAnnotations(existing, new map[string]string) map[string]string {
-	if existing == nil {
-		existing = make(map[string]string)
-	}
-	for k, v := range new {
-		existing[k] = v
-	}
-	return existing
-}
-
-// removeDuplicateStrings removes duplicate strings from a slice
-func removeDuplicateStrings(strings []string) []string {
-	keys := make(map[string]bool)
-	result := []string{}
-
-	for _, str := range strings {
-		if !keys[str] {
-			keys[str] = true
-			result = append(result, str)
-		}
-	}
-
-	return result
-}
-
 // DiscoverVIPServices discovers all VIP services in the tailnet for cross-cluster coordination
 func (sc *ServiceCoordinator) DiscoverVIPServices(ctx context.Context) ([]*ServiceRegistration, error) {
 	sc.logger.Debug("Discovering VIP services for cross-cluster coordination")
@@ -589,7 +761,12 @@ func (sc *ServiceCoordinator) DiscoverVIPServices(ctx context.Context) ([]*Servi
 	// Get all VIP services from the tailnet
 	vipServices, err := sc.tsClient.GetVIPServices(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get VIP services: %w", err)
+		return nil, errors.NewAPIError("GetVIPServices", 0, err.Error()).
+			WithContext("operation", "discover_vip_services").
+			WithContext("cluster_id", sc.clusterID).
+			WithContext("operator_id", sc.operatorID).
+			WithResolutionHint("Check Tailscale API connectivity and service discovery permissions").
+			BuildError()
 	}
 
 	var registrations []*ServiceRegistration

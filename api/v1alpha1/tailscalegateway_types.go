@@ -143,7 +143,7 @@ type EgressRouteConfig struct {
 // ExtensionServerConfig configures the gRPC extension server deployment
 type ExtensionServerConfig struct {
 	// Image defines the container image for the Extension Server
-	// +kubebuilder:default="tailscale-gateway-extension:latest"
+	// +kubebuilder:default="ghcr.io/rajsinghtech/tailscale-gateway-extension-server:latest"
 	Image string `json:"image"`
 
 	// Replicas defines the number of Extension Server replicas
@@ -160,7 +160,7 @@ type ExtensionServerConfig struct {
 	ServiceAccountName string `json:"serviceAccountName,omitempty"`
 
 	// Port is the port number for the gRPC extension server.
-	// Defaults to 8443.
+	// Defaults to 5005.
 	// +optional
 	Port *int32 `json:"port,omitempty"`
 

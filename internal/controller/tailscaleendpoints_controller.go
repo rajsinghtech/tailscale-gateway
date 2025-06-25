@@ -22,7 +22,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -39,7 +44,9 @@ import (
 	tailscaleclient "tailscale.com/client/tailscale/v2"
 
 	gatewayv1alpha1 "github.com/rajsinghtech/tailscale-gateway/api/v1alpha1"
+	"github.com/rajsinghtech/tailscale-gateway/internal/metrics"
 	"github.com/rajsinghtech/tailscale-gateway/internal/tailscale"
+	"github.com/rajsinghtech/tailscale-gateway/internal/validation"
 )
 
 const (
@@ -56,10 +63,10 @@ type TailscaleEndpointsReconciler struct {
 	Scheme *runtime.Scheme
 
 	// TailscaleClientManager provides access to Tailscale APIs per tailnet
-	TailscaleClientManager *MultiTailnetManager
+	TailscaleClientManager *tailscale.MultiTailnetManager
 
 	// Metrics for tracking reconciliation performance
-	metrics *ReconcilerMetrics
+	metrics *metrics.ReconcilerMetrics
 
 	// Event channels for controller coordination
 	GatewayEventChan   chan event.GenericEvent
@@ -70,40 +77,65 @@ type TailscaleEndpointsReconciler struct {
 	GRPCRouteEventChan chan event.GenericEvent
 }
 
-// MultiTailnetManager manages multiple Tailscale client connections
+// MultiTailnetManager manages multiple Tailscale client connections with cleanup and refresh logic
 type MultiTailnetManager struct {
-	clients map[string]tailscale.Client
+	clients       map[string]*clientCacheEntry
+	mu            sync.RWMutex
+	cleanupTicker *time.Ticker
+	stopCleanup   chan struct{}
 }
 
-// NewMultiTailnetManager creates a new MultiTailnetManager
+// clientCacheEntry represents a cached Tailscale client with metadata
+type clientCacheEntry struct {
+	client     tailscale.Client
+	createdAt  time.Time
+	lastUsed   time.Time
+	secretHash string // Hash of the secret used to create the client
+	tailnetKey string // Key for the TailscaleTailnet resource
+}
+
+// NewMultiTailnetManager creates a new MultiTailnetManager with cleanup logic
 func NewMultiTailnetManager() *MultiTailnetManager {
-	return &MultiTailnetManager{
-		clients: make(map[string]tailscale.Client),
+	m := &MultiTailnetManager{
+		clients:     make(map[string]*clientCacheEntry),
+		stopCleanup: make(chan struct{}),
 	}
+
+	// Start cleanup goroutine
+	m.cleanupTicker = time.NewTicker(5 * time.Minute) // Cleanup every 5 minutes
+	go m.cleanupLoop()
+
+	return m
 }
 
-// GetClient returns a Tailscale client for the specified tailnet
+// GetClient returns a Tailscale client for the specified tailnet with automatic refresh logic
 func (m *MultiTailnetManager) GetClient(ctx context.Context, k8sClient client.Client, tailnetName, namespace string) (tailscale.Client, error) {
 	key := fmt.Sprintf("%s/%s", namespace, tailnetName)
 
-	if client, exists := m.clients[key]; exists {
-		return client, nil
+	// Check if we have a cached client
+	m.mu.RLock()
+	entry, exists := m.clients[key]
+	m.mu.RUnlock()
+
+	if exists {
+		// Update last used time
+		m.mu.Lock()
+		entry.lastUsed = time.Now()
+		m.mu.Unlock()
+
+		// Check if the client needs to be refreshed
+		if m.shouldRefreshClient(ctx, k8sClient, entry, tailnetName, namespace) {
+			// Remove the stale client and create a new one
+			m.mu.Lock()
+			delete(m.clients, key)
+			m.mu.Unlock()
+		} else {
+			return entry.client, nil
+		}
 	}
 
-	// Find the TailscaleTailnet resource
-	tailnet := &gatewayv1alpha1.TailscaleTailnet{}
-	if err := k8sClient.Get(ctx, client.ObjectKey{Name: tailnetName, Namespace: namespace}, tailnet); err != nil {
-		return nil, fmt.Errorf("failed to get TailscaleTailnet %s/%s: %w", namespace, tailnetName, err)
-	}
-
-	// Create client from TailscaleTailnet credentials
-	tsClient, err := m.createClientFromTailnet(ctx, k8sClient, tailnet)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Tailscale client for %s/%s: %w", namespace, tailnetName, err)
-	}
-
-	m.clients[key] = tsClient
-	return tsClient, nil
+	// Create new client
+	return m.createAndCacheClient(ctx, k8sClient, tailnetName, namespace, key)
 }
 
 // createClientFromTailnet creates a Tailscale client from TailscaleTailnet resource
@@ -142,6 +174,280 @@ func (m *MultiTailnetManager) createClientFromTailnet(ctx context.Context, k8sCl
 	})
 }
 
+// createAndCacheClient creates a new Tailscale client and caches it
+func (m *MultiTailnetManager) createAndCacheClient(ctx context.Context, k8sClient client.Client, tailnetName, namespace, key string) (tailscale.Client, error) {
+	// Find the TailscaleTailnet resource
+	tailnet := &gatewayv1alpha1.TailscaleTailnet{}
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: tailnetName, Namespace: namespace}, tailnet); err != nil {
+		return nil, fmt.Errorf("failed to get TailscaleTailnet %s/%s: %w", namespace, tailnetName, err)
+	}
+
+	// Create client from TailscaleTailnet credentials
+	tsClient, err := m.createClientFromTailnet(ctx, k8sClient, tailnet)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Tailscale client for %s/%s: %w", namespace, tailnetName, err)
+	}
+
+	// Calculate secret hash for refresh detection
+	secretHash, err := m.calculateSecretHash(ctx, k8sClient, tailnet)
+	if err != nil {
+		return nil, fmt.Errorf("failed to calculate secret hash: %w", err)
+	}
+
+	// Cache the client
+	entry := &clientCacheEntry{
+		client:     tsClient,
+		createdAt:  time.Now(),
+		lastUsed:   time.Now(),
+		secretHash: secretHash,
+		tailnetKey: fmt.Sprintf("%s/%s", tailnet.Namespace, tailnet.Name),
+	}
+
+	m.mu.Lock()
+	m.clients[key] = entry
+	m.mu.Unlock()
+
+	return tsClient, nil
+}
+
+// shouldRefreshClient determines if a cached client should be refreshed
+func (m *MultiTailnetManager) shouldRefreshClient(ctx context.Context, k8sClient client.Client, entry *clientCacheEntry, tailnetName, namespace string) bool {
+	// Check if client is too old (refresh after 1 hour)
+	if time.Since(entry.createdAt) > time.Hour {
+		return true
+	}
+
+	// Check if the underlying secret has changed
+	tailnet := &gatewayv1alpha1.TailscaleTailnet{}
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: tailnetName, Namespace: namespace}, tailnet); err != nil {
+		// If we can't get the tailnet, refresh the client
+		return true
+	}
+
+	currentSecretHash, err := m.calculateSecretHash(ctx, k8sClient, tailnet)
+	if err != nil {
+		// If we can't calculate hash, refresh the client
+		return true
+	}
+
+	// Refresh if secret hash changed
+	return currentSecretHash != entry.secretHash
+}
+
+// calculateSecretHash calculates a hash of the OAuth secret for change detection
+func (m *MultiTailnetManager) calculateSecretHash(ctx context.Context, k8sClient client.Client, tailnet *gatewayv1alpha1.TailscaleTailnet) (string, error) {
+	secretNamespace := tailnet.Spec.OAuthSecretNamespace
+	if secretNamespace == "" {
+		secretNamespace = tailnet.Namespace
+	}
+
+	secret := &corev1.Secret{}
+	secretKey := client.ObjectKey{
+		Name:      tailnet.Spec.OAuthSecretName,
+		Namespace: secretNamespace,
+	}
+
+	if err := k8sClient.Get(ctx, secretKey, secret); err != nil {
+		return "", fmt.Errorf("failed to get OAuth secret: %w", err)
+	}
+
+	// Create hash of the secret data
+	hasher := sha256.New()
+	hasher.Write(secret.Data["client_id"])
+	hasher.Write(secret.Data["client_secret"])
+
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+// cleanupLoop runs periodic cleanup of stale clients
+func (m *MultiTailnetManager) cleanupLoop() {
+	for {
+		select {
+		case <-m.cleanupTicker.C:
+			m.cleanupStaleClients()
+		case <-m.stopCleanup:
+			return
+		}
+	}
+}
+
+// cleanupStaleClients removes unused and old clients from the cache
+func (m *MultiTailnetManager) cleanupStaleClients() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now()
+	for key, entry := range m.clients {
+		// Remove clients that haven't been used in the last 30 minutes
+		// OR are older than 2 hours
+		if now.Sub(entry.lastUsed) > 30*time.Minute || now.Sub(entry.createdAt) > 2*time.Hour {
+			delete(m.clients, key)
+		}
+	}
+}
+
+// InvalidateClient removes a specific client from the cache (useful for error handling)
+func (m *MultiTailnetManager) InvalidateClient(tailnetName, namespace string) {
+	key := fmt.Sprintf("%s/%s", namespace, tailnetName)
+	m.mu.Lock()
+	delete(m.clients, key)
+	m.mu.Unlock()
+}
+
+// Stop gracefully shuts down the MultiTailnetManager
+func (m *MultiTailnetManager) Stop() {
+	if m.cleanupTicker != nil {
+		m.cleanupTicker.Stop()
+	}
+	close(m.stopCleanup)
+
+	m.mu.Lock()
+	m.clients = make(map[string]*clientCacheEntry)
+	m.mu.Unlock()
+}
+
+// GetCacheStats returns statistics about the client cache (useful for monitoring)
+func (m *MultiTailnetManager) GetCacheStats() map[string]interface{} {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	stats := map[string]interface{}{
+		"total_clients": len(m.clients),
+		"clients":       make([]map[string]interface{}, 0, len(m.clients)),
+	}
+
+	for key, entry := range m.clients {
+		clientStats := map[string]interface{}{
+			"key":        key,
+			"created_at": entry.createdAt,
+			"last_used":  entry.lastUsed,
+			"age":        time.Since(entry.createdAt).String(),
+			"idle_time":  time.Since(entry.lastUsed).String(),
+		}
+		stats["clients"] = append(stats["clients"].([]map[string]interface{}), clientStats)
+	}
+
+	return stats
+}
+
+// ValidateClient performs a lightweight validation of a Tailscale client
+func (m *MultiTailnetManager) ValidateClient(ctx context.Context, tsClient tailscale.Client) error {
+	// Try a simple API call to validate the client is working
+	_, err := tsClient.Devices(ctx)
+	return err
+}
+
+// GetClientWithValidation returns a validated Tailscale client, refreshing if validation fails
+func (m *MultiTailnetManager) GetClientWithValidation(ctx context.Context, k8sClient client.Client, tailnetName, namespace string) (tailscale.Client, error) {
+	tsClient, err := m.GetClient(ctx, k8sClient, tailnetName, namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate the client with a lightweight API call
+	if err := m.ValidateClient(ctx, tsClient); err != nil {
+		// Client is invalid, remove it and try again
+		m.InvalidateClient(tailnetName, namespace)
+
+		// Try once more with a fresh client
+		tsClient, err = m.GetClient(ctx, k8sClient, tailnetName, namespace)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get client after invalidation: %w", err)
+		}
+
+		// Validate the fresh client
+		if err := m.ValidateClient(ctx, tsClient); err != nil {
+			return nil, fmt.Errorf("fresh client also failed validation: %w", err)
+		}
+	}
+
+	return tsClient, nil
+}
+
+// Event notification helper functions for controller coordination
+
+// notifyGatewayController sends an event to the Gateway controller
+func (r *TailscaleEndpointsReconciler) notifyGatewayController(ctx context.Context, obj client.Object) {
+	if r.GatewayEventChan == nil {
+		return
+	}
+
+	logger := log.FromContext(ctx)
+	select {
+	case r.GatewayEventChan <- event.GenericEvent{Object: obj}:
+		logger.V(1).Info("Notified gateway controller", "object", obj.GetName(), "namespace", obj.GetNamespace())
+	case <-ctx.Done():
+		return
+	default:
+		logger.V(1).Info("Gateway event channel full, dropping notification", "object", obj.GetName())
+	}
+}
+
+// notifyHTTPRouteController sends an event to trigger HTTPRoute reconciliation
+func (r *TailscaleEndpointsReconciler) notifyHTTPRouteController(ctx context.Context, obj client.Object) {
+	if r.HTTPRouteEventChan == nil {
+		return
+	}
+
+	logger := log.FromContext(ctx)
+	select {
+	case r.HTTPRouteEventChan <- event.GenericEvent{Object: obj}:
+		logger.V(1).Info("Notified HTTPRoute controller", "object", obj.GetName(), "namespace", obj.GetNamespace())
+	case <-ctx.Done():
+		return
+	default:
+		logger.V(1).Info("HTTPRoute event channel full, dropping notification", "object", obj.GetName())
+	}
+}
+
+// notifyRouteControllers sends events to all route controllers
+func (r *TailscaleEndpointsReconciler) notifyRouteControllers(ctx context.Context, obj client.Object) {
+	// Notify all route controllers about endpoint changes
+	r.notifyHTTPRouteController(ctx, obj)
+
+	if r.TCPRouteEventChan != nil {
+		select {
+		case r.TCPRouteEventChan <- event.GenericEvent{Object: obj}:
+		case <-ctx.Done():
+			return
+		default:
+		}
+	}
+
+	if r.UDPRouteEventChan != nil {
+		select {
+		case r.UDPRouteEventChan <- event.GenericEvent{Object: obj}:
+		case <-ctx.Done():
+			return
+		default:
+		}
+	}
+
+	if r.TLSRouteEventChan != nil {
+		select {
+		case r.TLSRouteEventChan <- event.GenericEvent{Object: obj}:
+		case <-ctx.Done():
+			return
+		default:
+		}
+	}
+
+	if r.GRPCRouteEventChan != nil {
+		select {
+		case r.GRPCRouteEventChan <- event.GenericEvent{Object: obj}:
+		case <-ctx.Done():
+			return
+		default:
+		}
+	}
+}
+
+// notifyAllControllers sends events to all dependent controllers
+func (r *TailscaleEndpointsReconciler) notifyAllControllers(ctx context.Context, obj client.Object) {
+	r.notifyGatewayController(ctx, obj)
+	r.notifyRouteControllers(ctx, obj)
+}
+
 //+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscaleendpoints,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscaleendpoints/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscaleendpoints/finalizers,verbs=update
@@ -161,7 +467,7 @@ func (r *TailscaleEndpointsReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Initialize metrics if not present
 	if r.metrics == nil {
-		r.metrics = &ReconcilerMetrics{}
+		r.metrics = &metrics.ReconcilerMetrics{}
 	}
 
 	// Increment reconcile count
@@ -182,6 +488,17 @@ func (r *TailscaleEndpointsReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// Handle deletion
 	if endpoints.DeletionTimestamp != nil {
 		return r.handleDeletion(ctx, endpoints)
+	}
+
+	// Validate the TailscaleEndpoints resource
+	if err := validation.ValidateTailscaleEndpoints(endpoints); err != nil {
+		logger.Error(err, "TailscaleEndpoints validation failed")
+		r.recordError(endpoints, gatewayv1alpha1.ErrorCodeValidation, "TailscaleEndpoints validation failed", gatewayv1alpha1.ComponentController, err)
+		gatewayv1alpha1.SetCondition(&endpoints.Status.Conditions, gatewayv1alpha1.ConditionReady, metav1.ConditionFalse, gatewayv1alpha1.ReasonValidationFailed, err.Error())
+		if statusErr := r.Status().Update(ctx, endpoints); statusErr != nil {
+			logger.Error(statusErr, "Failed to update status")
+		}
+		return ctrl.Result{RequeueAfter: time.Minute}, err
 	}
 
 	// Add finalizer if not present
@@ -286,6 +603,9 @@ func (r *TailscaleEndpointsReconciler) reconcileEndpoints(ctx context.Context, e
 	}
 	gatewayv1alpha1.SetCondition(&endpoints.Status.Conditions, "StatefulSetsReady", metav1.ConditionTrue, "StatefulSetsCreated", "All StatefulSets created successfully")
 
+	// Notify controllers about StatefulSet changes (routes may need to be updated)
+	r.notifyGatewayController(ctx, endpoints)
+
 	// Perform health checks on all endpoints
 	if err := r.performHealthChecks(ctx, endpoints); err != nil {
 		logger.Error(err, "Failed to perform health checks")
@@ -329,6 +649,10 @@ func (r *TailscaleEndpointsReconciler) performServiceDiscovery(ctx context.Conte
 	// Discover services from Tailscale API
 	discoveredEndpoints, err := r.discoverEndpointsFromTailscale(ctx, tsClient, endpoints)
 	if err != nil {
+		// If the error appears to be authentication related, invalidate the client
+		if strings.Contains(err.Error(), "403") || strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "oauth") {
+			r.TailscaleClientManager.InvalidateClient(endpoints.Spec.Tailnet, endpoints.Namespace)
+		}
 		r.recordError(endpoints, gatewayv1alpha1.ErrorCodeServiceDiscovery, "Failed to discover endpoints", gatewayv1alpha1.ComponentServiceDiscovery, err)
 
 		// Update API status with error
@@ -338,6 +662,9 @@ func (r *TailscaleEndpointsReconciler) performServiceDiscovery(ctx context.Conte
 
 	// Update API status with success
 	r.updateAPIStatus(endpoints, true, nil)
+
+	// Notify other controllers about endpoint changes
+	r.notifyAllControllers(ctx, endpoints)
 
 	// Merge discovered endpoints with manually configured ones
 	allEndpoints := r.mergeEndpoints(endpoints.Spec.Endpoints, discoveredEndpoints)
@@ -386,16 +713,6 @@ func (r *TailscaleEndpointsReconciler) discoverEndpointsFromTailscale(ctx contex
 		discoveredEndpoints = append(discoveredEndpoints, serviceBasedEndpoints...)
 	}
 
-	// Fall back to legacy pattern-based discovery if no new discovery methods are configured
-	if endpoints.Spec.AutoDiscovery != nil && len(endpoints.Spec.AutoDiscovery.TagSelectors) == 0 &&
-		(endpoints.Spec.AutoDiscovery.ServiceDiscovery == nil || !endpoints.Spec.AutoDiscovery.ServiceDiscovery.Enabled) {
-		patternBasedEndpoints, err := r.discoverEndpointsByPatterns(ctx, tsClient, endpoints)
-		if err != nil {
-			return nil, fmt.Errorf("failed to discover endpoints by patterns: %w", err)
-		}
-		discoveredEndpoints = append(discoveredEndpoints, patternBasedEndpoints...)
-	}
-
 	logger.Info("Discovered endpoints", "count", len(discoveredEndpoints), "tailnet", endpoints.Spec.Tailnet)
 	return discoveredEndpoints, nil
 }
@@ -437,85 +754,220 @@ func (r *TailscaleEndpointsReconciler) discoverEndpointsByTags(ctx context.Conte
 
 // discoverEndpointsByServices discovers VIP services using VIPServiceDiscoveryConfig
 func (r *TailscaleEndpointsReconciler) discoverEndpointsByServices(ctx context.Context, tsClient tailscale.Client, endpoints *gatewayv1alpha1.TailscaleEndpoints) ([]gatewayv1alpha1.TailscaleEndpoint, error) {
+	// Validate inputs
+	if endpoints == nil {
+		return nil, fmt.Errorf("endpoints parameter cannot be nil")
+	}
+	if endpoints.Spec.AutoDiscovery == nil || endpoints.Spec.AutoDiscovery.ServiceDiscovery == nil {
+		return nil, fmt.Errorf("service discovery configuration is missing")
+	}
+	if tsClient == nil {
+		return nil, fmt.Errorf("Tailscale client cannot be nil")
+	}
+
 	logger := log.FromContext(ctx)
 	var discoveredEndpoints []gatewayv1alpha1.TailscaleEndpoint
 
-	// TODO: Get VIP services from Tailscale API
-	// Currently Tailscale VIP services don't have a dedicated API endpoint
-	// We'll implement service discovery based on naming conventions
-
 	serviceConfig := endpoints.Spec.AutoDiscovery.ServiceDiscovery
 
-	// If specific service names are configured, look for those
+	// Get VIP services from Tailscale API
+	vipServices, err := tsClient.GetVIPServices(ctx)
+	if err != nil {
+		logger.Error(err, "Failed to get VIP services from Tailscale API")
+		return nil, fmt.Errorf("failed to get VIP services: %w", err)
+	}
+
+	// Filter services by specific service names if configured
 	if len(serviceConfig.ServiceNames) > 0 {
 		for _, serviceName := range serviceConfig.ServiceNames {
-			// Remove "svc:" prefix if present
-			cleanName := strings.TrimPrefix(serviceName, "svc:")
-
-			// Try to resolve the service FQDN
-			serviceFQDN := fmt.Sprintf("%s.%s", cleanName, endpoints.Spec.Tailnet)
-
-			// Create endpoint for VIP service
-			endpoint := &gatewayv1alpha1.TailscaleEndpoint{
-				Name:          cleanName,
-				TailscaleIP:   "", // Will be resolved dynamically
-				TailscaleFQDN: serviceFQDN,
-				Port:          80, // Default, could be configurable
-				Protocol:      "HTTP",
-				Tags:          []string{"svc:" + cleanName},
-				HealthCheck: &gatewayv1alpha1.EndpointHealthCheck{
-					Enabled: true,
-				},
-				Weight: &[]int32{1}[0],
+			// Validate service name
+			if serviceName == "" {
+				logger.V(1).Info("Skipping empty service name")
+				continue
 			}
 
+			// Ensure service name has "svc:" prefix for matching
+			svcName := serviceName
+			if !strings.HasPrefix(svcName, "svc:") {
+				svcName = "svc:" + serviceName
+			}
+
+			// Validate the constructed service name
+			serviceName := tailscale.ServiceName(svcName)
+			if err := serviceName.Validate(); err != nil {
+				logger.Error(err, "Invalid service name constructed", "original", serviceName, "constructed", svcName)
+				continue
+			}
+
+			// Find matching VIP service
+			for _, vipService := range vipServices {
+				if string(vipService.Name) == svcName {
+					endpoint := r.convertVIPServiceToEndpoint(vipService, endpoints.Spec.Tailnet)
+					if endpoint != nil {
+						discoveredEndpoints = append(discoveredEndpoints, *endpoint)
+					}
+					break
+				}
+			}
+		}
+	} else {
+		// If no specific service names, convert all VIP services
+		for _, vipService := range vipServices {
+			endpoint := r.convertVIPServiceToEndpoint(vipService, endpoints.Spec.Tailnet)
 			discoveredEndpoints = append(discoveredEndpoints, *endpoint)
 		}
 	}
 
-	// TODO: Implement service discovery by tags
-	// This would query the Tailscale API for services with specific tags
+	// Handle tag-based service discovery
 	if len(serviceConfig.ServiceTags) > 0 {
-		logger.Info("Service tag-based discovery not yet implemented", "tags", serviceConfig.ServiceTags)
+		taggedServices, err := tsClient.GetVIPServicesByTags(ctx, serviceConfig.ServiceTags)
+		if err != nil {
+			logger.Error(err, "Failed to get VIP services by tags")
+			return nil, fmt.Errorf("failed to get VIP services by tags: %w", err)
+		}
+
+		// Convert tagged services to endpoints, avoiding duplicates
+		existingNames := make(map[string]bool)
+		for _, endpoint := range discoveredEndpoints {
+			existingNames[endpoint.Name] = true
+		}
+
+		for _, vipService := range taggedServices {
+			endpoint := r.convertVIPServiceToEndpoint(vipService, endpoints.Spec.Tailnet)
+			if !existingNames[endpoint.Name] {
+				discoveredEndpoints = append(discoveredEndpoints, *endpoint)
+				existingNames[endpoint.Name] = true
+			}
+		}
 	}
 
 	logger.Info("Discovered VIP services", "count", len(discoveredEndpoints), "tailnet", endpoints.Spec.Tailnet)
 	return discoveredEndpoints, nil
 }
 
-// discoverEndpointsByPatterns discovers endpoints using legacy pattern-based approach
-func (r *TailscaleEndpointsReconciler) discoverEndpointsByPatterns(ctx context.Context, tsClient tailscale.Client, endpoints *gatewayv1alpha1.TailscaleEndpoints) ([]gatewayv1alpha1.TailscaleEndpoint, error) {
-	logger := log.FromContext(ctx)
-	var discoveredEndpoints []gatewayv1alpha1.TailscaleEndpoint
-
-	// Get all devices from the Tailscale API
-	devices, err := tsClient.Devices(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list devices: %w", err)
+// convertVIPServiceToEndpoint converts a Tailscale VIP service to a TailscaleEndpoint
+func (r *TailscaleEndpointsReconciler) convertVIPServiceToEndpoint(vipService *tailscale.VIPService, tailnetName string) *gatewayv1alpha1.TailscaleEndpoint {
+	// Validate inputs
+	if vipService == nil {
+		return nil
+	}
+	if tailnetName == "" {
+		return nil
 	}
 
-	logger.Info("Retrieved devices for pattern-based discovery", "count", len(devices), "tailnet", endpoints.Spec.Tailnet)
+	// Validate the VIP service name
+	if err := vipService.Name.Validate(); err != nil {
+		return nil
+	}
 
-	for _, device := range devices {
-		// Skip if device is not authorized
-		if !device.Authorized {
-			continue
-		}
+	// Extract service name without "svc:" prefix
+	serviceName := strings.TrimPrefix(string(vipService.Name), "svc:")
 
-		// Apply tag selector filtering if configured
-		if !r.deviceMatchesPatterns(&device, endpoints.Spec.AutoDiscovery) {
-			continue
-		}
+	// Validate the extracted service name is not empty
+	if serviceName == "" {
+		return nil
+	}
 
-		// Extract service information from device
-		endpoint := r.deviceToEndpoint(&device, endpoints.Spec.Tailnet)
-		if endpoint != nil {
-			discoveredEndpoints = append(discoveredEndpoints, *endpoint)
+	// Use first address if available
+	var tailscaleIP, tailscaleFQDN string
+	if len(vipService.Addrs) > 0 {
+		tailscaleIP = vipService.Addrs[0]
+		// FQDN is the service name in the tailnet domain
+		tailscaleFQDN = fmt.Sprintf("%s.%s", serviceName, tailnetName)
+	}
+
+	// Extract port from service configuration
+	port := r.extractPortFromVIPService(vipService)
+	protocol := r.extractProtocolFromVIPService(vipService)
+
+	return &gatewayv1alpha1.TailscaleEndpoint{
+		Name:          serviceName,
+		TailscaleIP:   tailscaleIP,
+		TailscaleFQDN: tailscaleFQDN,
+		Port:          port,
+		Protocol:      protocol,
+		Tags:          vipService.Tags,
+		HealthCheck: &gatewayv1alpha1.EndpointHealthCheck{
+			Enabled: true,
+		},
+		Weight: &[]int32{1}[0],
+	}
+}
+
+// extractPortFromVIPService extracts the port number from VIP service configuration
+func (r *TailscaleEndpointsReconciler) extractPortFromVIPService(vipService *tailscale.VIPService) int32 {
+	// Default port
+	defaultPort := int32(80)
+
+	if len(vipService.Ports) == 0 {
+		return defaultPort
+	}
+
+	// Parse the first port specification
+	portSpec := vipService.Ports[0]
+
+	// Handle different port formats: "80", "80/tcp", "80:8080/tcp"
+	parts := strings.Split(portSpec, "/")
+	portPart := parts[0]
+
+	// Handle port mapping format "external:internal"
+	if strings.Contains(portPart, ":") {
+		portParts := strings.Split(portPart, ":")
+		if len(portParts) >= 2 {
+			portPart = portParts[1] // Use internal port
 		}
 	}
 
-	logger.Info("Discovered endpoints by patterns", "count", len(discoveredEndpoints), "tailnet", endpoints.Spec.Tailnet)
-	return discoveredEndpoints, nil
+	if port, err := strconv.ParseInt(portPart, 10, 32); err == nil {
+		return int32(port)
+	}
+
+	return defaultPort
+}
+
+// extractProtocolFromVIPService extracts the protocol from VIP service configuration
+func (r *TailscaleEndpointsReconciler) extractProtocolFromVIPService(vipService *tailscale.VIPService) string {
+	// Default protocol
+	defaultProtocol := "HTTP"
+
+	if len(vipService.Ports) == 0 {
+		return defaultProtocol
+	}
+
+	// Parse the first port specification
+	portSpec := vipService.Ports[0]
+
+	// Handle format like "80/tcp" or "443/https"
+	if strings.Contains(portSpec, "/") {
+		parts := strings.Split(portSpec, "/")
+		if len(parts) >= 2 {
+			protocol := strings.ToUpper(parts[1])
+			switch protocol {
+			case "TCP":
+				return "TCP"
+			case "UDP":
+				return "UDP"
+			case "HTTPS", "TLS":
+				return "HTTPS"
+			case "HTTP":
+				return "HTTP"
+			default:
+				// For numeric ports, determine protocol based on common conventions
+				if port, err := strconv.ParseInt(strings.Split(parts[0], ":")[0], 10, 32); err == nil {
+					switch port {
+					case 443, 8443:
+						return "HTTPS"
+					case 80, 8080, 8081, 3000, 8000:
+						return "HTTP"
+					default:
+						return "TCP"
+					}
+				}
+			}
+		}
+	}
+
+	return defaultProtocol
 }
 
 // deviceMatchesTagSelectors checks if a device matches TagSelector rules
@@ -577,18 +1029,6 @@ func (r *TailscaleEndpointsReconciler) deviceMatchesTagSelector(device *tailscal
 		}
 		return false
 	}
-}
-
-// deviceMatchesPatterns checks if a device matches the discovery patterns
-func (r *TailscaleEndpointsReconciler) deviceMatchesPatterns(device *tailscaleclient.Device, config *gatewayv1alpha1.EndpointAutoDiscovery) bool {
-	// Check tag selectors for advanced tag-based filtering
-	if len(config.TagSelectors) > 0 {
-		if !r.deviceMatchesTagSelectors(device, config.TagSelectors) {
-			return false
-		}
-	}
-
-	return true
 }
 
 // deviceToEndpoint converts a Tailscale device to a TailscaleEndpoint
@@ -870,15 +1310,7 @@ func (r *TailscaleEndpointsReconciler) performDetailedHealthCheck(ctx context.Co
 	case "TCP":
 		return r.performDetailedTCPHealthCheck(ctx, endpoint, checkStart)
 	case "UDP":
-		// UDP health checks are more complex and would require application-specific logic
-		logger.Info("UDP health checks not implemented, assuming healthy", "endpoint", endpoint.Name)
-		response := &gatewayv1alpha1.HealthCheckResponse{
-			Success:      true,
-			ResponseTime: metav1.Duration{Duration: time.Since(checkStart)},
-			Timestamp:    metav1.Time{Time: checkStart},
-			ErrorMessage: "UDP health checks not implemented",
-		}
-		return true, response
+		return r.performDetailedUDPHealthCheck(ctx, endpoint, checkStart)
 	default:
 		logger.Info("Unknown protocol for health check, assuming healthy", "endpoint", endpoint.Name, "protocol", endpoint.Protocol)
 		response := &gatewayv1alpha1.HealthCheckResponse{
@@ -891,48 +1323,148 @@ func (r *TailscaleEndpointsReconciler) performDetailedHealthCheck(ctx context.Co
 	}
 }
 
-// performHealthCheck performs a health check on a single endpoint (legacy method)
-func (r *TailscaleEndpointsReconciler) performHealthCheck(ctx context.Context, endpoint *gatewayv1alpha1.TailscaleEndpoint) bool {
-	healthy, _ := r.performDetailedHealthCheck(ctx, endpoint)
-	return healthy
-}
-
 // performDetailedHTTPHealthCheck performs HTTP/HTTPS health check with detailed response
 func (r *TailscaleEndpointsReconciler) performDetailedHTTPHealthCheck(ctx context.Context, endpoint *gatewayv1alpha1.TailscaleEndpoint, checkStart time.Time) (bool, *gatewayv1alpha1.HealthCheckResponse) {
-	// TODO: Implement actual HTTP health check
-	// This would:
-	// 1. Create HTTP client with timeout
-	// 2. Make request to health check path
-	// 3. Check response status code
-	// 4. Handle retries and circuit breaking
-
-	// For now, simulate a successful health check
-	responseTime := time.Since(checkStart)
-	statusCode := int32(200)
-
-	response := &gatewayv1alpha1.HealthCheckResponse{
-		Success:      true,
-		ResponseTime: metav1.Duration{Duration: responseTime},
-		Timestamp:    metav1.Time{Time: checkStart},
-		StatusCode:   &statusCode,
-		ResponseHeaders: map[string]string{
-			"content-type": "application/json",
-		},
+	// Validate inputs
+	if endpoint == nil {
+		return false, &gatewayv1alpha1.HealthCheckResponse{
+			Success:      false,
+			ResponseTime: metav1.Duration{Duration: time.Since(checkStart)},
+			Timestamp:    metav1.Time{Time: checkStart},
+			ErrorMessage: "endpoint parameter cannot be nil",
+		}
 	}
 
-	return true, response
+	// Validate endpoint has required fields
+	if endpoint.TailscaleIP == "" && endpoint.TailscaleFQDN == "" {
+		return false, &gatewayv1alpha1.HealthCheckResponse{
+			Success:      false,
+			ResponseTime: metav1.Duration{Duration: time.Since(checkStart)},
+			Timestamp:    metav1.Time{Time: checkStart},
+			ErrorMessage: "endpoint must have either TailscaleIP or TailscaleFQDN",
+		}
+	}
+
+	// Determine the URL for health check
+	healthCheckURL := r.buildHealthCheckURL(endpoint)
+
+	// Create HTTP client with timeout based on health check configuration
+	timeout := 10 * time.Second // default timeout
+	if endpoint.HealthCheck != nil && endpoint.HealthCheck.Timeout != nil {
+		timeout = endpoint.HealthCheck.Timeout.Duration
+	}
+
+	// Create context with timeout
+	healthCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Create HTTP request
+	req, err := http.NewRequestWithContext(healthCtx, "GET", healthCheckURL, nil)
+	if err != nil {
+		response := &gatewayv1alpha1.HealthCheckResponse{
+			Success:      false,
+			ResponseTime: metav1.Duration{Duration: time.Since(checkStart)},
+			Timestamp:    metav1.Time{Time: checkStart},
+			ErrorMessage: fmt.Sprintf("failed to create request: %v", err),
+		}
+		return false, response
+	}
+
+	// Use a fresh transport for each health check (following Tailscale prober pattern)
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	defer tr.CloseIdleConnections()
+	client := &http.Client{
+		Transport: tr,
+		Timeout:   timeout,
+	}
+
+	// Perform the health check
+	resp, err := client.Do(req)
+	if err != nil {
+		response := &gatewayv1alpha1.HealthCheckResponse{
+			Success:      false,
+			ResponseTime: metav1.Duration{Duration: time.Since(checkStart)},
+			Timestamp:    metav1.Time{Time: checkStart},
+			ErrorMessage: fmt.Sprintf("request failed: %v", err),
+		}
+		return false, response
+	}
+	defer resp.Body.Close()
+
+	responseTime := time.Since(checkStart)
+	statusCode := int32(resp.StatusCode)
+
+	// Extract response headers
+	responseHeaders := make(map[string]string)
+	for key, values := range resp.Header {
+		if len(values) > 0 {
+			responseHeaders[strings.ToLower(key)] = values[0]
+		}
+	}
+
+	// Check if response is successful
+	success := resp.StatusCode >= 200 && resp.StatusCode < 300
+
+	// Read response body for basic validation
+	var responseBody string
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20)) // 4MB limit
+	if err != nil {
+		success = false
+		responseBody = fmt.Sprintf("failed to read body: %v", err)
+	} else {
+		responseBody = string(body)
+	}
+
+	response := &gatewayv1alpha1.HealthCheckResponse{
+		Success:         success,
+		ResponseTime:    metav1.Duration{Duration: responseTime},
+		Timestamp:       metav1.Time{Time: checkStart},
+		StatusCode:      &statusCode,
+		ResponseHeaders: responseHeaders,
+	}
+
+	if !success {
+		if responseBody != "" {
+			response.ErrorMessage = fmt.Sprintf("health check failed: status %d, body: %s", resp.StatusCode, responseBody)
+		} else {
+			response.ErrorMessage = fmt.Sprintf("health check failed: status %d", resp.StatusCode)
+		}
+	}
+
+	return success, response
 }
 
 // performDetailedTCPHealthCheck performs TCP connection health check with detailed response
 func (r *TailscaleEndpointsReconciler) performDetailedTCPHealthCheck(ctx context.Context, endpoint *gatewayv1alpha1.TailscaleEndpoint, checkStart time.Time) (bool, *gatewayv1alpha1.HealthCheckResponse) {
-	// TODO: Implement actual TCP health check
-	// This would:
-	// 1. Attempt to establish TCP connection to endpoint IP:port
-	// 2. Close connection immediately if successful
-	// 3. Handle timeouts and connection errors
+	// Determine the address for TCP health check
+	addr := r.buildTCPHealthCheckAddress(endpoint)
 
-	// For now, simulate a successful health check
+	// Create timeout context
+	timeout := 10 * time.Second // default timeout
+	if endpoint.HealthCheck != nil && endpoint.HealthCheck.Timeout != nil {
+		timeout = endpoint.HealthCheck.Timeout.Duration
+	}
+
+	healthCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Perform TCP connection test following Tailscale prober pattern
+	var d net.Dialer
+	conn, err := d.DialContext(healthCtx, "tcp", addr)
 	responseTime := time.Since(checkStart)
+
+	if err != nil {
+		response := &gatewayv1alpha1.HealthCheckResponse{
+			Success:      false,
+			ResponseTime: metav1.Duration{Duration: responseTime},
+			Timestamp:    metav1.Time{Time: checkStart},
+			ErrorMessage: fmt.Sprintf("TCP connection failed to %s: %v", addr, err),
+		}
+		return false, response
+	}
+
+	// Close connection immediately (we only test connectivity)
+	conn.Close()
 
 	response := &gatewayv1alpha1.HealthCheckResponse{
 		Success:      true,
@@ -943,16 +1475,123 @@ func (r *TailscaleEndpointsReconciler) performDetailedTCPHealthCheck(ctx context
 	return true, response
 }
 
-// performHTTPHealthCheck performs HTTP/HTTPS health check (legacy method)
-func (r *TailscaleEndpointsReconciler) performHTTPHealthCheck(ctx context.Context, endpoint *gatewayv1alpha1.TailscaleEndpoint) bool {
-	healthy, _ := r.performDetailedHTTPHealthCheck(ctx, endpoint, time.Now())
-	return healthy
+// performDetailedUDPHealthCheck performs UDP health check with detailed response
+func (r *TailscaleEndpointsReconciler) performDetailedUDPHealthCheck(ctx context.Context, endpoint *gatewayv1alpha1.TailscaleEndpoint, checkStart time.Time) (bool, *gatewayv1alpha1.HealthCheckResponse) {
+	// Determine the address for UDP health check
+	addr := r.buildTCPHealthCheckAddress(endpoint) // Same format as TCP
+
+	// Create timeout context
+	timeout := 10 * time.Second // default timeout
+	if endpoint.HealthCheck != nil && endpoint.HealthCheck.Timeout != nil {
+		timeout = endpoint.HealthCheck.Timeout.Duration
+	}
+
+	healthCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Perform UDP connection test - basic UDP socket creation and write
+	conn, err := net.Dial("udp", addr)
+	if err != nil {
+		response := &gatewayv1alpha1.HealthCheckResponse{
+			Success:      false,
+			ResponseTime: metav1.Duration{Duration: time.Since(checkStart)},
+			Timestamp:    metav1.Time{Time: checkStart},
+			ErrorMessage: fmt.Sprintf("UDP connection failed to %s: %v", addr, err),
+		}
+		return false, response
+	}
+	defer conn.Close()
+
+	// Set deadline for the connection
+	deadline, _ := healthCtx.Deadline()
+	conn.SetDeadline(deadline)
+
+	// Send a simple UDP packet to test connectivity
+	// Note: This is a basic connectivity test - real UDP health checks would be application-specific
+	testData := []byte("health-check")
+	_, err = conn.Write(testData)
+	responseTime := time.Since(checkStart)
+
+	if err != nil {
+		response := &gatewayv1alpha1.HealthCheckResponse{
+			Success:      false,
+			ResponseTime: metav1.Duration{Duration: responseTime},
+			Timestamp:    metav1.Time{Time: checkStart},
+			ErrorMessage: fmt.Sprintf("UDP write failed to %s: %v", addr, err),
+		}
+		return false, response
+	}
+
+	// UDP is connectionless, so if we can send data without error, consider it healthy
+	// Note: Real UDP services might require reading a response or application-specific logic
+	response := &gatewayv1alpha1.HealthCheckResponse{
+		Success:      true,
+		ResponseTime: metav1.Duration{Duration: responseTime},
+		Timestamp:    metav1.Time{Time: checkStart},
+	}
+
+	return true, response
 }
 
-// performTCPHealthCheck performs TCP connection health check (legacy method)
-func (r *TailscaleEndpointsReconciler) performTCPHealthCheck(ctx context.Context, endpoint *gatewayv1alpha1.TailscaleEndpoint) bool {
-	healthy, _ := r.performDetailedTCPHealthCheck(ctx, endpoint, time.Now())
-	return healthy
+// buildHealthCheckURL constructs the full URL for HTTP health checks
+func (r *TailscaleEndpointsReconciler) buildHealthCheckURL(endpoint *gatewayv1alpha1.TailscaleEndpoint) string {
+	// Validate endpoint
+	if endpoint == nil {
+		return "http://invalid:80/"
+	}
+
+	// Use TailscaleIP if available, otherwise fall back to FQDN
+	host := endpoint.TailscaleIP
+	if host == "" {
+		host = endpoint.TailscaleFQDN
+	}
+
+	// Validate we have a host
+	if host == "" {
+		return "http://invalid:80/"
+	}
+
+	// Default to HTTP unless explicitly HTTPS
+	scheme := "http"
+	if endpoint.Protocol == "HTTPS" || endpoint.Port == 443 {
+		scheme = "https"
+	}
+
+	// Default path
+	path := "/"
+
+	// Use custom health check configuration if available
+	if endpoint.HealthCheck != nil && endpoint.HealthCheck.Path != "" {
+		path = endpoint.HealthCheck.Path
+	}
+
+	// Construct URL
+	url := fmt.Sprintf("%s://%s:%d%s", scheme, host, endpoint.Port, path)
+	return url
+}
+
+// buildTCPHealthCheckAddress constructs the address for TCP health checks
+func (r *TailscaleEndpointsReconciler) buildTCPHealthCheckAddress(endpoint *gatewayv1alpha1.TailscaleEndpoint) string {
+	// Validate endpoint
+	if endpoint == nil {
+		return "invalid:80"
+	}
+
+	// Use TailscaleIP if available, otherwise fall back to FQDN
+	host := endpoint.TailscaleIP
+	if host == "" {
+		host = endpoint.TailscaleFQDN
+	}
+
+	// Validate we have a host
+	if host == "" {
+		return "invalid:80"
+	}
+
+	// Use the endpoint port for TCP health checks
+	port := endpoint.Port
+
+	return fmt.Sprintf("%s:%d", host, port)
 }
 
 // reconcileStatefulSets creates and manages StatefulSets for each endpoint
@@ -1229,12 +1868,37 @@ func (r *TailscaleEndpointsReconciler) createEndpointStatefulSet(ctx context.Con
 	// Use official Tailscale image (would need to be configurable in production)
 	image := "tailscale/tailscale:v1.78.3"
 
-	// Build environment variables following containerboot patterns
+	// Build environment variables following EXACT ProxyGroup patterns from k8s-operator
 	envVars := []corev1.EnvVar{
-		// Kubernetes state management
+		// CRITICAL: ProxyGroup state management pattern
 		{
 			Name:  "TS_KUBE_SECRET",
-			Value: stateSecretName,
+			Value: stateSecretName, // Points to state secret
+		},
+		{
+			Name:  "TS_STATE",
+			Value: "kube:" + stateSecretName, // Tells tailscaled to use k8s secret for state
+		},
+		{
+			Name:  "TS_EXPERIMENTAL_VERSIONED_CONFIG_DIR",
+			Value: fmt.Sprintf("/etc/tsconfig/%s", endpoints.Spec.Tailnet), // Config mount path
+		},
+		// Standard Pod metadata (required for state management)
+		{
+			Name: "POD_NAME",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: "metadata.name",
+				},
+			},
+		},
+		{
+			Name: "POD_UID",
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					FieldPath: "metadata.uid",
+				},
+			},
 		},
 		// Auth key from config secret
 		{
@@ -1253,7 +1917,7 @@ func (r *TailscaleEndpointsReconciler) createEndpointStatefulSet(ctx context.Con
 			Name:  "TS_HOSTNAME",
 			Value: name,
 		},
-		// Userspace mode for Kubernetes
+		// Userspace mode for Kubernetes (following ProxyGroup pattern)
 		{
 			Name:  "TS_USERSPACE",
 			Value: "true",
@@ -1267,15 +1931,6 @@ func (r *TailscaleEndpointsReconciler) createEndpointStatefulSet(ctx context.Con
 		{
 			Name:  "TS_ACCEPT_DNS",
 			Value: "false",
-		},
-		// Pod UID for state management
-		{
-			Name: "POD_UID",
-			ValueFrom: &corev1.EnvVarSource{
-				FieldRef: &corev1.ObjectFieldSelector{
-					FieldPath: "metadata.uid",
-				},
-			},
 		},
 	}
 
@@ -1341,10 +1996,10 @@ func (r *TailscaleEndpointsReconciler) createEndpointStatefulSet(ctx context.Con
 									Add: []corev1.Capability{"NET_ADMIN"},
 								},
 							},
-							VolumeMounts: r.getVolumeMounts(connectionType, endpoint),
+							VolumeMounts: r.getVolumeMounts(connectionType, endpoint, endpoints),
 						},
 					},
-					Volumes: r.getVolumes(connectionType, endpoint, name),
+					Volumes: r.getVolumes(connectionType, endpoint, name, endpoints),
 				},
 			},
 		},
@@ -1360,8 +2015,8 @@ func (r *TailscaleEndpointsReconciler) createEndpointStatefulSet(ctx context.Con
 	return r.createOrUpdate(ctx, ss, func() {
 		// Update the environment variables and spec
 		ss.Spec.Template.Spec.Containers[0].Env = envVars
-		ss.Spec.Template.Spec.Containers[0].VolumeMounts = r.getVolumeMounts(connectionType, endpoint)
-		ss.Spec.Template.Spec.Volumes = r.getVolumes(connectionType, endpoint, name)
+		ss.Spec.Template.Spec.Containers[0].VolumeMounts = r.getVolumeMounts(connectionType, endpoint, endpoints)
+		ss.Spec.Template.Spec.Volumes = r.getVolumes(connectionType, endpoint, name, endpoints)
 	})
 }
 
@@ -1379,8 +2034,16 @@ func (r *TailscaleEndpointsReconciler) shouldPublishVIPService(endpoint *gateway
 }
 
 // getVolumeMounts returns volume mounts for the StatefulSet container
-func (r *TailscaleEndpointsReconciler) getVolumeMounts(connectionType string, endpoint *gatewayv1alpha1.TailscaleEndpoint) []corev1.VolumeMount {
+// Following EXACT ProxyGroup patterns from Tailscale k8s-operator
+func (r *TailscaleEndpointsReconciler) getVolumeMounts(connectionType string, endpoint *gatewayv1alpha1.TailscaleEndpoint, endpoints *gatewayv1alpha1.TailscaleEndpoints) []corev1.VolumeMount {
 	var mounts []corev1.VolumeMount
+
+	// CRITICAL: ProxyGroup config mount pattern - mount config secret to tailnet-specific path
+	mounts = append(mounts, corev1.VolumeMount{
+		Name:      fmt.Sprintf("tailscaledconfig-%s", r.sanitizeTailnetName(endpoints.Spec.Tailnet)),
+		MountPath: fmt.Sprintf("/etc/tsconfig/%s", endpoints.Spec.Tailnet),
+		ReadOnly:  true,
+	})
 
 	// Add serve config mount for VIP services
 	if connectionType == "ingress" && r.shouldPublishVIPService(endpoint) {
@@ -1395,8 +2058,19 @@ func (r *TailscaleEndpointsReconciler) getVolumeMounts(connectionType string, en
 }
 
 // getVolumes returns volumes for the StatefulSet Pod
-func (r *TailscaleEndpointsReconciler) getVolumes(connectionType string, endpoint *gatewayv1alpha1.TailscaleEndpoint, name string) []corev1.Volume {
+// Following EXACT ProxyGroup patterns from Tailscale k8s-operator
+func (r *TailscaleEndpointsReconciler) getVolumes(connectionType string, endpoint *gatewayv1alpha1.TailscaleEndpoint, name string, endpoints *gatewayv1alpha1.TailscaleEndpoints) []corev1.Volume {
 	var volumes []corev1.Volume
+
+	// CRITICAL: ProxyGroup config volume pattern - secret mount for tailnet config
+	volumes = append(volumes, corev1.Volume{
+		Name: fmt.Sprintf("tailscaledconfig-%s", r.sanitizeTailnetName(endpoints.Spec.Tailnet)),
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: name + "-config",
+			},
+		},
+	})
 
 	// Add serve config volume for VIP services
 	if connectionType == "ingress" && r.shouldPublishVIPService(endpoint) {
@@ -1413,6 +2087,16 @@ func (r *TailscaleEndpointsReconciler) getVolumes(connectionType string, endpoin
 	}
 
 	return volumes
+}
+
+// sanitizeTailnetName sanitizes tailnet names for use in Kubernetes resource names
+// Following ProxyGroup patterns for consistent naming
+func (r *TailscaleEndpointsReconciler) sanitizeTailnetName(tailnet string) string {
+	// Replace invalid characters with hyphens for Kubernetes naming
+	sanitized := strings.ReplaceAll(tailnet, ".", "-")
+	sanitized = strings.ReplaceAll(sanitized, "_", "-")
+	sanitized = strings.ReplaceAll(sanitized, "@", "-")
+	return strings.ToLower(sanitized)
 }
 
 // createServeConfigMap creates a ConfigMap with Tailscale serve configuration for VIP service publishing

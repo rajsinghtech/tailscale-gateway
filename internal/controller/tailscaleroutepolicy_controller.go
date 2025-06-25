@@ -112,6 +112,9 @@ func (r *TailscaleRoutePolicyReconciler) Reconcile(ctx context.Context, req ctrl
 	} else {
 		r.updateCondition(policy, gatewayv1alpha1.ConditionReady, metav1.ConditionTrue, gatewayv1alpha1.ReasonReady, "Policy applied successfully")
 		r.Recorder.Event(policy, "Normal", ReasonPolicyApplied, "Route policy applied successfully")
+
+		// Notify controllers about policy changes
+		r.notifyAllControllers(ctx, policy)
 	}
 
 	if statusErr := r.Status().Update(ctx, policy); statusErr != nil {
@@ -415,27 +418,104 @@ func (r *TailscaleRoutePolicyReconciler) updateCondition(policy *gatewayv1alpha1
 	gatewayv1alpha1.SetCondition(&policy.Status.Conditions, conditionType, status, reason, message)
 }
 
+// Event notification helper functions for controller coordination
+
+// notifyGatewayController sends an event to the Gateway controller when policies change
+func (r *TailscaleRoutePolicyReconciler) notifyGatewayController(ctx context.Context, obj client.Object) {
+	if r.GatewayEventChan == nil {
+		return
+	}
+
+	logger := log.FromContext(ctx)
+	select {
+	case r.GatewayEventChan <- event.GenericEvent{Object: obj}:
+		logger.V(1).Info("Notified gateway controller", "object", obj.GetName(), "namespace", obj.GetNamespace())
+	case <-ctx.Done():
+		return
+	default:
+		logger.V(1).Info("Gateway event channel full, dropping notification", "object", obj.GetName())
+	}
+}
+
+// notifyRouteControllers sends events to all route controllers when policies are applied
+func (r *TailscaleRoutePolicyReconciler) notifyRouteControllers(ctx context.Context, obj client.Object) {
+	logger := log.FromContext(ctx)
+
+	if r.HTTPRouteEventChan != nil {
+		select {
+		case r.HTTPRouteEventChan <- event.GenericEvent{Object: obj}:
+			logger.V(1).Info("Notified HTTPRoute controller", "object", obj.GetName(), "namespace", obj.GetNamespace())
+		case <-ctx.Done():
+			return
+		default:
+			logger.V(1).Info("HTTPRoute event channel full, dropping notification", "object", obj.GetName())
+		}
+	}
+
+	if r.TCPRouteEventChan != nil {
+		select {
+		case r.TCPRouteEventChan <- event.GenericEvent{Object: obj}:
+		case <-ctx.Done():
+			return
+		default:
+		}
+	}
+
+	if r.UDPRouteEventChan != nil {
+		select {
+		case r.UDPRouteEventChan <- event.GenericEvent{Object: obj}:
+		case <-ctx.Done():
+			return
+		default:
+		}
+	}
+
+	if r.TLSRouteEventChan != nil {
+		select {
+		case r.TLSRouteEventChan <- event.GenericEvent{Object: obj}:
+		case <-ctx.Done():
+			return
+		default:
+		}
+	}
+
+	if r.GRPCRouteEventChan != nil {
+		select {
+		case r.GRPCRouteEventChan <- event.GenericEvent{Object: obj}:
+		case <-ctx.Done():
+			return
+		default:
+		}
+	}
+}
+
+// notifyAllControllers sends events to all dependent controllers
+func (r *TailscaleRoutePolicyReconciler) notifyAllControllers(ctx context.Context, obj client.Object) {
+	r.notifyGatewayController(ctx, obj)
+	r.notifyRouteControllers(ctx, obj)
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *TailscaleRoutePolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&gatewayv1alpha1.TailscaleRoutePolicy{}).
 		Watches(
 			&gwapiv1.Gateway{},
-			handler.EnqueueRequestsFromMapFunc(r.mapGatewayToRoutePolicies),
+			handler.EnqueueRequestsFromMapFunc(r.MapGatewayToRoutePolicies),
 		).
 		Watches(
 			&gwapiv1.HTTPRoute{},
-			handler.EnqueueRequestsFromMapFunc(r.mapHTTPRouteToRoutePolicies),
+			handler.EnqueueRequestsFromMapFunc(r.MapHTTPRouteToRoutePolicies),
 		).
 		Watches(
 			&gatewayv1alpha1.TailscaleGateway{},
-			handler.EnqueueRequestsFromMapFunc(r.mapTailscaleGatewayToRoutePolicies),
+			handler.EnqueueRequestsFromMapFunc(r.MapTailscaleGatewayToRoutePolicies),
 		).
 		Complete(r)
 }
 
-// mapGatewayToRoutePolicies maps Gateway events to TailscaleRoutePolicy reconcile requests
-func (r *TailscaleRoutePolicyReconciler) mapGatewayToRoutePolicies(ctx context.Context, obj client.Object) []ctrl.Request {
+// MapGatewayToRoutePolicies maps Gateway events to TailscaleRoutePolicy reconcile requests
+func (r *TailscaleRoutePolicyReconciler) MapGatewayToRoutePolicies(ctx context.Context, obj client.Object) []ctrl.Request {
 	gateway := obj.(*gwapiv1.Gateway)
 
 	// Find TailscaleRoutePolicies that target this Gateway
@@ -463,7 +543,7 @@ func (r *TailscaleRoutePolicyReconciler) mapGatewayToRoutePolicies(ctx context.C
 }
 
 // mapHTTPRouteToRoutePolicies maps HTTPRoute events to TailscaleRoutePolicy reconcile requests
-func (r *TailscaleRoutePolicyReconciler) mapHTTPRouteToRoutePolicies(ctx context.Context, obj client.Object) []ctrl.Request {
+func (r *TailscaleRoutePolicyReconciler) MapHTTPRouteToRoutePolicies(ctx context.Context, obj client.Object) []ctrl.Request {
 	httpRoute := obj.(*gwapiv1.HTTPRoute)
 
 	// Find TailscaleRoutePolicies that target this HTTPRoute
@@ -491,7 +571,7 @@ func (r *TailscaleRoutePolicyReconciler) mapHTTPRouteToRoutePolicies(ctx context
 }
 
 // mapTailscaleGatewayToRoutePolicies maps TailscaleGateway events to TailscaleRoutePolicy reconcile requests
-func (r *TailscaleRoutePolicyReconciler) mapTailscaleGatewayToRoutePolicies(ctx context.Context, obj client.Object) []ctrl.Request {
+func (r *TailscaleRoutePolicyReconciler) MapTailscaleGatewayToRoutePolicies(ctx context.Context, obj client.Object) []ctrl.Request {
 	tsGateway := obj.(*gatewayv1alpha1.TailscaleGateway)
 
 	// Find TailscaleRoutePolicies that target this TailscaleGateway

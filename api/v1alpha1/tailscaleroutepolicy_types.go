@@ -42,25 +42,7 @@ type TailscaleRoutePolicySpec struct {
 	Rules []PolicyRule `json:"rules"`
 }
 
-// LocalPolicyTargetReference identifies a target for policy attachment
-type LocalPolicyTargetReference struct {
-	// Group is the group of the target resource.
-	Group gwapiv1.Group `json:"group"`
-
-	// Kind is the kind of the target resource.
-	Kind gwapiv1.Kind `json:"kind"`
-
-	// Name is the name of the target resource.
-	Name gwapiv1.ObjectName `json:"name"`
-
-	// Namespace is the namespace of the target resource.
-	// +optional
-	Namespace *gwapiv1.Namespace `json:"namespace,omitempty"`
-
-	// SectionName is the name of a section within the target resource.
-	// +optional
-	SectionName *gwapiv1.SectionName `json:"sectionName,omitempty"`
-}
+// LocalPolicyTargetReference has been moved to common_types.go to avoid circular dependencies
 
 // PolicyRule defines a single routing policy rule
 type PolicyRule struct {

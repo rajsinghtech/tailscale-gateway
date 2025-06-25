@@ -8,6 +8,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 
 	"github.com/go-logr/zapr"
@@ -28,7 +29,9 @@ import (
 	gwapiv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
 	gatewayv1alpha1 "github.com/rajsinghtech/tailscale-gateway/api/v1alpha1"
+	"github.com/rajsinghtech/tailscale-gateway/internal/config"
 	"github.com/rajsinghtech/tailscale-gateway/internal/controller"
+	"github.com/rajsinghtech/tailscale-gateway/internal/tailscale"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -45,18 +48,38 @@ func init() {
 }
 
 func main() {
+	// Create configuration with defaults
+	cfg := config.NewOperatorConfig()
+
+	// Parse command line flags
 	var (
-		metricsAddr          = flag.String("metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
-		probeAddr            = flag.String("health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-		enableLeaderElection = flag.Bool("leader-elect", false, "Enable leader election for controller manager. Enabling this will ensure there is only one active controller manager.")
+		metricsAddr          = flag.String("metrics-bind-address", cfg.GetMetricsAddress(), "The address the metric endpoint binds to.")
+		probeAddr            = flag.String("health-probe-bind-address", cfg.GetHealthProbeAddress(), "The address the probe endpoint binds to.")
+		enableLeaderElection = flag.Bool("leader-elect", cfg.LeaderElection, "Enable leader election for controller manager.")
 		secureMetrics        = flag.Bool("metrics-secure", false, "If set the metrics endpoint is served securely")
 		enableHTTP2          = flag.Bool("enable-http2", false, "If set, HTTP/2 will be enabled for the metrics and webhook servers")
-		logLevel             = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
+		logLevel             = flag.String("log-level", cfg.LogLevel, "Log level (debug, info, warn, error)")
 	)
 	flag.Parse()
 
+	// Load configuration from environment
+	if err := cfg.LoadFromEnvironment(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Validate configuration
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid configuration: %v\n", err)
+		os.Exit(1)
+	}
+
 	// Setup structured logging
-	rawLogger := setupLogger(*logLevel)
+	rawLogger, err := setupLogger(*logLevel)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
+		os.Exit(1)
+	}
 	defer rawLogger.Sync()
 
 	ctrl.SetLogger(zapr.NewLogger(rawLogger))
@@ -115,7 +138,7 @@ func main() {
 	endpointsController := &controller.TailscaleEndpointsReconciler{
 		Client:                 mgr.GetClient(),
 		Scheme:                 mgr.GetScheme(),
-		TailscaleClientManager: controller.NewMultiTailnetManager(),
+		TailscaleClientManager: tailscale.NewMultiTailnetManager(),
 		GatewayEventChan:       gatewayEventChan,
 		HTTPRouteEventChan:     httpRouteEventChan,
 		TCPRouteEventChan:      tcpRouteEventChan,
@@ -162,7 +185,7 @@ func main() {
 	}
 
 	// Setup TailscaleRoutePolicy controller with event coordination
-	if err = (&controller.TailscaleRoutePolicyReconciler{
+	routePolicyController := &controller.TailscaleRoutePolicyReconciler{
 		Client:             mgr.GetClient(),
 		Scheme:             mgr.GetScheme(),
 		Logger:             logger.Named("route-policy-controller"),
@@ -173,7 +196,15 @@ func main() {
 		UDPRouteEventChan:  udpRouteEventChan,
 		TLSRouteEventChan:  tlsRouteEventChan,
 		GRPCRouteEventChan: grpcRouteEventChan,
-	}).SetupWithManager(mgr); err != nil {
+	}
+
+	if err = ctrl.NewControllerManagedBy(mgr).
+		For(&gatewayv1alpha1.TailscaleRoutePolicy{}).
+		Watches(&gwapiv1.Gateway{}, handler.EnqueueRequestsFromMapFunc(routePolicyController.MapGatewayToRoutePolicies)).
+		Watches(&gwapiv1.HTTPRoute{}, handler.EnqueueRequestsFromMapFunc(routePolicyController.MapHTTPRouteToRoutePolicies)).
+		Watches(&gatewayv1alpha1.TailscaleGateway{}, handler.EnqueueRequestsFromMapFunc(routePolicyController.MapTailscaleGatewayToRoutePolicies)).
+		WatchesRawSource(source.Channel(gatewayEventChan, &handler.EnqueueRequestForObject{})).
+		Complete(routePolicyController); err != nil {
 		setupLog.Error("unable to create controller", "controller", "TailscaleRoutePolicy", "error", err)
 		os.Exit(1)
 	}
@@ -198,7 +229,7 @@ func main() {
 }
 
 // setupLogger creates a structured logger based on the log level
-func setupLogger(level string) *zap.Logger {
+func setupLogger(level string) (*zap.Logger, error) {
 	var zapLevel zapcore.Level
 	switch level {
 	case "debug":
@@ -220,8 +251,8 @@ func setupLogger(level string) *zap.Logger {
 
 	logger, err := config.Build()
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("failed to build logger: %w", err)
 	}
 
-	return logger
+	return logger, nil
 }

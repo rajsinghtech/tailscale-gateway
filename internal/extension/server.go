@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,8 +35,10 @@ import (
 	endpointv3 "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/proto"
+	"google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -169,6 +172,50 @@ type VIPServiceInfo struct {
 // TailscaleManager manages multiple Tailscale client connections for service discovery
 type TailscaleManager struct {
 	clients map[string]tailscale.Client
+	mu      sync.RWMutex
+}
+
+// GetClient retrieves a Tailscale client for the specified tailnet
+func (tm *TailscaleManager) GetClient(tailnetName string) (tailscale.Client, error) {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+
+	client, exists := tm.clients[tailnetName]
+	if !exists {
+		return nil, fmt.Errorf("tailscale client not found for tailnet: %s", tailnetName)
+	}
+
+	return client, nil
+}
+
+// SetClient sets a Tailscale client for the specified tailnet
+func (tm *TailscaleManager) SetClient(tailnetName string, client tailscale.Client) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	tm.clients[tailnetName] = client
+}
+
+// RemoveClient removes a Tailscale client for the specified tailnet
+func (tm *TailscaleManager) RemoveClient(tailnetName string) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	delete(tm.clients, tailnetName)
+}
+
+// ListClients returns all registered clients
+func (tm *TailscaleManager) ListClients() map[string]tailscale.Client {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+
+	// Return a copy to prevent concurrent modification
+	result := make(map[string]tailscale.Client)
+	for k, v := range tm.clients {
+		result[k] = v
+	}
+
+	return result
 }
 
 // TailscaleServiceMapping represents a mapping from Tailscale egress services to external backends
@@ -182,6 +229,89 @@ type TailscaleServiceMapping struct {
 	PathPrefix      string // e.g., "/api/web-service" or "/tailscale/web-service/" based on config
 	TailnetName     string // e.g., "cluster1-tailnet"
 	GatewayKey      string // e.g., "default/main-gateway"
+}
+
+// HealthAwareEndpoint represents an endpoint with health and locality information for failover
+type HealthAwareEndpoint struct {
+	Name            string
+	Address         string
+	Port            uint32
+	IsHealthy       bool
+	IsLocal         bool
+	HealthScore     int // 0-100 based on successive successes/failures
+	LastHealthCheck time.Time
+	Zone            string
+	ClusterID       string
+	Weight          int32 // Load balancing weight
+	Protocol        string
+}
+
+// EndpointHealthStatus tracks the health status of an endpoint for failover decisions
+type EndpointHealthStatus struct {
+	IsHealthy           bool
+	IsLocal             bool
+	HealthScore         int // 0-100 based on successive successes/failures
+	LastHealthCheck     time.Time
+	Zone                string
+	ClusterID           string
+	SuccessiveSuccesses int32
+	SuccessiveFailures  int32
+	Weight              int32
+}
+
+// FailoverPolicy defines how backends should be prioritized for health-aware load balancing
+type FailoverPolicy struct {
+	PreferLocal            bool          // Prefer local backends over remote ones
+	HealthThreshold        int32         // Minimum health score for backend selection (0-100)
+	UnhealthyThreshold     int32         // Consecutive failures before marking unhealthy
+	HealthyThreshold       int32         // Consecutive successes before marking healthy
+	EnableOutlierDetection bool          // Use Envoy's outlier detection
+	LocalClusterID         string        // Identifier for local cluster
+	FailoverTimeout        time.Duration // Time to wait before failing over
+}
+
+// VIPAffinityPolicy defines how VIP services should handle cross-cluster traffic
+type VIPAffinityPolicy struct {
+	// Mode defines the affinity behavior
+	// "global" - Load balance against local and other clusters simultaneously
+	// "local" - Load balance against local, failover to others only if no local healthy backends
+	Mode string `json:"mode"`
+
+	// LocalWeight defines the weight preference for local backends (0-100)
+	LocalWeight int32 `json:"localWeight"`
+
+	// CrossClusterWeight defines the weight for cross-cluster backends (0-100)
+	CrossClusterWeight int32 `json:"crossClusterWeight"`
+
+	// EnableCrossClusterInjection enables injecting remote cluster backends into local routing
+	EnableCrossClusterInjection bool `json:"enableCrossClusterInjection"`
+
+	// MinHealthyLocalBackends minimum number of healthy local backends before considering cross-cluster
+	MinHealthyLocalBackends int32 `json:"minHealthyLocalBackends"`
+}
+
+// EnvoyGatewayVIPService represents the main Envoy Gateway service as a VIP
+type EnvoyGatewayVIPService struct {
+	ServiceName      string            // Name of the VIP service for Envoy Gateway
+	VIPAddresses     []string          // VIP addresses allocated
+	GatewayNamespace string            // Namespace of the Gateway resource
+	GatewayName      string            // Name of the Gateway resource
+	ListenerPort     uint32            // Port the gateway listens on
+	Protocol         string            // Protocol (HTTP, HTTPS, TCP, UDP)
+	TailnetName      string            // Tailnet where this VIP is published
+	LastUpdated      time.Time         // When this service was last updated
+	Metadata         map[string]string // Additional metadata
+}
+
+// CrossClusterBackendInjection represents backends from other clusters injected into local routing
+type CrossClusterBackendInjection struct {
+	SourceCluster    string                // Cluster where backends originate
+	TargetCluster    string                // Cluster where backends are injected
+	ServiceName      string                // Service name
+	InjectedBackends []HealthAwareEndpoint // Backends injected from source cluster
+	AffinityPolicy   VIPAffinityPolicy     // Affinity policy governing injection
+	LastInjected     time.Time             // When backends were last injected
+	HealthyCount     int                   // Number of healthy backends in source cluster
 }
 
 // DiscoveredEndpoint represents an endpoint discovered from xDS cluster configuration
@@ -296,12 +426,23 @@ type XDSServiceDiscovery struct {
 	// Tailscale endpoint mappings (from CRDs)
 	tailscaleEndpoints map[string]*gatewayv1alpha1.TailscaleEndpoint
 
-	// Extension server reference for logging
-	server *TailscaleExtensionServer
+	// Logger for service discovery operations (removes circular dependency)
+	logger *slog.Logger
+
+	// Mutex for thread safety
+	mu sync.RWMutex
 }
 
 // NewTailscaleExtensionServer creates a new Tailscale extension server
-func NewTailscaleExtensionServer(client client.Client, logger *slog.Logger) *TailscaleExtensionServer {
+func NewTailscaleExtensionServer(client client.Client, logger *slog.Logger) (*TailscaleExtensionServer, error) {
+	// Validate inputs
+	if client == nil {
+		return nil, fmt.Errorf("client parameter cannot be nil")
+	}
+	if logger == nil {
+		return nil, fmt.Errorf("logger parameter cannot be nil")
+	}
+
 	server := &TailscaleExtensionServer{
 		client: client,
 		tailscaleManager: &TailscaleManager{
@@ -317,19 +458,31 @@ func NewTailscaleExtensionServer(client client.Client, logger *slog.Logger) *Tai
 		metrics: &ExtensionServerMetrics{
 			hookTypeMetrics: make(map[string]*HookTypeMetrics),
 		},
+		resourceIndex: &ResourceIndex{
+			endpointsToHTTPRoutes:  make(map[string][]string),
+			httpRoutesToEndpoints:  make(map[string][]string),
+			endpointsToVIPServices: make(map[string][]VIPServiceReference),
+			vipServicesToEndpoints: make(map[string][]string),
+			endpointsToTCPRoutes:   make(map[string][]string),
+			endpointsToUDPRoutes:   make(map[string][]string),
+			endpointsToTLSRoutes:   make(map[string][]string),
+			endpointsToGRPCRoutes:  make(map[string][]string),
+			serviceDependencies:    make(map[string][]string),
+			lastIndexUpdate:        time.Now(),
+		},
 	}
 
 	// Initialize xDS service discovery
 	server.xdsDiscovery = &XDSServiceDiscovery{
 		discoveredEndpoints: make(map[string]*DiscoveredEndpoint),
 		tailscaleEndpoints:  make(map[string]*gatewayv1alpha1.TailscaleEndpoint),
-		server:              server,
+		logger:              logger,
 	}
 
 	// Start configuration cache updater
 	go server.startConfigCacheUpdater(context.Background())
 
-	return server
+	return server, nil
 }
 
 // PostRouteModify modifies individual routes after Envoy Gateway generates them
@@ -349,9 +502,17 @@ func (s *TailscaleExtensionServer) PostRouteModify(ctx context.Context, req *pb.
 	}, nil
 }
 
-// PostVirtualHostModify modifies virtual hosts and injects new routes for Tailscale services
+// PostVirtualHostModify is a pass-through hook since Gateway API handles routing natively via backendRefs
 func (s *TailscaleExtensionServer) PostVirtualHostModify(ctx context.Context, req *pb.PostVirtualHostModifyRequest) (*pb.PostVirtualHostModifyResponse, error) {
-	s.logger.Info("PostVirtualHostModify called", "virtualHost", req.VirtualHost.Name, "domains", req.VirtualHost.Domains)
+	// Validate inputs
+	if req == nil {
+		return nil, fmt.Errorf("request parameter cannot be nil")
+	}
+	if req.VirtualHost == nil {
+		return nil, fmt.Errorf("virtual host cannot be nil")
+	}
+
+	s.logger.Debug("PostVirtualHostModify called (pass-through)", "virtualHost", req.VirtualHost.Name, "domains", req.VirtualHost.Domains)
 
 	// Track metrics for this hook call
 	start := time.Now()
@@ -359,60 +520,10 @@ func (s *TailscaleExtensionServer) PostVirtualHostModify(ctx context.Context, re
 		s.recordHookMetrics("PostVirtualHostModify", time.Since(start), nil)
 	}()
 
-	// Clone the virtual host to avoid modifying the original
-	modifiedVH := proto.Clone(req.VirtualHost).(*routev3.VirtualHost)
-
-	// Step 1: Get Tailscale egress service mappings that should route to external backends
-	// Now uses configuration-driven route generation
-	serviceMappings, err := s.getTailscaleEgressMappingsWithConfig(ctx)
-	if err != nil {
-		s.logger.Error("Failed to get Tailscale egress mappings", "error", err)
-		return &pb.PostVirtualHostModifyResponse{VirtualHost: modifiedVH}, err
-	}
-
-	// Step 2: Get inbound VIP service mappings for Gateway listeners
-	inboundMappings, err := s.getInboundVIPServiceMappings(ctx)
-	if err != nil {
-		s.logger.Error("Failed to get inbound VIP service mappings", "error", err)
-		// Continue with egress only - don't fail the entire operation
-	}
-
-	// Step 3: Get cross-cluster VIP service mappings
-	crossClusterMappings, err := s.getCrossClusterVIPServiceMappings(ctx)
-	if err != nil {
-		s.logger.Error("Failed to get cross-cluster VIP service mappings", "error", err)
-		// Continue without cross-cluster services
-	}
-
-	// Inject routes for each Tailscale egress service to external backends
-	for _, mapping := range serviceMappings {
-		route := s.createTailscaleEgressRouteWithConfig(mapping)
-		modifiedVH.Routes = append(modifiedVH.Routes, route)
-		s.logger.Info("Injected Tailscale egress route", "service", mapping.ServiceName, "backend", mapping.ExternalBackend, "pathPrefix", mapping.PathPrefix)
-	}
-
-	// Inject routes for inbound VIP services (from Tailscale to Gateway)
-	for _, mapping := range inboundMappings {
-		route := s.createInboundVIPRoute(mapping)
-		modifiedVH.Routes = append(modifiedVH.Routes, route)
-		s.logger.Info("Injected inbound VIP route", "service", mapping.ServiceName, "vips", mapping.VIPAddresses, "pathPrefix", mapping.PathPrefix)
-	}
-
-	// Inject routes for cross-cluster VIP services
-	for _, mapping := range crossClusterMappings {
-		route := s.createCrossClusterVIPRoute(mapping)
-		modifiedVH.Routes = append(modifiedVH.Routes, route)
-		s.logger.Info("Injected cross-cluster VIP route", "service", mapping.ServiceName, "cluster", mapping.OwnerCluster, "pathPrefix", mapping.PathPrefix)
-	}
-
-	s.logger.Info("PostVirtualHostModify completed",
-		"totalRoutes", len(modifiedVH.Routes),
-		"egressRoutes", len(serviceMappings),
-		"inboundRoutes", len(inboundMappings),
-		"crossClusterRoutes", len(crossClusterMappings))
-
+	// Pass through unchanged - Gateway API handles routing via backendRefs
+	// Route injection is redundant since Gateway API routes are processed natively
 	return &pb.PostVirtualHostModifyResponse{
-		VirtualHost: modifiedVH,
+		VirtualHost: req.VirtualHost,
 	}, nil
 }
 
@@ -442,34 +553,43 @@ func (s *TailscaleExtensionServer) PostTranslateModify(ctx context.Context, req 
 
 	// Load TailscaleEndpoints for context and mappings
 	if err := s.xdsDiscovery.loadTailscaleEndpoints(ctx, s.client); err != nil {
-		s.logger.Error("Failed to load TailscaleEndpoints", "error", err)
+		s.logger.Error("Failed to load TailscaleEndpoints",
+			"error", err,
+			"clusters_count", len(req.Clusters),
+			"operation", "load_tailscale_endpoints")
+		// Continue processing - this is non-fatal following AI Gateway patterns
 	}
 
-	// Process discovered endpoints for Tailscale integration
+	// Process discovered endpoints for Tailscale integration with health-aware failover
+	// This replaces the redundant generateExternalBackendClusters approach
 	tailscaleIntegratedClusters, err := s.xdsDiscovery.createTailscaleIntegratedClusters(ctx, discoveredEndpoints)
 	if err != nil {
-		s.logger.Error("Failed to create Tailscale integrated clusters", "error", err)
+		s.logger.Error("Failed to create Tailscale integrated clusters",
+			"error", err,
+			"discovered_endpoints", len(discoveredEndpoints),
+			"operation", "create_tailscale_integrated_clusters")
+		// Continue processing - this is non-fatal following AI Gateway patterns
 	} else {
 		// Add Tailscale integrated clusters to the response
 		clusters = append(clusters, tailscaleIntegratedClusters...)
-		s.logger.Info("Added Tailscale integrated clusters", "tailscaleClusters", len(tailscaleIntegratedClusters))
+		s.logger.Info("Added Tailscale integrated clusters with health-aware failover",
+			"tailscale_clusters", len(tailscaleIntegratedClusters),
+			"total_clusters", len(clusters))
 	}
 
-	// Generate external backend clusters for TailscaleEndpoints with external targets
-	externalClusters, err := s.generateExternalBackendClusters(ctx)
-	if err != nil {
-		s.logger.Error("Failed to generate external backend clusters", "error", err)
-	} else {
-		clusters = append(clusters, externalClusters...)
-		s.logger.Info("Added external backend clusters", "externalClusters", len(externalClusters))
+	// Ensure VIP services are created for main Envoy Gateway service and local backends
+	if err := s.ensureVIPServices(ctx); err != nil {
+		s.logger.Error("Failed to ensure VIP services",
+			"error", err,
+			"operation", "ensure_vip_services")
+		// Continue processing - VIP service creation is best-effort
 	}
 
 	s.logger.Info("PostTranslateModify completed",
 		"totalClusters", len(clusters),
 		"originalClusters", len(req.Clusters),
 		"discoveredEndpoints", len(discoveredEndpoints),
-		"tailscaleIntegratedClusters", len(tailscaleIntegratedClusters),
-		"externalClusters", len(externalClusters))
+		"tailscaleIntegratedClusters", len(tailscaleIntegratedClusters))
 
 	return &pb.PostTranslateModifyResponse{
 		Clusters: clusters,
@@ -492,6 +612,9 @@ func (s *TailscaleExtensionServer) getTailscaleEgressMappings(ctx context.Contex
 		for _, endpoint := range endpoints.Spec.Endpoints {
 			// Map egress services that route from Tailscale to external backends
 			// The egress service connects Tailscale clients to external services
+			// Generate path prefix using configuration
+			pathPrefix := s.generateRoutePrefixFromConfig(endpoint.Name, endpoints.Namespace)
+
 			mapping := TailscaleServiceMapping{
 				ServiceName:     endpoint.Name,
 				ClusterName:     fmt.Sprintf("external-backend-%s", endpoint.Name),
@@ -499,6 +622,9 @@ func (s *TailscaleExtensionServer) getTailscaleEgressMappings(ctx context.Contex
 				ExternalBackend: endpoint.ExternalTarget, // This should be defined in the CRD
 				Port:            uint32(endpoint.Port),
 				Protocol:        endpoint.Protocol,
+				PathPrefix:      pathPrefix, // Use configured path prefix
+				TailnetName:     endpoints.Spec.Tailnet,
+				GatewayKey:      "", // Will be populated if gateway context is available
 			}
 
 			// Only add mappings for endpoints that have external targets defined
@@ -1016,39 +1142,419 @@ func (s *TailscaleExtensionServer) createHTTPRouteBackendMappings(ctx context.Co
 	return mappings, nil
 }
 
-// createTailscaleEgressRoute creates an Envoy route configuration for a Tailscale egress service
+// createTailscaleEgressRoute creates a route using configured patterns from RouteGenerationConfig
+// DEPRECATED: Use createTailscaleEgressRouteWithConfig instead for configuration-driven routes
 func (s *TailscaleExtensionServer) createTailscaleEgressRoute(mapping TailscaleServiceMapping) *routev3.Route {
-	return &routev3.Route{
-		Name: fmt.Sprintf("tailscale-egress-%s", mapping.ServiceName),
-		Match: &routev3.RouteMatch{
-			PathSpecifier: &routev3.RouteMatch_Prefix{
-				Prefix: fmt.Sprintf("/api/%s", mapping.ServiceName),
-			},
+	// This method now delegates to the configurable version
+	return s.createTailscaleEgressRouteWithConfig(mapping)
+}
+
+// loadEndpointHealthStatus loads health status from TailscaleEndpoints resources
+func (s *TailscaleExtensionServer) loadEndpointHealthStatus(ctx context.Context) map[string]*EndpointHealthStatus {
+	healthStatusMap := make(map[string]*EndpointHealthStatus)
+
+	// Get all TailscaleEndpoints resources
+	endpointsList := &gatewayv1alpha1.TailscaleEndpointsList{}
+	if err := s.client.List(ctx, endpointsList); err != nil {
+		s.logger.Error("Failed to list TailscaleEndpoints for health status", "error", err)
+		return healthStatusMap
+	}
+
+	// Extract health status from each endpoint
+	for _, endpoints := range endpointsList.Items {
+		for _, endpointStatus := range endpoints.Status.EndpointStatus {
+			key := fmt.Sprintf("%s/%s/%s", endpoints.Namespace, endpoints.Name, endpointStatus.Name)
+
+			// Calculate health score based on successive successes/failures
+			healthScore := s.calculateHealthScore(endpointStatus)
+
+			// Determine locality (assume local for now, this would be enhanced with cluster detection)
+			isLocal := s.isLocalEndpoint(&endpoints, endpointStatus.Name)
+
+			healthStatusMap[key] = &EndpointHealthStatus{
+				IsHealthy:           endpointStatus.HealthStatus == "Healthy",
+				IsLocal:             isLocal,
+				HealthScore:         healthScore,
+				LastHealthCheck:     time.Now(), // Use current time if LastHealthCheck is nil
+				Zone:                "",         // Zone not available in current CRD
+				ClusterID:           "",         // ClusterID not available in current CRD
+				SuccessiveSuccesses: s.getSuccessiveSuccesses(endpointStatus),
+				SuccessiveFailures:  s.getSuccessiveFailures(endpointStatus),
+				Weight:              s.getEndpointWeight(endpointStatus),
+			}
+		}
+	}
+
+	s.logger.Info("Loaded endpoint health status", "endpoints", len(healthStatusMap))
+	return healthStatusMap
+}
+
+// calculateHealthScore computes a 0-100 health score based on recent health check results
+func (s *TailscaleExtensionServer) calculateHealthScore(status gatewayv1alpha1.EndpointStatus) int {
+	if status.HealthStatus == "Disabled" {
+		return 0
+	}
+
+	if status.HealthCheckDetails == nil {
+		// No health check data - assume healthy if status is Healthy
+		if status.HealthStatus == "Healthy" {
+			return 100
+		}
+		return 50 // Unknown status gets neutral score
+	}
+
+	details := status.HealthCheckDetails
+
+	// Base score on recent success/failure ratio
+	if details.TotalChecks == 0 {
+		return 50 // No checks performed yet
+	}
+
+	successRate := float64(details.SuccessfulChecks) / float64(details.TotalChecks)
+	baseScore := int(successRate * 100)
+
+	// Adjust based on successive failures (penalty for instability)
+	if details.SuccessiveFailures > 0 {
+		// Each successive failure reduces score by 10 points, minimum 0
+		penalty := int(details.SuccessiveFailures * 10)
+		baseScore = max(0, baseScore-penalty)
+	}
+
+	// Boost for successive successes (reward for stability)
+	if details.SuccessiveSuccesses > 5 {
+		// Bonus for consistent health, maximum 100
+		bonus := min(20, int((details.SuccessiveSuccesses-5)*2))
+		baseScore = min(100, baseScore+bonus)
+	}
+
+	return baseScore
+}
+
+// isLocalEndpoint determines if an endpoint is in the local cluster/zone
+func (s *TailscaleExtensionServer) isLocalEndpoint(endpoints *gatewayv1alpha1.TailscaleEndpoints, endpointName string) bool {
+	// Check if the endpoint has external target (indicates remote endpoint)
+	for _, ep := range endpoints.Spec.Endpoints {
+		if ep.Name == endpointName && ep.ExternalTarget != "" {
+			return false // External targets are considered remote
+		}
+	}
+	// Endpoints without external targets are considered local
+	return true
+}
+
+// getLocalClusterID returns a cluster identifier for the current cluster
+func (s *TailscaleExtensionServer) getLocalClusterID() string {
+	// Try to get cluster ID from environment or use hostname-based fallback
+	if clusterID := os.Getenv("CLUSTER_ID"); clusterID != "" {
+		return clusterID
+	}
+	// Fallback to hostname-based identification
+	if hostname, err := os.Hostname(); err == nil {
+		return hostname
+	}
+	// Final fallback
+	return "local"
+}
+
+// getSuccessiveSuccesses extracts successive successes from endpoint status
+func (s *TailscaleExtensionServer) getSuccessiveSuccesses(status gatewayv1alpha1.EndpointStatus) int32 {
+	if status.HealthCheckDetails != nil {
+		return status.HealthCheckDetails.SuccessiveSuccesses
+	}
+	return 0
+}
+
+// getSuccessiveFailures extracts successive failures from endpoint status
+func (s *TailscaleExtensionServer) getSuccessiveFailures(status gatewayv1alpha1.EndpointStatus) int32 {
+	if status.HealthCheckDetails != nil {
+		return status.HealthCheckDetails.SuccessiveFailures
+	}
+	return 0
+}
+
+// getEndpointWeight extracts weight from endpoint status
+func (s *TailscaleExtensionServer) getEndpointWeight(status gatewayv1alpha1.EndpointStatus) int32 {
+	if status.Weight != nil {
+		return *status.Weight
+	}
+	return 1 // Default weight
+}
+
+// createHealthAwareCluster creates an Envoy cluster with priority-based load balancing for failover
+func (s *TailscaleExtensionServer) createHealthAwareCluster(serviceName string, endpoints []HealthAwareEndpoint, policy FailoverPolicy) *clusterv3.Cluster {
+	// Group endpoints by priority: local healthy > remote healthy > local unhealthy
+	var localityEndpoints []*endpointv3.LocalityLbEndpoints
+
+	// Priority 0: Healthy local backends
+	localHealthyEndpoints := s.filterEndpointsByHealth(endpoints, true, true, policy.HealthThreshold)
+	if len(localHealthyEndpoints) > 0 {
+		localityEndpoints = append(localityEndpoints, &endpointv3.LocalityLbEndpoints{
+			Priority:    0,
+			Locality:    &corev3.Locality{Zone: "local"},
+			LbEndpoints: s.createLbEndpoints(localHealthyEndpoints),
+		})
+		s.logger.Info("Added local healthy endpoints", "service", serviceName, "count", len(localHealthyEndpoints))
+	}
+
+	// Priority 1: Healthy remote backends (if local preference is enabled)
+	if policy.PreferLocal {
+		remoteHealthyEndpoints := s.filterEndpointsByHealth(endpoints, true, false, policy.HealthThreshold)
+		if len(remoteHealthyEndpoints) > 0 {
+			localityEndpoints = append(localityEndpoints, &endpointv3.LocalityLbEndpoints{
+				Priority:    1,
+				Locality:    &corev3.Locality{Zone: "remote"},
+				LbEndpoints: s.createLbEndpoints(remoteHealthyEndpoints),
+			})
+			s.logger.Info("Added remote healthy endpoints", "service", serviceName, "count", len(remoteHealthyEndpoints))
+		}
+	} else {
+		// No local preference - mix all healthy endpoints at priority 0
+		allHealthyEndpoints := s.filterEndpointsByHealth(endpoints, true, false, policy.HealthThreshold)
+		if len(allHealthyEndpoints) > 0 {
+			// Merge with existing local healthy endpoints or create new priority group
+			if len(localityEndpoints) > 0 {
+				localityEndpoints[0].LbEndpoints = append(localityEndpoints[0].LbEndpoints, s.createLbEndpoints(allHealthyEndpoints)...)
+			} else {
+				localityEndpoints = append(localityEndpoints, &endpointv3.LocalityLbEndpoints{
+					Priority:    0,
+					Locality:    &corev3.Locality{Zone: "mixed"},
+					LbEndpoints: s.createLbEndpoints(allHealthyEndpoints),
+				})
+			}
+			s.logger.Info("Added mixed healthy endpoints", "service", serviceName, "count", len(allHealthyEndpoints))
+		}
+	}
+
+	// Priority 2 (or 1 if no local preference): Unhealthy local backends as last resort
+	localUnhealthyEndpoints := s.filterEndpointsByHealth(endpoints, false, true, 0) // Accept any unhealthy local
+	if len(localUnhealthyEndpoints) > 0 {
+		priority := 2
+		if !policy.PreferLocal {
+			priority = 1
+		}
+		localityEndpoints = append(localityEndpoints, &endpointv3.LocalityLbEndpoints{
+			Priority:    uint32(priority),
+			Locality:    &corev3.Locality{Zone: "local-unhealthy"},
+			LbEndpoints: s.createLbEndpoints(localUnhealthyEndpoints),
+		})
+		s.logger.Info("Added local unhealthy endpoints as fallback", "service", serviceName, "count", len(localUnhealthyEndpoints))
+	}
+
+	cluster := &clusterv3.Cluster{
+		Name:                 fmt.Sprintf("health-aware-%s", serviceName),
+		ClusterDiscoveryType: &clusterv3.Cluster_Type{Type: clusterv3.Cluster_STATIC},
+		LoadAssignment: &endpointv3.ClusterLoadAssignment{
+			ClusterName: fmt.Sprintf("health-aware-%s", serviceName),
+			Endpoints:   localityEndpoints,
 		},
-		Action: &routev3.Route_Route{
-			Route: &routev3.RouteAction{
-				ClusterSpecifier: &routev3.RouteAction_Cluster{
-					Cluster: mapping.ClusterName,
+	}
+
+	// Add outlier detection if enabled
+	if policy.EnableOutlierDetection {
+		cluster.OutlierDetection = s.createOutlierDetection()
+	}
+
+	s.logger.Info("Created health-aware cluster",
+		"service", serviceName,
+		"priorities", len(localityEndpoints),
+		"total_endpoints", len(endpoints))
+
+	return cluster
+}
+
+// filterEndpointsByHealth filters endpoints based on health status and locality
+func (s *TailscaleExtensionServer) filterEndpointsByHealth(endpoints []HealthAwareEndpoint, healthy, local bool, minHealthScore int32) []HealthAwareEndpoint {
+	var filtered []HealthAwareEndpoint
+
+	for _, endpoint := range endpoints {
+		// Check health criteria
+		healthMatch := (healthy && endpoint.IsHealthy && endpoint.HealthScore >= int(minHealthScore)) ||
+			(!healthy && (!endpoint.IsHealthy || endpoint.HealthScore < int(minHealthScore)))
+
+		// Check locality criteria
+		localityMatch := endpoint.IsLocal == local
+
+		if healthMatch && localityMatch {
+			filtered = append(filtered, endpoint)
+		}
+	}
+
+	return filtered
+}
+
+// createLbEndpoints converts HealthAwareEndpoint slice to Envoy LbEndpoint slice
+func (s *TailscaleExtensionServer) createLbEndpoints(endpoints []HealthAwareEndpoint) []*endpointv3.LbEndpoint {
+	var lbEndpoints []*endpointv3.LbEndpoint
+
+	for _, endpoint := range endpoints {
+		lbEndpoint := &endpointv3.LbEndpoint{
+			HostIdentifier: &endpointv3.LbEndpoint_Endpoint{
+				Endpoint: &endpointv3.Endpoint{
+					Address: &corev3.Address{
+						Address: &corev3.Address_SocketAddress{
+							SocketAddress: &corev3.SocketAddress{
+								Address: endpoint.Address,
+								PortSpecifier: &corev3.SocketAddress_PortValue{
+									PortValue: endpoint.Port,
+								},
+							},
+						},
+					},
 				},
-				// Strip the /api/{service} prefix when forwarding to the external backend
-				PrefixRewrite: "/",
 			},
-		},
+			LoadBalancingWeight: &wrapperspb.UInt32Value{Value: uint32(endpoint.Weight)},
+		}
+
+		lbEndpoints = append(lbEndpoints, lbEndpoint)
+	}
+
+	return lbEndpoints
+}
+
+// createOutlierDetection creates Envoy outlier detection configuration
+func (s *TailscaleExtensionServer) createOutlierDetection() *clusterv3.OutlierDetection {
+	return &clusterv3.OutlierDetection{
+		Consecutive_5Xx:                &wrapperspb.UInt32Value{Value: 3},
+		ConsecutiveGatewayFailure:      &wrapperspb.UInt32Value{Value: 3},
+		Interval:                       durationpb.New(30 * time.Second),
+		BaseEjectionTime:               durationpb.New(30 * time.Second),
+		MaxEjectionPercent:             &wrapperspb.UInt32Value{Value: 50},
+		SplitExternalLocalOriginErrors: true,
 	}
 }
 
-// generateExternalBackendClusters creates Envoy cluster configurations for external backends
+// groupMappingsByService groups service mappings by service name for multi-backend cluster creation
+func (s *TailscaleExtensionServer) groupMappingsByService(mappings []TailscaleServiceMapping) map[string][]TailscaleServiceMapping {
+	serviceGroups := make(map[string][]TailscaleServiceMapping)
+
+	for _, mapping := range mappings {
+		serviceGroups[mapping.ServiceName] = append(serviceGroups[mapping.ServiceName], mapping)
+	}
+
+	return serviceGroups
+}
+
+// convertMappingsToHealthAwareEndpoints converts service mappings to health-aware endpoints using current health status
+func (s *TailscaleExtensionServer) convertMappingsToHealthAwareEndpoints(mappings []TailscaleServiceMapping, healthStatusMap map[string]*EndpointHealthStatus) []HealthAwareEndpoint {
+	var endpoints []HealthAwareEndpoint
+
+	for _, mapping := range mappings {
+		// Parse address and port
+		hostname, portStr, err := net.SplitHostPort(mapping.ExternalBackend)
+		if err != nil {
+			s.logger.Error("Failed to parse backend address", "backend", mapping.ExternalBackend, "error", err)
+			continue
+		}
+
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			s.logger.Error("Failed to parse backend port", "port", portStr, "error", err)
+			continue
+		}
+
+		// Create health-aware endpoint
+		endpoint := HealthAwareEndpoint{
+			Name:            mapping.ServiceName,
+			Address:         hostname,
+			Port:            uint32(port),
+			Protocol:        mapping.Protocol,
+			Weight:          1,    // Default weight
+			IsHealthy:       true, // Default to healthy
+			IsLocal:         true, // Default to local (will be enhanced)
+			HealthScore:     100,  // Default to perfect health
+			LastHealthCheck: time.Now(),
+		}
+
+		// Apply health status if available
+		for key, healthStatus := range healthStatusMap {
+			// Match by service name (this could be enhanced with more sophisticated matching)
+			if strings.Contains(key, mapping.ServiceName) {
+				endpoint.IsHealthy = healthStatus.IsHealthy
+				endpoint.IsLocal = healthStatus.IsLocal
+				endpoint.HealthScore = healthStatus.HealthScore
+				endpoint.LastHealthCheck = healthStatus.LastHealthCheck
+				endpoint.Zone = healthStatus.Zone
+				endpoint.ClusterID = healthStatus.ClusterID
+				endpoint.Weight = healthStatus.Weight
+				break
+			}
+		}
+
+		endpoints = append(endpoints, endpoint)
+	}
+
+	s.logger.Info("Converted mappings to health-aware endpoints",
+		"mappings", len(mappings),
+		"endpoints", len(endpoints))
+
+	return endpoints
+}
+
+// generateExternalBackendClusters creates Envoy cluster configurations for external backends with health-aware failover
 func (s *TailscaleExtensionServer) generateExternalBackendClusters(ctx context.Context) ([]*clusterv3.Cluster, error) {
 	var clusters []*clusterv3.Cluster
 
-	// Get egress service mappings
-	serviceMappings, err := s.getTailscaleEgressMappings(ctx)
+	// Load current endpoint health status for failover decisions
+	healthStatusMap := s.loadEndpointHealthStatus(ctx)
+	s.logger.Info("Loaded health status for cluster generation", "endpoints", len(healthStatusMap))
+
+	// Get egress service mappings using configuration-aware version
+	serviceMappings, err := s.getTailscaleEgressMappingsWithConfig(ctx)
 	if err != nil {
-		return nil, err
+		s.logger.Error("Failed to get configured egress mappings, falling back to basic version", "error", err)
+		// Fallback to basic version if config version fails
+		serviceMappings, err = s.getTailscaleEgressMappings(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	// Create a cluster for each external backend
-	for _, mapping := range serviceMappings {
+	// Group mappings by service name for potential multi-backend clusters
+	serviceGroups := s.groupMappingsByService(serviceMappings)
+
+	// Create health-aware clusters for services with multiple backends
+	for serviceName, mappings := range serviceGroups {
+		if len(mappings) > 1 {
+			// Multiple backends for this service - create health-aware cluster with cross-cluster injection
+			healthAwareEndpoints := s.convertMappingsToHealthAwareEndpoints(mappings, healthStatusMap)
+
+			if len(healthAwareEndpoints) > 0 {
+				// Create default failover policy
+				policy := FailoverPolicy{
+					PreferLocal:            true,
+					HealthThreshold:        70, // Require 70% health score
+					UnhealthyThreshold:     3,
+					HealthyThreshold:       2,
+					EnableOutlierDetection: true,
+					LocalClusterID:         s.getLocalClusterID(), // Use dynamic cluster identification
+					FailoverTimeout:        30 * time.Second,
+				}
+
+				// Get VIP affinity policy for cross-cluster backend injection
+				vipPolicy := s.getDefaultVIPAffinityPolicy()
+
+				// Perform cross-cluster backend injection based on affinity policy
+				enhancedEndpoints, err := s.performCrossClusterBackendInjection(ctx, serviceName, healthAwareEndpoints, vipPolicy)
+				if err != nil {
+					s.logger.Error("Failed to perform cross-cluster backend injection",
+						"service", serviceName, "error", err)
+					// Continue with local backends only
+					enhancedEndpoints = healthAwareEndpoints
+				}
+
+				cluster := s.createHealthAwareCluster(serviceName, enhancedEndpoints, policy)
+				clusters = append(clusters, cluster)
+				s.logger.Info("Created health-aware cluster with cross-cluster injection",
+					"service", serviceName,
+					"localBackends", len(healthAwareEndpoints),
+					"totalBackends", len(enhancedEndpoints),
+					"affinityMode", vipPolicy.Mode)
+				continue
+			}
+		}
+
+		// Single backend or no health data - create simple cluster
+		mapping := mappings[0] // Use first mapping for single backend services
 		// Parse hostname and port from ExternalBackend
 		hostname, portStr, err := net.SplitHostPort(mapping.ExternalBackend)
 		if err != nil {
@@ -1101,6 +1607,9 @@ func (s *TailscaleExtensionServer) generateExternalBackendClusters(ctx context.C
 // extractEndpointsFromClusters performs comprehensive endpoint discovery from xDS clusters
 // This replaces manual HTTPRoute/Service watching and handles ALL Gateway API route types
 func (xds *XDSServiceDiscovery) extractEndpointsFromClusters(ctx context.Context, clusters []*clusterv3.Cluster) []*DiscoveredEndpoint {
+	xds.mu.Lock()
+	defer xds.mu.Unlock()
+
 	var endpoints []*DiscoveredEndpoint
 
 	// Clear previous discovery
@@ -1117,7 +1626,7 @@ func (xds *XDSServiceDiscovery) extractEndpointsFromClusters(ctx context.Context
 		}
 	}
 
-	xds.server.logger.Info("Extracted endpoints from xDS clusters",
+	xds.logger.Info("Extracted endpoints from xDS clusters",
 		"totalClusters", len(clusters),
 		"totalEndpoints", len(endpoints))
 
@@ -1140,7 +1649,7 @@ func (xds *XDSServiceDiscovery) extractEndpointsFromCluster(cluster *clusterv3.C
 		// Dynamic resolver endpoints (e.g., forward proxy)
 		endpoints = xds.extractFromDynamicCluster(cluster)
 	default:
-		xds.server.logger.Debug("Unknown cluster type", "cluster", cluster.Name)
+		xds.logger.Debug("Unknown cluster type", "cluster", cluster.Name)
 	}
 
 	return endpoints
@@ -1236,6 +1745,9 @@ func (xds *XDSServiceDiscovery) loadTailscaleEndpoints(ctx context.Context, clie
 		return fmt.Errorf("failed to list TailscaleEndpoints: %w", err)
 	}
 
+	xds.mu.Lock()
+	defer xds.mu.Unlock()
+
 	// Clear and reload
 	xds.tailscaleEndpoints = make(map[string]*gatewayv1alpha1.TailscaleEndpoint)
 
@@ -1247,12 +1759,15 @@ func (xds *XDSServiceDiscovery) loadTailscaleEndpoints(ctx context.Context, clie
 		}
 	}
 
-	xds.server.logger.Info("Loaded TailscaleEndpoints for context", "count", len(xds.tailscaleEndpoints))
+	xds.logger.Info("Loaded TailscaleEndpoints for context", "count", len(xds.tailscaleEndpoints))
 	return nil
 }
 
 // createTailscaleIntegratedClusters creates clusters that integrate discovered endpoints with Tailscale
 func (xds *XDSServiceDiscovery) createTailscaleIntegratedClusters(ctx context.Context, discoveredEndpoints []*DiscoveredEndpoint) ([]*clusterv3.Cluster, error) {
+	xds.mu.RLock()
+	defer xds.mu.RUnlock()
+
 	var clusters []*clusterv3.Cluster
 
 	// For each discovered endpoint, check if it should be integrated with Tailscale
@@ -1267,7 +1782,7 @@ func (xds *XDSServiceDiscovery) createTailscaleIntegratedClusters(ctx context.Co
 		}
 	}
 
-	xds.server.logger.Info("Created Tailscale integrated clusters", "count", len(clusters))
+	xds.logger.Info("Created Tailscale integrated clusters", "count", len(clusters))
 	return clusters, nil
 }
 
@@ -1295,6 +1810,39 @@ func (xds *XDSServiceDiscovery) findMatchingTailscaleEndpoint(discovered *Discov
 func (xds *XDSServiceDiscovery) createTailscaleCluster(discovered *DiscoveredEndpoint, tsEndpoint *gatewayv1alpha1.TailscaleEndpoint) *clusterv3.Cluster {
 	clusterName := fmt.Sprintf("tailscale-%s", tsEndpoint.Name)
 
+	// Create endpoint with metadata enrichment following AI Gateway patterns
+	endpoint := &endpointv3.LbEndpoint{
+		HostIdentifier: &endpointv3.LbEndpoint_Endpoint{
+			Endpoint: &endpointv3.Endpoint{
+				Address: &corev3.Address{
+					Address: &corev3.Address_SocketAddress{
+						SocketAddress: &corev3.SocketAddress{
+							Address: tsEndpoint.TailscaleIP,
+							PortSpecifier: &corev3.SocketAddress_PortValue{
+								PortValue: uint32(tsEndpoint.Port),
+							},
+							Protocol: corev3.SocketAddress_TCP,
+						},
+					},
+				},
+			},
+		},
+		// Add metadata for service identification and observability
+		Metadata: &corev3.Metadata{
+			FilterMetadata: map[string]*structpb.Struct{
+				"tailscale.io": {
+					Fields: map[string]*structpb.Value{
+						"endpoint_name":   structpb.NewStringValue(tsEndpoint.Name),
+						"tailscale_ip":    structpb.NewStringValue(tsEndpoint.TailscaleIP),
+						"tailscale_fqdn":  structpb.NewStringValue(tsEndpoint.TailscaleFQDN),
+						"protocol":        structpb.NewStringValue(tsEndpoint.Protocol),
+						"external_target": structpb.NewStringValue(tsEndpoint.ExternalTarget),
+					},
+				},
+			},
+		},
+	}
+
 	cluster := &clusterv3.Cluster{
 		Name: clusterName,
 		ClusterDiscoveryType: &clusterv3.Cluster_Type{
@@ -1303,28 +1851,14 @@ func (xds *XDSServiceDiscovery) createTailscaleCluster(discovered *DiscoveredEnd
 		LoadAssignment: &endpointv3.ClusterLoadAssignment{
 			ClusterName: clusterName,
 			Endpoints: []*endpointv3.LocalityLbEndpoints{{
-				LbEndpoints: []*endpointv3.LbEndpoint{{
-					HostIdentifier: &endpointv3.LbEndpoint_Endpoint{
-						Endpoint: &endpointv3.Endpoint{
-							Address: &corev3.Address{
-								Address: &corev3.Address_SocketAddress{
-									SocketAddress: &corev3.SocketAddress{
-										Address: tsEndpoint.TailscaleIP,
-										PortSpecifier: &corev3.SocketAddress_PortValue{
-											PortValue: uint32(tsEndpoint.Port),
-										},
-										Protocol: corev3.SocketAddress_TCP,
-									},
-								},
-							},
-						},
-					},
-				}},
+				LbEndpoints: []*endpointv3.LbEndpoint{endpoint},
 			}},
 		},
+		// Add buffer configuration following AI Gateway patterns for Tailscale traffic
+		PerConnectionBufferLimitBytes: wrapperspb.UInt32(52428800), // 50MiB for high-throughput Tailscale connections
 	}
 
-	xds.server.logger.Info("Created Tailscale cluster",
+	xds.logger.Info("Created Tailscale cluster",
 		"cluster", clusterName,
 		"tailscaleIP", tsEndpoint.TailscaleIP,
 		"port", tsEndpoint.Port)
@@ -1398,10 +1932,10 @@ func (s *TailscaleExtensionServer) reloadConfigCache(ctx context.Context) error 
 	return nil
 }
 
-// generateRoutePrefixFromConfig generates route prefix using configuration
+// generateRoutePrefixFromConfig generates route prefix using RouteGenerationConfig
 func (s *TailscaleExtensionServer) generateRoutePrefixFromConfig(serviceName, namespace string) string {
 	if s.configCache == nil {
-		return "/api/" + serviceName // fallback to default
+		return s.getDefaultEgressPathPrefix(serviceName) // Use default from CRD
 	}
 
 	// Look for route generation config in the cache
@@ -1410,13 +1944,26 @@ func (s *TailscaleExtensionServer) generateRoutePrefixFromConfig(serviceName, na
 			// Replace {service} placeholder with actual service name
 			pathPrefix := config.Egress.PathPrefix
 			if pathPrefix != "" {
-				return strings.ReplaceAll(pathPrefix, "{service}", serviceName)
+				return s.expandPathPattern(pathPrefix, serviceName, "")
 			}
 		}
 	}
 
-	// Fallback to default pattern
-	return "/api/" + serviceName
+	// Fallback to CRD default pattern: /tailscale/{service}/
+	return s.getDefaultEgressPathPrefix(serviceName)
+}
+
+// getDefaultEgressPathPrefix returns the CRD default egress path prefix
+func (s *TailscaleExtensionServer) getDefaultEgressPathPrefix(serviceName string) string {
+	// Default from EgressRouteConfig CRD: "/tailscale/{service}/"
+	return fmt.Sprintf("/tailscale/%s/", serviceName)
+}
+
+// expandPathPattern expands path pattern variables
+func (s *TailscaleExtensionServer) expandPathPattern(pattern, serviceName, tailnetName string) string {
+	expanded := strings.ReplaceAll(pattern, "{service}", serviceName)
+	expanded = strings.ReplaceAll(expanded, "{tailnet}", tailnetName)
+	return expanded
 }
 
 // NewResourceIndex creates a new ResourceIndex
@@ -1995,7 +2542,7 @@ func (s *TailscaleExtensionServer) generateRouteFromConfig(serviceName, tailnetN
 	if config == nil {
 		// Fallback to hardcoded patterns if no config
 		if routeType == "egress" {
-			return fmt.Sprintf("/api/%s", serviceName)
+			return s.getDefaultEgressPathPrefix(serviceName)
 		}
 		return "/"
 	}
@@ -2135,8 +2682,8 @@ func (s *TailscaleExtensionServer) createTailscaleEgressRouteWithConfig(mapping 
 	// Use the configured path prefix instead of hardcoded pattern
 	pathPrefix := mapping.PathPrefix
 	if pathPrefix == "" {
-		// Fallback to original pattern if no config available
-		pathPrefix = fmt.Sprintf("/api/%s", mapping.ServiceName)
+		// Fallback to CRD default pattern if no config available
+		pathPrefix = s.getDefaultEgressPathPrefix(mapping.ServiceName)
 	}
 
 	return &routev3.Route{
@@ -2174,77 +2721,161 @@ func (s *TailscaleExtensionServer) createTailscaleEgressRouteWithConfig(mapping 
 
 // processTailscaleEndpointsBackendHTTP processes TailscaleEndpoints backends for HTTP routes
 func (s *TailscaleExtensionServer) processTailscaleEndpointsBackendHTTP(ctx context.Context, backend *gwapiv1.HTTPBackendRef, clusterName string) (*TailscaleServiceMapping, error) {
-	// Create a simple mapping - this should use actual TailscaleEndpoints discovery
+	// Find the corresponding TailscaleEndpoints resource and endpoint
+	endpoint, err := s.findTailscaleEndpoint(ctx, string(backend.Name), backend.Namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find TailscaleEndpoint for backend %s: %w", backend.Name, err)
+	}
+
+	// Determine the external backend target
+	externalBackend := endpoint.ExternalTarget
+	if externalBackend == "" {
+		// Fall back to TailscaleFQDN:Port if ExternalTarget is not set
+		externalBackend = fmt.Sprintf("%s:%d", endpoint.TailscaleFQDN, endpoint.Port)
+	}
+
+	// Use the backend port if specified, otherwise use endpoint port
+	port := uint32(endpoint.Port)
+	if backend.Port != nil {
+		port = uint32(*backend.Port)
+	}
+
 	mapping := &TailscaleServiceMapping{
 		ServiceName:     string(backend.Name),
 		ClusterName:     clusterName,
-		ExternalBackend: fmt.Sprintf("%s:80", backend.Name), // placeholder
-		Port:            uint32(*backend.Port),
-		Protocol:        "HTTP",
+		ExternalBackend: externalBackend,
+		Port:            port,
+		Protocol:        endpoint.Protocol,
 	}
 	return mapping, nil
 }
 
 // processTailscaleEndpointsBackendTCP processes TailscaleEndpoints backends for TCP routes
 func (s *TailscaleExtensionServer) processTailscaleEndpointsBackendTCP(ctx context.Context, backend *gwapiv1alpha2.BackendRef, clusterName string) (*TailscaleServiceMapping, error) {
-	port := uint32(80)
+	// Find the corresponding TailscaleEndpoints resource and endpoint
+	endpoint, err := s.findTailscaleEndpoint(ctx, string(backend.Name), backend.Namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find TailscaleEndpoint for backend %s: %w", backend.Name, err)
+	}
+
+	// Determine the external backend target
+	externalBackend := endpoint.ExternalTarget
+	if externalBackend == "" {
+		// Fall back to TailscaleFQDN:Port if ExternalTarget is not set
+		externalBackend = fmt.Sprintf("%s:%d", endpoint.TailscaleFQDN, endpoint.Port)
+	}
+
+	// Use the backend port if specified, otherwise use endpoint port
+	port := uint32(endpoint.Port)
 	if backend.Port != nil {
 		port = uint32(*backend.Port)
 	}
+
 	mapping := &TailscaleServiceMapping{
 		ServiceName:     string(backend.Name),
 		ClusterName:     clusterName,
-		ExternalBackend: fmt.Sprintf("%s:%d", backend.Name, port),
+		ExternalBackend: externalBackend,
 		Port:            port,
-		Protocol:        "TCP",
+		Protocol:        endpoint.Protocol,
 	}
 	return mapping, nil
 }
 
 // processTailscaleEndpointsBackendUDP processes TailscaleEndpoints backends for UDP routes
 func (s *TailscaleExtensionServer) processTailscaleEndpointsBackendUDP(ctx context.Context, backend *gwapiv1alpha2.BackendRef, clusterName string) (*TailscaleServiceMapping, error) {
-	port := uint32(53)
+	// Find the corresponding TailscaleEndpoints resource and endpoint
+	endpoint, err := s.findTailscaleEndpoint(ctx, string(backend.Name), backend.Namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find TailscaleEndpoint for backend %s: %w", backend.Name, err)
+	}
+
+	// Determine the external backend target
+	externalBackend := endpoint.ExternalTarget
+	if externalBackend == "" {
+		// Fall back to TailscaleFQDN:Port if ExternalTarget is not set
+		externalBackend = fmt.Sprintf("%s:%d", endpoint.TailscaleFQDN, endpoint.Port)
+	}
+
+	// Use the backend port if specified, otherwise use endpoint port
+	port := uint32(endpoint.Port)
 	if backend.Port != nil {
 		port = uint32(*backend.Port)
 	}
+
 	mapping := &TailscaleServiceMapping{
 		ServiceName:     string(backend.Name),
 		ClusterName:     clusterName,
-		ExternalBackend: fmt.Sprintf("%s:%d", backend.Name, port),
+		ExternalBackend: externalBackend,
 		Port:            port,
-		Protocol:        "UDP",
+		Protocol:        endpoint.Protocol,
 	}
 	return mapping, nil
 }
 
 // processTailscaleEndpointsBackendTLS processes TailscaleEndpoints backends for TLS routes
 func (s *TailscaleExtensionServer) processTailscaleEndpointsBackendTLS(ctx context.Context, backend *gwapiv1alpha2.BackendRef, clusterName string) (*TailscaleServiceMapping, error) {
-	port := uint32(443)
+	// Find the corresponding TailscaleEndpoints resource and endpoint
+	endpoint, err := s.findTailscaleEndpoint(ctx, string(backend.Name), backend.Namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find TailscaleEndpoint for backend %s: %w", backend.Name, err)
+	}
+
+	// Determine the external backend target
+	externalBackend := endpoint.ExternalTarget
+	if externalBackend == "" {
+		// Fall back to TailscaleFQDN:Port if ExternalTarget is not set
+		externalBackend = fmt.Sprintf("%s:%d", endpoint.TailscaleFQDN, endpoint.Port)
+	}
+
+	// Use the backend port if specified, otherwise use endpoint port
+	port := uint32(endpoint.Port)
 	if backend.Port != nil {
 		port = uint32(*backend.Port)
 	}
+
+	// Protocol should typically be HTTPS for TLS routes, unless explicitly set
+	protocol := endpoint.Protocol
+	if protocol == "HTTP" {
+		protocol = "HTTPS" // Upgrade HTTP to HTTPS for TLS routes
+	}
+
 	mapping := &TailscaleServiceMapping{
 		ServiceName:     string(backend.Name),
 		ClusterName:     clusterName,
-		ExternalBackend: fmt.Sprintf("%s:%d", backend.Name, port),
+		ExternalBackend: externalBackend,
 		Port:            port,
-		Protocol:        "TLS",
+		Protocol:        protocol,
 	}
 	return mapping, nil
 }
 
 // processTailscaleEndpointsBackendGRPC processes TailscaleEndpoints backends for GRPC routes
 func (s *TailscaleExtensionServer) processTailscaleEndpointsBackendGRPC(ctx context.Context, backend *gwapiv1.GRPCBackendRef, clusterName string) (*TailscaleServiceMapping, error) {
-	port := uint32(9090)
+	// Find the corresponding TailscaleEndpoints resource and endpoint
+	endpoint, err := s.findTailscaleEndpoint(ctx, string(backend.Name), backend.Namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find TailscaleEndpoint for backend %s: %w", backend.Name, err)
+	}
+
+	// Determine the external backend target
+	externalBackend := endpoint.ExternalTarget
+	if externalBackend == "" {
+		// Fall back to TailscaleFQDN:Port if ExternalTarget is not set
+		externalBackend = fmt.Sprintf("%s:%d", endpoint.TailscaleFQDN, endpoint.Port)
+	}
+
+	// Use the backend port if specified, otherwise use endpoint port
+	port := uint32(endpoint.Port)
 	if backend.Port != nil {
 		port = uint32(*backend.Port)
 	}
+
 	mapping := &TailscaleServiceMapping{
 		ServiceName:     string(backend.Name),
 		ClusterName:     clusterName,
-		ExternalBackend: fmt.Sprintf("%s:%d", backend.Name, port),
+		ExternalBackend: externalBackend,
 		Port:            port,
-		Protocol:        "GRPC",
+		Protocol:        "GRPC", // gRPC is always gRPC protocol
 	}
 	return mapping, nil
 }
@@ -2582,4 +3213,490 @@ func (s *TailscaleExtensionServer) createCrossClusterVIPRoute(mapping CrossClust
 	}
 
 	return route
+}
+
+// ensureVIPServices coordinates the creation of VIP services for both main gateway and local backends
+func (s *TailscaleExtensionServer) ensureVIPServices(ctx context.Context) error {
+	// Ensure main Envoy Gateway service is published as VIP
+	// TODO: Extract gateway namespace and name from discovered configuration
+	gatewayNamespace := "default"      // Should be discovered from gateway context
+	gatewayName := "tailscale-gateway" // Should be discovered from gateway context
+
+	envoyVIPService, err := s.ensureEnvoyGatewayVIPService(ctx, gatewayNamespace, gatewayName)
+	if err != nil {
+		s.logger.Error("Failed to ensure main Envoy Gateway VIP service",
+			"error", err,
+			"gateway", fmt.Sprintf("%s/%s", gatewayNamespace, gatewayName))
+		// Continue with local backends even if main gateway VIP fails
+	} else {
+		s.logger.Info("Successfully ensured main Envoy Gateway VIP service",
+			"serviceName", envoyVIPService.ServiceName,
+			"vipAddresses", envoyVIPService.VIPAddresses)
+	}
+
+	// Ensure local backend services are published as VIPs
+	localBackendVIPs, err := s.ensureLocalBackendVIPServices(ctx)
+	if err != nil {
+		s.logger.Error("Failed to ensure local backend VIP services", "error", err)
+		// Continue - this is best effort
+	} else {
+		s.logger.Info("Successfully ensured local backend VIP services",
+			"count", len(localBackendVIPs))
+	}
+
+	return nil // Return nil to continue processing even if some VIP operations fail
+}
+
+// ensureEnvoyGatewayVIPService ensures the main Envoy Gateway service is published as a VIP
+func (s *TailscaleExtensionServer) ensureEnvoyGatewayVIPService(ctx context.Context, gatewayNamespace, gatewayName string) (*EnvoyGatewayVIPService, error) {
+	if s.serviceCoordinator == nil {
+		return nil, fmt.Errorf("ServiceCoordinator not available for VIP service creation")
+	}
+
+	// Generate VIP service name for the main gateway
+	serviceName := fmt.Sprintf("envoy-gateway-%s-%s", gatewayNamespace, gatewayName)
+
+	// Create/ensure VIP service through ServiceCoordinator
+	routeName := fmt.Sprintf("gateway/%s/%s", gatewayNamespace, gatewayName)
+	registration, err := s.serviceCoordinator.EnsureServiceForRoute(ctx, routeName, serviceName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to ensure VIP service for Envoy Gateway: %w", err)
+	}
+
+	// Create EnvoyGatewayVIPService representation
+	vipService := &EnvoyGatewayVIPService{
+		ServiceName:      serviceName,
+		VIPAddresses:     registration.VIPAddresses,
+		GatewayNamespace: gatewayNamespace,
+		GatewayName:      gatewayName,
+		ListenerPort:     80, // Default HTTP port, should be configurable
+		Protocol:         "HTTP",
+		TailnetName:      "default", // Should be extracted from gateway config
+		LastUpdated:      time.Now(),
+		Metadata: map[string]string{
+			"gateway.tailscale.com/type":      "envoy-gateway-main",
+			"gateway.tailscale.com/namespace": gatewayNamespace,
+			"gateway.tailscale.com/name":      gatewayName,
+		},
+	}
+
+	s.logger.Info("Ensured Envoy Gateway VIP service",
+		"serviceName", serviceName,
+		"vipAddresses", registration.VIPAddresses,
+		"gateway", fmt.Sprintf("%s/%s", gatewayNamespace, gatewayName))
+
+	return vipService, nil
+}
+
+// ensureLocalBackendVIPServices ensures local backend services are published as VIPs
+func (s *TailscaleExtensionServer) ensureLocalBackendVIPServices(ctx context.Context) ([]InboundVIPServiceMapping, error) {
+	var vipMappings []InboundVIPServiceMapping
+
+	if s.serviceCoordinator == nil {
+		s.logger.Info("ServiceCoordinator not available, skipping local backend VIP creation")
+		return vipMappings, nil
+	}
+
+	// Get all local Kubernetes services that should be exposed as VIPs
+	serviceList := &corev1.ServiceList{}
+	if err := s.client.List(ctx, serviceList); err != nil {
+		return nil, fmt.Errorf("failed to list Kubernetes services: %w", err)
+	}
+
+	for _, service := range serviceList.Items {
+		// Check if this service should be published as a VIP
+		if s.shouldPublishServiceAsVIP(&service) {
+			vipMapping, err := s.createServiceVIPMapping(ctx, &service)
+			if err != nil {
+				s.logger.Error("Failed to create VIP mapping for service",
+					"service", fmt.Sprintf("%s/%s", service.Namespace, service.Name),
+					"error", err)
+				continue
+			}
+
+			if vipMapping != nil {
+				vipMappings = append(vipMappings, *vipMapping)
+			}
+		}
+	}
+
+	s.logger.Info("Ensured local backend VIP services", "count", len(vipMappings))
+	return vipMappings, nil
+}
+
+// shouldPublishServiceAsVIP determines if a Kubernetes service should be published as a VIP
+func (s *TailscaleExtensionServer) shouldPublishServiceAsVIP(service *corev1.Service) bool {
+	// Check for explicit annotation
+	if value, exists := service.Annotations["gateway.tailscale.com/publish-vip"]; exists {
+		return value == "true"
+	}
+
+	// Check for specific labels that indicate VIP publication
+	if value, exists := service.Labels["gateway.tailscale.com/vip-enabled"]; exists {
+		return value == "true"
+	}
+
+	// Check if service is referenced by any HTTPRoute with TailscaleEndpoints backends
+	// This would indicate it should be discoverable from other clusters
+	return s.isServiceReferencedByHTTPRoutes(service)
+}
+
+// isServiceReferencedByHTTPRoutes checks if a service is referenced by HTTPRoutes
+func (s *TailscaleExtensionServer) isServiceReferencedByHTTPRoutes(service *corev1.Service) bool {
+	// Implementation would check if this service appears in any HTTPRoute backends
+	// For now, return false as a conservative default
+	return false
+}
+
+// createServiceVIPMapping creates a VIP mapping for a Kubernetes service
+func (s *TailscaleExtensionServer) createServiceVIPMapping(ctx context.Context, service *corev1.Service) (*InboundVIPServiceMapping, error) {
+	serviceName := fmt.Sprintf("local-%s-%s", service.Namespace, service.Name)
+	routeName := fmt.Sprintf("service/%s/%s", service.Namespace, service.Name)
+
+	// Create/ensure VIP service through ServiceCoordinator
+	registration, err := s.serviceCoordinator.EnsureServiceForRoute(ctx, routeName, serviceName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to ensure VIP service for local backend: %w", err)
+	}
+
+	// Determine service port (use first port if multiple)
+	var port uint32 = 80
+	if len(service.Spec.Ports) > 0 {
+		port = uint32(service.Spec.Ports[0].Port)
+	}
+
+	mapping := &InboundVIPServiceMapping{
+		ServiceName:  serviceName,
+		VIPAddresses: registration.VIPAddresses,
+		OwnerCluster: s.getLocalClusterID(),
+		PathPrefix:   fmt.Sprintf("/local/%s/%s/", service.Namespace, service.Name),
+		TailnetName:  "default", // Should be configurable
+		GatewayKey:   "",        // Will be populated based on gateway context
+		Protocol:     "HTTP",    // Should be determined from service
+		Port:         port,
+	}
+
+	return mapping, nil
+}
+
+// performCrossClusterBackendInjection injects backends from other clusters based on affinity policy
+func (s *TailscaleExtensionServer) performCrossClusterBackendInjection(ctx context.Context, serviceName string, localBackends []HealthAwareEndpoint, policy VIPAffinityPolicy) ([]HealthAwareEndpoint, error) {
+	// Count healthy local backends
+	healthyLocalCount := 0
+	for _, backend := range localBackends {
+		if backend.IsHealthy && backend.HealthScore >= 70 { // Use configurable threshold
+			healthyLocalCount++
+		}
+	}
+
+	s.logger.Info("Evaluating cross-cluster backend injection",
+		"service", serviceName,
+		"healthyLocalCount", healthyLocalCount,
+		"minRequired", policy.MinHealthyLocalBackends,
+		"mode", policy.Mode)
+
+	// Check if cross-cluster injection is needed
+	shouldInject := false
+
+	switch policy.Mode {
+	case "global":
+		// Always inject cross-cluster backends (weighted load balancing)
+		shouldInject = policy.EnableCrossClusterInjection
+	case "local":
+		// Only inject if insufficient healthy local backends
+		shouldInject = policy.EnableCrossClusterInjection &&
+			int32(healthyLocalCount) < policy.MinHealthyLocalBackends
+	default:
+		s.logger.Warn("Unknown affinity policy mode", "mode", policy.Mode)
+		return localBackends, nil
+	}
+
+	if !shouldInject {
+		s.logger.Info("Cross-cluster injection not needed",
+			"service", serviceName,
+			"healthyLocal", healthyLocalCount,
+			"mode", policy.Mode)
+		return localBackends, nil
+	}
+
+	// Discover cross-cluster backends
+	crossClusterBackends, err := s.discoverCrossClusterBackends(ctx, serviceName, policy)
+	if err != nil {
+		s.logger.Error("Failed to discover cross-cluster backends",
+			"service", serviceName, "error", err)
+		return localBackends, nil
+	}
+
+	// Apply affinity weights
+	enhancedBackends := s.applyCrossClusterAffinityWeights(localBackends, crossClusterBackends, policy)
+
+	s.logger.Info("Performed cross-cluster backend injection",
+		"service", serviceName,
+		"localBackends", len(localBackends),
+		"crossClusterBackends", len(crossClusterBackends),
+		"totalBackends", len(enhancedBackends))
+
+	return enhancedBackends, nil
+}
+
+// discoverCrossClusterBackends discovers backends from other clusters for a service
+func (s *TailscaleExtensionServer) discoverCrossClusterBackends(ctx context.Context, serviceName string, policy VIPAffinityPolicy) ([]HealthAwareEndpoint, error) {
+	var crossClusterBackends []HealthAwareEndpoint
+
+	if s.serviceCoordinator == nil {
+		return crossClusterBackends, nil
+	}
+
+	// Discover VIP services across clusters
+	vipServices, err := s.serviceCoordinator.DiscoverVIPServices(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to discover VIP services: %w", err)
+	}
+
+	localClusterID := s.getLocalClusterID()
+
+	for _, vipService := range vipServices {
+		// Look for matching service names from other clusters
+		if strings.Contains(string(vipService.ServiceName), serviceName) &&
+			vipService.OwnerOperator != localClusterID {
+
+			// Convert VIP service to HealthAwareEndpoint
+			for _, vipAddress := range vipService.VIPAddresses {
+				endpoint := HealthAwareEndpoint{
+					Name:            fmt.Sprintf("cross-cluster-%s-%s", vipService.OwnerOperator, serviceName),
+					Address:         vipAddress,
+					Port:            80,   // Should be extracted from service metadata
+					IsHealthy:       true, // Assume VIP services are healthy
+					IsLocal:         false,
+					HealthScore:     90, // High score for VIP services
+					LastHealthCheck: time.Now(),
+					Zone:            vipService.OwnerOperator,
+					ClusterID:       vipService.OwnerOperator,
+					Weight:          policy.CrossClusterWeight,
+					Protocol:        "HTTP", // Should be extracted from metadata
+				}
+				crossClusterBackends = append(crossClusterBackends, endpoint)
+			}
+		}
+	}
+
+	return crossClusterBackends, nil
+}
+
+// applyCrossClusterAffinityWeights applies affinity weights to local and cross-cluster backends
+func (s *TailscaleExtensionServer) applyCrossClusterAffinityWeights(localBackends, crossClusterBackends []HealthAwareEndpoint, policy VIPAffinityPolicy) []HealthAwareEndpoint {
+	var allBackends []HealthAwareEndpoint
+
+	// Apply local weights to local backends
+	for _, backend := range localBackends {
+		backend.Weight = policy.LocalWeight
+		allBackends = append(allBackends, backend)
+	}
+
+	// Apply cross-cluster weights to remote backends
+	for _, backend := range crossClusterBackends {
+		backend.Weight = policy.CrossClusterWeight
+		backend.IsLocal = false // Ensure it's marked as non-local
+		allBackends = append(allBackends, backend)
+	}
+
+	return allBackends
+}
+
+// getDefaultVIPAffinityPolicy returns a default VIP affinity policy
+func (s *TailscaleExtensionServer) getDefaultVIPAffinityPolicy() VIPAffinityPolicy {
+	return VIPAffinityPolicy{
+		Mode:                        "local", // Prefer local, failover to cross-cluster
+		LocalWeight:                 80,      // Higher weight for local backends
+		CrossClusterWeight:          20,      // Lower weight for cross-cluster backends
+		EnableCrossClusterInjection: true,    // Enable cross-cluster injection
+		MinHealthyLocalBackends:     1,       // Require at least 1 healthy local backend
+	}
+}
+
+// findTailscaleEndpoint finds a TailscaleEndpoint by service name and namespace
+func (s *TailscaleExtensionServer) findTailscaleEndpoint(ctx context.Context, serviceName string, namespace *gwapiv1.Namespace) (*gatewayv1alpha1.TailscaleEndpoint, error) {
+	// Validate inputs
+	if serviceName == "" {
+		return nil, fmt.Errorf("service name cannot be empty")
+	}
+	if s.configCache == nil {
+		return nil, fmt.Errorf("config cache is not initialized")
+	}
+
+	// Determine the namespace to search in
+	searchNamespace := "default"
+	if namespace != nil {
+		searchNamespace = string(*namespace)
+	}
+
+	// First, try to find in the cache
+	s.configCache.mu.RLock()
+	for key, endpoints := range s.configCache.tailscaleEndpoints {
+		// Parse the key (format: namespace/name)
+		parts := strings.SplitN(key, "/", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		endpointsNamespace := parts[0]
+
+		// Skip if not in the right namespace
+		if endpointsNamespace != searchNamespace {
+			continue
+		}
+
+		// Look for the endpoint with matching name
+		for _, endpoint := range endpoints.Spec.Endpoints {
+			if endpoint.Name == serviceName {
+				s.configCache.mu.RUnlock()
+				return &endpoint, nil
+			}
+		}
+	}
+	s.configCache.mu.RUnlock()
+
+	// If not found in cache, query directly from Kubernetes
+	tailscaleEndpointsList := &gatewayv1alpha1.TailscaleEndpointsList{}
+	if err := s.client.List(ctx, tailscaleEndpointsList, client.InNamespace(searchNamespace)); err != nil {
+		return nil, fmt.Errorf("failed to list TailscaleEndpoints in namespace %s: %w", searchNamespace, err)
+	}
+
+	// Search through all TailscaleEndpoints resources
+	for _, endpoints := range tailscaleEndpointsList.Items {
+		for _, endpoint := range endpoints.Spec.Endpoints {
+			if endpoint.Name == serviceName {
+				return &endpoint, nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("TailscaleEndpoint with name %s not found in namespace %s", serviceName, searchNamespace)
+}
+
+// Health check implementation following AI Gateway patterns
+// Check implements the gRPC health check service
+func (s *TailscaleExtensionServer) Check(ctx context.Context, req *grpc_health_v1.HealthCheckRequest) (*grpc_health_v1.HealthCheckResponse, error) {
+	// Perform basic health checks
+	if s.client == nil {
+		return &grpc_health_v1.HealthCheckResponse{
+			Status: grpc_health_v1.HealthCheckResponse_NOT_SERVING,
+		}, nil
+	}
+
+	// Check if we can access Kubernetes resources
+	if err := s.performHealthCheck(ctx); err != nil {
+		s.logger.Warn("Health check failed", "error", err)
+		return &grpc_health_v1.HealthCheckResponse{
+			Status: grpc_health_v1.HealthCheckResponse_NOT_SERVING,
+		}, nil
+	}
+
+	return &grpc_health_v1.HealthCheckResponse{
+		Status: grpc_health_v1.HealthCheckResponse_SERVING,
+	}, nil
+}
+
+// Watch implements the gRPC health check watch service
+func (s *TailscaleExtensionServer) Watch(req *grpc_health_v1.HealthCheckRequest, stream grpc_health_v1.Health_WatchServer) error {
+	// Send initial status
+	status := grpc_health_v1.HealthCheckResponse_SERVING
+	if err := s.performHealthCheck(stream.Context()); err != nil {
+		status = grpc_health_v1.HealthCheckResponse_NOT_SERVING
+	}
+
+	if err := stream.Send(&grpc_health_v1.HealthCheckResponse{Status: status}); err != nil {
+		return err
+	}
+
+	// Keep the stream open and send periodic updates
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stream.Context().Done():
+			return stream.Context().Err()
+		case <-ticker.C:
+			newStatus := grpc_health_v1.HealthCheckResponse_SERVING
+			if err := s.performHealthCheck(stream.Context()); err != nil {
+				newStatus = grpc_health_v1.HealthCheckResponse_NOT_SERVING
+			}
+
+			if newStatus != status {
+				status = newStatus
+				if err := stream.Send(&grpc_health_v1.HealthCheckResponse{Status: status}); err != nil {
+					return err
+				}
+			}
+		}
+	}
+}
+
+// performHealthCheck performs internal health checks
+func (s *TailscaleExtensionServer) performHealthCheck(ctx context.Context) error {
+	// Check basic component availability
+	if s.client == nil {
+		return fmt.Errorf("kubernetes client is nil")
+	}
+
+	// Test Kubernetes connectivity with a lightweight operation
+	var nodeList corev1.NodeList
+	if err := s.client.List(ctx, &nodeList, client.Limit(1)); err != nil {
+		return fmt.Errorf("kubernetes connectivity check failed: %w", err)
+	}
+
+	// Check metrics and cache health
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.metrics != nil {
+		// Check if we've had hook calls recently (within last 5 minutes)
+		s.metrics.mu.RLock()
+		recentActivity := time.Since(time.Now().Add(-time.Duration(s.metrics.averageCallDuration))) < 5*time.Minute
+		s.metrics.mu.RUnlock()
+
+		if !recentActivity && s.metrics.totalHookCalls > 0 {
+			// We've had calls before but none recently - this might indicate an issue
+			s.logger.Debug("No recent hook activity detected")
+		}
+	}
+
+	// Check cache health
+	if s.configCache != nil {
+		s.configCache.mu.RLock()
+		cacheAge := time.Since(s.configCache.lastUpdate)
+		s.configCache.mu.RUnlock()
+
+		if cacheAge > 10*time.Minute {
+			s.logger.Debug("Configuration cache is stale", "age", cacheAge)
+		}
+	}
+
+	// Check resource index health
+	if s.resourceIndex != nil {
+		s.resourceIndex.mu.RLock()
+		indexAge := time.Since(s.resourceIndex.lastIndexUpdate)
+		s.resourceIndex.mu.RUnlock()
+
+		if indexAge > 10*time.Minute {
+			s.logger.Debug("Resource index is stale", "age", indexAge)
+		}
+	}
+
+	return nil
+}
+
+// List implements the gRPC health check list service
+func (s *TailscaleExtensionServer) List(ctx context.Context, req *grpc_health_v1.HealthListRequest) (*grpc_health_v1.HealthListResponse, error) {
+	// Return the status for our extension server service
+	status := grpc_health_v1.HealthCheckResponse_SERVING
+	if err := s.performHealthCheck(ctx); err != nil {
+		status = grpc_health_v1.HealthCheckResponse_NOT_SERVING
+	}
+
+	return &grpc_health_v1.HealthListResponse{
+		Statuses: map[string]*grpc_health_v1.HealthCheckResponse{
+			"tailscale-extension-server": {Status: status},
+		},
+	}, nil
 }

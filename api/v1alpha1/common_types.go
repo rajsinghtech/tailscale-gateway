@@ -5,7 +5,29 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
+
+// LocalPolicyTargetReference identifies a target for policy attachment
+// This type is shared across multiple CRDs to ensure consistency and avoid circular dependencies
+type LocalPolicyTargetReference struct {
+	// Group is the group of the target resource.
+	Group gwapiv1.Group `json:"group"`
+
+	// Kind is the kind of the target resource.
+	Kind gwapiv1.Kind `json:"kind"`
+
+	// Name is the name of the target resource.
+	Name gwapiv1.ObjectName `json:"name"`
+
+	// Namespace is the namespace of the target resource.
+	// +optional
+	Namespace *gwapiv1.Namespace `json:"namespace,omitempty"`
+
+	// SectionName is the name of a section within the target resource.
+	// +optional
+	SectionName *gwapiv1.SectionName `json:"sectionName,omitempty"`
+}
 
 // DetailedError provides comprehensive error information with context
 type DetailedError struct {

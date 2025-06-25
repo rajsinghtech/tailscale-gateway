@@ -51,8 +51,23 @@ spec:
           containerPort: {{ .Values.extensionServer.healthProbePort }}
           protocol: TCP
         env:
+        # Port configuration (following centralized config patterns)
         - name: GRPC_PORT
           value: "{{ .Values.extensionServer.grpcPort }}"
+        - name: METRICS_PORT
+          value: "{{ .Values.extensionServer.metricsPort }}"
+        - name: HEALTH_PROBE_PORT
+          value: "{{ .Values.extensionServer.healthProbePort }}"
+        # Feature flags
+        - name: ENABLE_METRICS
+          value: "{{ .Values.metrics.enabled }}"
+        - name: ENABLE_HEALTH_CHECKS
+          value: "{{ .Values.healthProbe.enabled }}"
+        - name: LOG_LEVEL
+          value: "{{ .Values.logLevel }}"
+        # Image configuration (for dynamic configuration if needed)
+        - name: EXTENSION_SERVER_IMAGE
+          value: "{{ .Values.extensionServer.image.repository }}:{{ .Values.extensionServer.image.tag | default .Chart.AppVersion }}"
         livenessProbe:
           httpGet:
             path: /healthz

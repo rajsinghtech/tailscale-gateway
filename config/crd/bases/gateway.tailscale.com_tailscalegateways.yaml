@@ -69,14 +69,14 @@ spec:
                   Envoy Gateway xDS hooks for dynamic route injection.
                 properties:
                   image:
-                    default: tailscale-gateway-extension:latest
+                    default: ghcr.io/rajsinghtech/tailscale-gateway-extension-server:latest
                     description: Image defines the container image for the Extension
                       Server
                     type: string
                   port:
                     description: |-
                       Port is the port number for the gRPC extension server.
-                      Defaults to 8443.
+                      Defaults to 5005.
                     format: int32
                     type: integer
                   replicas:
@@ -923,8 +923,9 @@ spec:
               httpRouteRefs:
                 description: HTTPRouteRefs tracks which HTTPRoutes are being processed
                 items:
-                  description: LocalPolicyTargetReference identifies a target for
-                    policy attachment
+                  description: |-
+                    LocalPolicyTargetReference identifies a target for policy attachment
+                    This type is shared across multiple CRDs to ensure consistency and avoid circular dependencies
                   properties:
                     group:
                       description: Group is the group of the target resource.

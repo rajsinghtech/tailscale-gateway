@@ -43,6 +43,7 @@ import (
 	gatewayv1alpha1 "github.com/rajsinghtech/tailscale-gateway/api/v1alpha1"
 	"github.com/rajsinghtech/tailscale-gateway/internal/service"
 	"github.com/rajsinghtech/tailscale-gateway/internal/tailscale"
+	"github.com/rajsinghtech/tailscale-gateway/internal/validation"
 )
 
 const (
@@ -50,8 +51,8 @@ const (
 	TailscaleGatewayFinalizer = "gateway.tailscale.com/tailscalegateway"
 
 	// Extension Server defaults
-	defaultExtensionServerImage = "tailscale-gateway-extension:latest"
-	defaultExtensionServerPort  = 8443
+	defaultExtensionServerImage = "ghcr.io/rajsinghtech/tailscale-gateway-extension-server:latest"
+	defaultExtensionServerPort  = 5005
 	defaultExtensionReplicas    = 2
 
 	// Event reasons
@@ -120,6 +121,17 @@ func (r *TailscaleGatewayReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// Handle deletion
 	if gateway.DeletionTimestamp != nil {
 		return r.handleDeletion(ctx, gateway)
+	}
+
+	// Validate the TailscaleGateway resource
+	if err := validation.ValidateTailscaleGateway(gateway); err != nil {
+		logger.Error(err, "TailscaleGateway validation failed")
+		r.recordError(gateway, gatewayv1alpha1.ErrorCodeValidation, "TailscaleGateway validation failed", "controller", err)
+		r.updateCondition(gateway, "Ready", metav1.ConditionFalse, "ValidationFailed", err.Error())
+		if statusErr := r.Status().Update(ctx, gateway); statusErr != nil {
+			logger.Error(statusErr, "Failed to update status")
+		}
+		return ctrl.Result{RequeueAfter: time.Minute}, err
 	}
 
 	// Add finalizer if not present
@@ -208,12 +220,15 @@ func (r *TailscaleGatewayReconciler) reconcileGateway(ctx context.Context, gatew
 		}
 		r.updateCondition(gateway, "GatewayVIPReady", metav1.ConditionTrue, "GatewayVIPConfigured", "Gateway VIP services are configured")
 
-		// Step 2: Process HTTPRoutes and ensure VIP services for backends (egress traffic)
-		if err := r.reconcileServiceCoordination(ctx, gateway); err != nil {
-			r.updateCondition(gateway, "ServicesReady", metav1.ConditionFalse, "ServiceError", err.Error())
-			return ctrl.Result{RequeueAfter: time.Minute}, err
-		}
-		r.updateCondition(gateway, "ServicesReady", metav1.ConditionTrue, "ServicesConfigured", "VIP services are configured")
+		// Notify endpoints controller about new VIP services
+		r.notifyEndpointsController(ctx, gateway)
+
+		// Step 2: VIP services are now handled automatically by extension server via Gateway API backendRefs
+		// No manual HTTPRoute processing needed - the extension server discovers and processes all routes
+		r.updateCondition(gateway, "ServicesReady", metav1.ConditionTrue, "ServicesConfigured", "VIP services handled by extension server")
+
+		// Notify controllers about HTTPRoute backend changes
+		r.notifyAllControllers(ctx, gateway)
 
 		// Step 3: Expose local services bidirectionally
 		if err := r.reconcileBidirectionalServiceExposure(ctx, gateway); err != nil {
@@ -232,6 +247,16 @@ func (r *TailscaleGatewayReconciler) reconcileGateway(ctx context.Context, gatew
 
 // validateGatewayRef validates that the referenced Gateway exists
 func (r *TailscaleGatewayReconciler) validateGatewayRef(ctx context.Context, gateway *gatewayv1alpha1.TailscaleGateway) error {
+	// Validate input parameters
+	if gateway == nil {
+		return fmt.Errorf("gateway parameter cannot be nil")
+	}
+
+	// Validate gateway reference is present
+	if gateway.Spec.GatewayRef.Name == "" {
+		return fmt.Errorf("gateway reference name cannot be empty")
+	}
+
 	gatewayRef := gateway.Spec.GatewayRef
 
 	// Default namespace to the same as TailscaleGateway if not specified
@@ -259,7 +284,24 @@ func (r *TailscaleGatewayReconciler) validateGatewayRef(ctx context.Context, gat
 
 // validateTailnetRefs validates that all referenced TailscaleTailnets exist and are ready
 func (r *TailscaleGatewayReconciler) validateTailnetRefs(ctx context.Context, gateway *gatewayv1alpha1.TailscaleGateway) error {
+	// Validate input parameters
+	if gateway == nil {
+		return fmt.Errorf("gateway parameter cannot be nil")
+	}
+
+	// Validate at least one tailnet is configured
+	if len(gateway.Spec.Tailnets) == 0 {
+		return fmt.Errorf("at least one tailnet configuration is required")
+	}
+
 	for _, tailnetConfig := range gateway.Spec.Tailnets {
+		// Validate tailnet configuration
+		if tailnetConfig.Name == "" {
+			return fmt.Errorf("tailnet name cannot be empty")
+		}
+		if tailnetConfig.TailscaleTailnetRef.Name == "" {
+			return fmt.Errorf("tailnet reference name cannot be empty for tailnet %s", tailnetConfig.Name)
+		}
 		tailnetRef := tailnetConfig.TailscaleTailnetRef
 
 		// Default namespace to the same as TailscaleGateway if not specified
@@ -832,14 +874,61 @@ func (r *TailscaleGatewayReconciler) getRelatedHTTPRoutes(ctx context.Context, g
 	return relatedRoutes, nil
 }
 
-// httpRouteReferencesGateway checks if an HTTPRoute references a TailscaleGateway
-func (r *TailscaleGatewayReconciler) httpRouteReferencesGateway(httpRoute *gwapiv1.HTTPRoute, gateway *gatewayv1alpha1.TailscaleGateway) bool {
-	// Check annotations for TailscaleGateway reference
-	// This is a simplified check - in practice, this would be more sophisticated
-	if gatewayRef, exists := httpRoute.Annotations["gateway.tailscale.com/gateway"]; exists {
-		return gatewayRef == gateway.Name
+// routeReferencesGatewayViaParentRefs checks if a route references a gateway via Gateway API parentRefs
+func (r *TailscaleGatewayReconciler) routeReferencesGatewayViaParentRefs(parentRefs []gwapiv1.ParentReference, routeNamespace string, gateway *gatewayv1alpha1.TailscaleGateway) bool {
+	// Get the referenced Gateway resource
+	referencedGateway, err := r.getReferencedGateway(context.Background(), gateway)
+	if err != nil {
+		return false
 	}
+
+	// Check each parentRef to see if it references our gateway
+	for _, parentRef := range parentRefs {
+		// Default to Gateway kind if not specified
+		kind := "Gateway"
+		if parentRef.Kind != nil {
+			kind = string(*parentRef.Kind)
+		}
+
+		// Only process Gateway references
+		if kind != "Gateway" {
+			continue
+		}
+
+		// Default to gateway-api group if not specified
+		group := "gateway.networking.k8s.io"
+		if parentRef.Group != nil {
+			group = string(*parentRef.Group)
+		}
+
+		// Only process Gateway API group references
+		if group != "gateway.networking.k8s.io" {
+			continue
+		}
+
+		// Check if the name matches our referenced gateway
+		if string(parentRef.Name) != referencedGateway.Name {
+			continue
+		}
+
+		// Check namespace - defaults to route's namespace if not specified
+		parentNamespace := routeNamespace
+		if parentRef.Namespace != nil {
+			parentNamespace = string(*parentRef.Namespace)
+		}
+
+		// Match if namespace matches our referenced gateway's namespace
+		if parentNamespace == referencedGateway.Namespace {
+			return true
+		}
+	}
+
 	return false
+}
+
+// httpRouteReferencesGateway checks if an HTTPRoute references a TailscaleGateway via Gateway API parentRefs
+func (r *TailscaleGatewayReconciler) httpRouteReferencesGateway(httpRoute *gwapiv1.HTTPRoute, gateway *gatewayv1alpha1.TailscaleGateway) bool {
+	return r.routeReferencesGatewayViaParentRefs(httpRoute.Spec.ParentRefs, httpRoute.Namespace, gateway)
 }
 
 // updateGatewayServiceStatus updates the gateway status with service information
@@ -1145,8 +1234,17 @@ func (r *TailscaleGatewayReconciler) buildTailscaleEndpoints(gateway *gatewayv1a
 }
 
 // convertPatternsToTagSelectors converts legacy pattern-based discovery to tag selectors
+// DEPRECATED: Pattern-based service discovery is deprecated in favor of Gateway API backendRefs.
+// Use HTTPRoute/TCPRoute/etc. with TailscaleEndpoints backendRefs for explicit service references.
 func (r *TailscaleGatewayReconciler) convertPatternsToTagSelectors(includePatterns, excludePatterns []string) []gatewayv1alpha1.TagSelector {
 	var selectors []gatewayv1alpha1.TagSelector
+
+	// Log deprecation warning if patterns are actually used
+	if len(includePatterns) > 0 || len(excludePatterns) > 0 {
+		log.FromContext(context.Background()).Info("Pattern-based service discovery is deprecated. Consider using Gateway API routes with TailscaleEndpoints backendRefs for explicit service references.",
+			"includePatterns", includePatterns,
+			"excludePatterns", excludePatterns)
+	}
 
 	// Convert include patterns to tag selectors that look for service tags
 	for _, pattern := range includePatterns {
@@ -1260,6 +1358,83 @@ func (r *TailscaleGatewayReconciler) generateServiceName(targetBackend string) t
 	return r.ServiceCoordinator.GenerateServiceName(targetBackend)
 }
 
+// Event notification helper functions for controller coordination
+
+// notifyEndpointsController sends an event to the TailscaleEndpoints controller
+func (r *TailscaleGatewayReconciler) notifyEndpointsController(ctx context.Context, obj client.Object) {
+	if r.EndpointsEventChan == nil {
+		return
+	}
+
+	logger := log.FromContext(ctx)
+	select {
+	case r.EndpointsEventChan <- event.GenericEvent{Object: obj}:
+		logger.V(1).Info("Notified endpoints controller", "object", obj.GetName(), "namespace", obj.GetNamespace())
+	case <-ctx.Done():
+		return
+	default:
+		logger.V(1).Info("Endpoints event channel full, dropping notification", "object", obj.GetName())
+	}
+}
+
+// notifyRouteControllers sends events to all route controllers when VIP services are created/updated
+func (r *TailscaleGatewayReconciler) notifyRouteControllers(ctx context.Context, obj client.Object) {
+	logger := log.FromContext(ctx)
+
+	if r.HTTPRouteEventChan != nil {
+		select {
+		case r.HTTPRouteEventChan <- event.GenericEvent{Object: obj}:
+			logger.V(1).Info("Notified HTTPRoute controller", "object", obj.GetName(), "namespace", obj.GetNamespace())
+		case <-ctx.Done():
+			return
+		default:
+			logger.V(1).Info("HTTPRoute event channel full, dropping notification", "object", obj.GetName())
+		}
+	}
+
+	if r.TCPRouteEventChan != nil {
+		select {
+		case r.TCPRouteEventChan <- event.GenericEvent{Object: obj}:
+		case <-ctx.Done():
+			return
+		default:
+		}
+	}
+
+	if r.UDPRouteEventChan != nil {
+		select {
+		case r.UDPRouteEventChan <- event.GenericEvent{Object: obj}:
+		case <-ctx.Done():
+			return
+		default:
+		}
+	}
+
+	if r.TLSRouteEventChan != nil {
+		select {
+		case r.TLSRouteEventChan <- event.GenericEvent{Object: obj}:
+		case <-ctx.Done():
+			return
+		default:
+		}
+	}
+
+	if r.GRPCRouteEventChan != nil {
+		select {
+		case r.GRPCRouteEventChan <- event.GenericEvent{Object: obj}:
+		case <-ctx.Done():
+			return
+		default:
+		}
+	}
+}
+
+// notifyAllControllers sends events to all dependent controllers
+func (r *TailscaleGatewayReconciler) notifyAllControllers(ctx context.Context, obj client.Object) {
+	r.notifyEndpointsController(ctx, obj)
+	r.notifyRouteControllers(ctx, obj)
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *TailscaleGatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
@@ -1278,23 +1453,95 @@ func (r *TailscaleGatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
+// findTailscaleGatewaysFromParentRefs finds TailscaleGateways that reference the Gateways in parentRefs
+func (r *TailscaleGatewayReconciler) findTailscaleGatewaysFromParentRefs(ctx context.Context, parentRefs []gwapiv1.ParentReference, routeNamespace string) []ctrl.Request {
+	var requests []ctrl.Request
+
+	// Extract Gateway references from parentRefs
+	for _, parentRef := range parentRefs {
+		// Default to Gateway kind if not specified
+		kind := "Gateway"
+		if parentRef.Kind != nil {
+			kind = string(*parentRef.Kind)
+		}
+
+		// Only process Gateway references
+		if kind != "Gateway" {
+			continue
+		}
+
+		// Default to gateway-api group if not specified
+		group := "gateway.networking.k8s.io"
+		if parentRef.Group != nil {
+			group = string(*parentRef.Group)
+		}
+
+		// Only process Gateway API group references
+		if group != "gateway.networking.k8s.io" {
+			continue
+		}
+
+		// Determine namespace - defaults to route's namespace if not specified
+		gatewayNamespace := routeNamespace
+		if parentRef.Namespace != nil {
+			gatewayNamespace = string(*parentRef.Namespace)
+		}
+
+		// Find TailscaleGateways that reference this Gateway
+		gatewayRequests := r.findTailscaleGatewaysReferencingGateway(ctx, string(parentRef.Name), gatewayNamespace)
+		requests = append(requests, gatewayRequests...)
+	}
+
+	return requests
+}
+
+// findTailscaleGatewaysReferencingGateway finds TailscaleGateways that reference a specific Gateway
+func (r *TailscaleGatewayReconciler) findTailscaleGatewaysReferencingGateway(ctx context.Context, gatewayName, gatewayNamespace string) []ctrl.Request {
+	var requests []ctrl.Request
+
+	// List all TailscaleGateways in all namespaces
+	gatewayList := &gatewayv1alpha1.TailscaleGatewayList{}
+	if err := r.List(ctx, gatewayList); err != nil {
+		if r.Logger != nil {
+			r.Logger.Errorf("Failed to list TailscaleGateways: %v", err)
+		}
+		return nil
+	}
+
+	// Check each TailscaleGateway to see if it references the target Gateway
+	for _, tailscaleGateway := range gatewayList.Items {
+		gatewayRef := tailscaleGateway.Spec.GatewayRef
+
+		// Check if the gateway name matches
+		if string(gatewayRef.Name) != gatewayName {
+			continue
+		}
+
+		// Check namespace - defaults to TailscaleGateway's namespace if not specified
+		referencedNamespace := tailscaleGateway.Namespace
+		if gatewayRef.Namespace != nil {
+			referencedNamespace = string(*gatewayRef.Namespace)
+		}
+
+		if referencedNamespace == gatewayNamespace {
+			requests = append(requests, ctrl.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      tailscaleGateway.Name,
+					Namespace: tailscaleGateway.Namespace,
+				},
+			})
+		}
+	}
+
+	return requests
+}
+
 // MapHTTPRouteToTailscaleGateway maps HTTPRoute changes to TailscaleGateway reconciliation requests
 func (r *TailscaleGatewayReconciler) MapHTTPRouteToTailscaleGateway(ctx context.Context, obj client.Object) []ctrl.Request {
 	httpRoute := obj.(*gwapiv1.HTTPRoute)
 
-	// Check if this HTTPRoute references a TailscaleGateway
-	if gatewayRef, exists := httpRoute.Annotations["gateway.tailscale.com/gateway"]; exists {
-		return []ctrl.Request{
-			{
-				NamespacedName: types.NamespacedName{
-					Name:      gatewayRef,
-					Namespace: httpRoute.Namespace,
-				},
-			},
-		}
-	}
-
-	return nil
+	// Check HTTPRoute parentRefs for Gateway references and find corresponding TailscaleGateways
+	return r.findTailscaleGatewaysFromParentRefs(ctx, httpRoute.Spec.ParentRefs, httpRoute.Namespace)
 }
 
 // MapTailnetToTailscaleGateway maps TailscaleTailnet changes to TailscaleGateway reconciliation requests
@@ -1338,112 +1585,91 @@ func (r *TailscaleGatewayReconciler) MapTailnetToTailscaleGateway(ctx context.Co
 func (r *TailscaleGatewayReconciler) MapTCPRouteToTailscaleGateway(ctx context.Context, obj client.Object) []ctrl.Request {
 	tcpRoute := obj.(*gwapiv1alpha2.TCPRoute)
 
-	// Check if this TCPRoute references a TailscaleGateway through annotations
-	if gatewayRef, exists := tcpRoute.Annotations["gateway.tailscale.com/gateway"]; exists {
-		return []ctrl.Request{{
-			NamespacedName: types.NamespacedName{
-				Name:      gatewayRef,
-				Namespace: tcpRoute.Namespace,
-			},
-		}}
-	}
+	// Check TCPRoute parentRefs for Gateway references and find corresponding TailscaleGateways
+	requests := r.findTailscaleGatewaysFromParentRefs(ctx, tcpRoute.Spec.ParentRefs, tcpRoute.Namespace)
 
-	// Also check if this TCPRoute has TailscaleEndpoints as backends
+	// Also check if this TCPRoute has TailscaleEndpoints as backends to find relevant gateways
 	for _, rule := range tcpRoute.Spec.Rules {
 		for _, backendRef := range rule.BackendRefs {
 			if backendRef.Group != nil && *backendRef.Group == "gateway.tailscale.com" &&
 				backendRef.Kind != nil && *backendRef.Kind == "TailscaleEndpoints" {
 				// Find TailscaleGateways that might be managing this route
-				return r.findGatewaysForNamespace(tcpRoute.Namespace)
+				gatewayRequests := r.findGatewaysForNamespace(tcpRoute.Namespace)
+				requests = append(requests, gatewayRequests...)
+				break
 			}
 		}
 	}
 
-	return nil
+	return requests
 }
 
 // MapUDPRouteToTailscaleGateway maps UDPRoute changes to TailscaleGateway reconciliation requests
 func (r *TailscaleGatewayReconciler) MapUDPRouteToTailscaleGateway(ctx context.Context, obj client.Object) []ctrl.Request {
 	udpRoute := obj.(*gwapiv1alpha2.UDPRoute)
 
-	// Check if this UDPRoute references a TailscaleGateway through annotations
-	if gatewayRef, exists := udpRoute.Annotations["gateway.tailscale.com/gateway"]; exists {
-		return []ctrl.Request{{
-			NamespacedName: types.NamespacedName{
-				Name:      gatewayRef,
-				Namespace: udpRoute.Namespace,
-			},
-		}}
-	}
+	// Check UDPRoute parentRefs for Gateway references and find corresponding TailscaleGateways
+	requests := r.findTailscaleGatewaysFromParentRefs(ctx, udpRoute.Spec.ParentRefs, udpRoute.Namespace)
 
-	// Also check if this UDPRoute has TailscaleEndpoints as backends
+	// Also check if this UDPRoute has TailscaleEndpoints as backends to find relevant gateways
 	for _, rule := range udpRoute.Spec.Rules {
 		for _, backendRef := range rule.BackendRefs {
 			if backendRef.Group != nil && *backendRef.Group == "gateway.tailscale.com" &&
 				backendRef.Kind != nil && *backendRef.Kind == "TailscaleEndpoints" {
 				// Find TailscaleGateways that might be managing this route
-				return r.findGatewaysForNamespace(udpRoute.Namespace)
+				gatewayRequests := r.findGatewaysForNamespace(udpRoute.Namespace)
+				requests = append(requests, gatewayRequests...)
+				break
 			}
 		}
 	}
 
-	return nil
+	return requests
 }
 
 // MapTLSRouteToTailscaleGateway maps TLSRoute changes to TailscaleGateway reconciliation requests
 func (r *TailscaleGatewayReconciler) MapTLSRouteToTailscaleGateway(ctx context.Context, obj client.Object) []ctrl.Request {
 	tlsRoute := obj.(*gwapiv1alpha2.TLSRoute)
 
-	// Check if this TLSRoute references a TailscaleGateway through annotations
-	if gatewayRef, exists := tlsRoute.Annotations["gateway.tailscale.com/gateway"]; exists {
-		return []ctrl.Request{{
-			NamespacedName: types.NamespacedName{
-				Name:      gatewayRef,
-				Namespace: tlsRoute.Namespace,
-			},
-		}}
-	}
+	// Check TLSRoute parentRefs for Gateway references and find corresponding TailscaleGateways
+	requests := r.findTailscaleGatewaysFromParentRefs(ctx, tlsRoute.Spec.ParentRefs, tlsRoute.Namespace)
 
-	// Also check if this TLSRoute has TailscaleEndpoints as backends
+	// Also check if this TLSRoute has TailscaleEndpoints as backends to find relevant gateways
 	for _, rule := range tlsRoute.Spec.Rules {
 		for _, backendRef := range rule.BackendRefs {
 			if backendRef.Group != nil && *backendRef.Group == "gateway.tailscale.com" &&
 				backendRef.Kind != nil && *backendRef.Kind == "TailscaleEndpoints" {
 				// Find TailscaleGateways that might be managing this route
-				return r.findGatewaysForNamespace(tlsRoute.Namespace)
+				gatewayRequests := r.findGatewaysForNamespace(tlsRoute.Namespace)
+				requests = append(requests, gatewayRequests...)
+				break
 			}
 		}
 	}
 
-	return nil
+	return requests
 }
 
 // MapGRPCRouteToTailscaleGateway maps GRPCRoute changes to TailscaleGateway reconciliation requests
 func (r *TailscaleGatewayReconciler) MapGRPCRouteToTailscaleGateway(ctx context.Context, obj client.Object) []ctrl.Request {
 	grpcRoute := obj.(*gwapiv1.GRPCRoute)
 
-	// Check if this GRPCRoute references a TailscaleGateway through annotations
-	if gatewayRef, exists := grpcRoute.Annotations["gateway.tailscale.com/gateway"]; exists {
-		return []ctrl.Request{{
-			NamespacedName: types.NamespacedName{
-				Name:      gatewayRef,
-				Namespace: grpcRoute.Namespace,
-			},
-		}}
-	}
+	// Check GRPCRoute parentRefs for Gateway references and find corresponding TailscaleGateways
+	requests := r.findTailscaleGatewaysFromParentRefs(ctx, grpcRoute.Spec.ParentRefs, grpcRoute.Namespace)
 
-	// Also check if this GRPCRoute has TailscaleEndpoints as backends
 	for _, rule := range grpcRoute.Spec.Rules {
 		for _, backendRef := range rule.BackendRefs {
 			if backendRef.Group != nil && *backendRef.Group == "gateway.tailscale.com" &&
 				backendRef.Kind != nil && *backendRef.Kind == "TailscaleEndpoints" {
 				// Find TailscaleGateways that might be managing this route
-				return r.findGatewaysForNamespace(grpcRoute.Namespace)
+				gatewayRequests := r.findGatewaysForNamespace(grpcRoute.Namespace)
+				requests = append(requests, gatewayRequests...)
+				break
 			}
 		}
 	}
 
-	return nil
+	return requests
 }
 
 // findGatewaysForNamespace finds all TailscaleGateways in a namespace
