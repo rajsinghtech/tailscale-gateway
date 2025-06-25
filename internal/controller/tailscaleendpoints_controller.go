@@ -2306,26 +2306,12 @@ func (r *TailscaleEndpointsReconciler) createTailscaledConfigs(hostname, authKey
 	// Create configs for different capability versions
 	configs := make(map[string][]byte)
 
-	// Capability version 116+ (current)
-	config116JSON, err := json.Marshal(baseConfig)
+	// Capability version 106 - official k8s-operator version for AdvertiseServices
+	config106JSON, err := json.Marshal(baseConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal cap-116 config: %w", err)
+		return nil, fmt.Errorf("failed to marshal cap-106 config: %w", err)
 	}
-	configs["cap-116.hujson"] = config116JSON
-
-	// Capability version 107 - similar to 116
-	config107JSON, err := json.Marshal(baseConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal cap-107 config: %w", err)
-	}
-	configs["cap-107.hujson"] = config107JSON
-
-	// Capability version 95 - legacy version
-	config95JSON, err := json.Marshal(baseConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal cap-95 config: %w", err)
-	}
-	configs["cap-95.hujson"] = config95JSON
+	configs["cap-106.hujson"] = config106JSON
 
 	return configs, nil
 }

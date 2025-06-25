@@ -50,7 +50,7 @@ func TestValidateTailscaleEndpoints(t *testing.T) {
 				},
 			},
 			expectError:   true,
-			errorContains: "must specify either static endpoints or enable auto-discovery",
+			errorContains: "must specify either static endpoints, enable auto-discovery, or provide proxy configuration with ports",
 		},
 		{
 			name: "valid with auto-discovery",

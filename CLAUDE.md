@@ -967,6 +967,28 @@ func hasConsistentState(d map[string][]byte) bool {
 
 **CRITICAL: Follow exact ProxyGroup patterns for StatefulSet state management.**
 
+## ✅ **FIXED: Capability Version Configuration Issue**
+
+### **Problem Resolved (June 25, 2025)**
+
+**Issue**: Capability version 109 was causing `json: unknown field "AdvertiseServices"` errors, preventing ingress proxy pods from starting.
+
+**Root Cause**: The `createTailscaledConfigs` function was generating cap-109.hujson with AdvertiseServices field, but Tailscale daemon version 109 doesn't support this field.
+
+**Solution Applied**:
+1. ✅ **Removed cap-109 configuration generation** from `createTailscaledConfigs` 
+2. ✅ **Simplified to single capability version**: Only cap-106.hujson (matching Tailscale k8s-operator pattern)
+3. ✅ **Verified AdvertiseServices support**: Cap-106 includes AdvertiseServices field and works correctly
+4. ✅ **Updated operator image and deployed** to kind cluster with fix
+
+**Verification Results**:
+- ✅ Test pods run successfully with cap-106 only configuration  
+- ✅ No "unknown field AdvertiseServices" errors
+- ✅ AdvertiseServices field present and valid in configuration
+- ✅ Cleaner codebase with single, proven capability version
+
+**Configuration Pattern**: Now follows exact Tailscale k8s-operator pattern using capability version 106 for AdvertiseServices.
+
 ## ✅ **IMPLEMENTED: Advanced Production Features**
 
 ### **Extension Server Features (COMPLETE)**

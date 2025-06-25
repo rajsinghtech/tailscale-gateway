@@ -220,7 +220,7 @@ kind-setup: ## Create kind cluster with Envoy Gateway for local development
 	@echo "Installing CRDs..."
 	kubectl apply -f config/crd/bases/
 	kubectl apply -f examples/0-oauth-secret.yaml
-	kubectl apply -f examples/1-tailnet.yaml -f examples/2-gateway.yaml -f examples/3-tailscalegateway.yaml
+	kubectl apply -f examples/1-tailnet.yaml -f examples/2-gateway.yaml -f examples/4-tailscaleservice.yaml
 	make run
 
 .PHONY: kind-cleanup

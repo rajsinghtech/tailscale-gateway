@@ -18,11 +18,13 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"go.uber.org/zap"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -36,8 +38,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	gatewayv1alpha1 "github.com/rajsinghtech/tailscale-gateway/api/v1alpha1"
-	"github.com/rajsinghtech/tailscale-gateway/internal/service"
+	tsservice "github.com/rajsinghtech/tailscale-gateway/internal/service"
 	"github.com/rajsinghtech/tailscale-gateway/internal/tailscale"
+	"tailscale.com/ipn"
 )
 
 const (
@@ -58,7 +61,7 @@ type TailscaleServicesReconciler struct {
 	Logger *zap.SugaredLogger
 
 	// ServiceCoordinator manages VIP service coordination
-	ServiceCoordinator *service.ServiceCoordinator
+	ServiceCoordinator *tsservice.ServiceCoordinator
 
 	// TailscaleClientManager provides Tailscale API clients
 	TailscaleClientManager *tailscale.MultiTailnetManager
@@ -167,7 +170,15 @@ func (r *TailscaleServicesReconciler) reconcileService(ctx context.Context, serv
 	}
 	gatewayv1alpha1.SetCondition(&service.Status.Conditions, "VIPServiceReady", metav1.ConditionTrue, "VIPServiceCreated", "VIP service created successfully")
 
-	// Step 3: Register backends
+	// Step 3: Update proxy configurations to advertise the VIP service
+	if err := r.reconcileProxyAdvertiseServices(ctx, service); err != nil {
+		logger.Error(err, "Failed to update proxy AdvertiseServices configuration")
+		gatewayv1alpha1.SetCondition(&service.Status.Conditions, "ProxyConfigReady", metav1.ConditionFalse, "ProxyConfigFailed", err.Error())
+		return ctrl.Result{RequeueAfter: RequeueAfterError}, err
+	}
+	gatewayv1alpha1.SetCondition(&service.Status.Conditions, "ProxyConfigReady", metav1.ConditionTrue, "ProxyConfigUpdated", "Proxy configurations updated successfully")
+
+	// Step 4: Register backends
 	if err := r.reconcileBackendRegistration(ctx, service); err != nil {
 		logger.Error(err, "Failed to reconcile backend registration")
 		gatewayv1alpha1.SetCondition(&service.Status.Conditions, "BackendsRegistered", metav1.ConditionFalse, "RegistrationFailed", err.Error())
@@ -303,8 +314,37 @@ func (r *TailscaleServicesReconciler) determineEndpointStatus(endpoint *gatewayv
 func (r *TailscaleServicesReconciler) reconcileVIPService(ctx context.Context, service *gatewayv1alpha1.TailscaleServices) error {
 	logger := log.FromContext(ctx)
 
+	// Get tailnet name from the service
+	tailnetName := r.getTailnetNameFromService(ctx, service)
+	if tailnetName == "" {
+		return fmt.Errorf("could not determine tailnet for service")
+	}
+
+	// Get Tailscale client for this tailnet
+	tsClient, err := r.TailscaleClientManager.GetClient(ctx, r.Client, tailnetName, service.Namespace)
+	if err != nil {
+		return fmt.Errorf("failed to get Tailscale client for tailnet %s: %w", tailnetName, err)
+	}
+
+	// Create ServiceCoordinator if not already created
 	if r.ServiceCoordinator == nil {
-		return fmt.Errorf("ServiceCoordinator not available")
+		// Generate operator and cluster IDs
+		operatorID := fmt.Sprintf("tailscale-gateway-operator-%s", service.Namespace)
+
+		// Use service UID as cluster ID basis for consistency
+		uidStr := string(service.UID)
+		if len(uidStr) < 8 {
+			uidStr = "00000000" // Fallback for tests or missing UID
+		}
+		clusterID := fmt.Sprintf("cluster-%s", uidStr[:8])
+
+		r.ServiceCoordinator = tsservice.NewServiceCoordinator(
+			tsClient,
+			r.Client,
+			operatorID,
+			clusterID,
+			r.Logger.Named("service-coordinator"),
+		)
 	}
 
 	// Determine service name
@@ -364,8 +404,8 @@ func (r *TailscaleServicesReconciler) reconcileVIPService(ctx context.Context, s
 }
 
 // buildServiceMetadata builds service metadata for the ServiceCoordinator
-func (r *TailscaleServicesReconciler) buildServiceMetadata(ctx context.Context, tailscaleService *gatewayv1alpha1.TailscaleServices) *service.ServiceMetadata {
-	metadata := &service.ServiceMetadata{
+func (r *TailscaleServicesReconciler) buildServiceMetadata(ctx context.Context, tailscaleService *gatewayv1alpha1.TailscaleServices) *tsservice.ServiceMetadata {
+	metadata := &tsservice.ServiceMetadata{
 		TailscaleServices: tailscaleService,
 	}
 
@@ -927,6 +967,112 @@ func (r *TailscaleServicesReconciler) isEndpointSelectedByAnyService(ctx context
 	}
 
 	return false
+}
+
+// reconcileProxyAdvertiseServices updates the ingress proxy configurations to advertise the VIP service
+func (r *TailscaleServicesReconciler) reconcileProxyAdvertiseServices(ctx context.Context, service *gatewayv1alpha1.TailscaleServices) error {
+	logger := log.FromContext(ctx)
+
+	// Get the VIP service name that should be advertised
+	serviceName := service.Spec.VIPService.Name
+	if serviceName == "" {
+		serviceName = service.Name
+	}
+
+	// Ensure the service name has the correct format
+	if !strings.HasPrefix(serviceName, "svc:") {
+		serviceName = "svc:" + serviceName
+	}
+
+	logger.Info("Updating proxy AdvertiseServices configuration", "serviceName", serviceName)
+
+	// Update ingress proxy configurations for each selected endpoint
+	for _, selectedEndpoint := range service.Status.SelectedEndpoints {
+		if err := r.updateEndpointIngressConfigs(ctx, selectedEndpoint.Name, selectedEndpoint.Namespace, serviceName); err != nil {
+			return fmt.Errorf("failed to update configs for endpoint %s/%s: %w", selectedEndpoint.Namespace, selectedEndpoint.Name, err)
+		}
+	}
+
+	return nil
+}
+
+// updateEndpointIngressConfigs updates the ingress proxy configs for a specific TailscaleEndpoints
+func (r *TailscaleServicesReconciler) updateEndpointIngressConfigs(ctx context.Context, endpointName, namespace, serviceName string) error {
+	logger := log.FromContext(ctx)
+
+	// List all config secrets for ingress proxies of this endpoint
+	secretList := &corev1.SecretList{}
+	selector := map[string]string{
+		"app.kubernetes.io/instance":  endpointName,
+		"app.kubernetes.io/component": "config",
+	}
+
+	if err := r.List(ctx, secretList, client.InNamespace(namespace), client.MatchingLabels(selector)); err != nil {
+		return fmt.Errorf("failed to list ingress config secrets: %w", err)
+	}
+
+	// Update each config secret (only ingress proxies should advertise services)
+	for _, secret := range secretList.Items {
+		if !strings.HasSuffix(secret.Name, "-config") {
+			continue // Skip non-config secrets
+		}
+
+		// Only update ingress proxy configs (not egress)
+		if !strings.Contains(secret.Name, "-ingress-") {
+			continue // Skip egress proxy configs
+		}
+
+		updated := false
+		for fileName, configData := range secret.Data {
+			if !strings.HasPrefix(fileName, "cap-") || !strings.HasSuffix(fileName, ".hujson") {
+				continue // Skip non-capability config files
+			}
+
+			// Parse the existing config using the proper ipn.ConfigVAlpha struct
+			var config ipn.ConfigVAlpha
+			if err := json.Unmarshal(configData, &config); err != nil {
+				logger.Error(err, "Failed to unmarshal config", "secret", secret.Name, "file", fileName)
+				continue
+			}
+
+			// Check if service is already advertised
+			serviceAlreadyAdvertised := false
+			for _, advertised := range config.AdvertiseServices {
+				if advertised == serviceName {
+					serviceAlreadyAdvertised = true
+					break
+				}
+			}
+
+			// Add service to AdvertiseServices if not already present
+			if !serviceAlreadyAdvertised {
+				config.AdvertiseServices = append(config.AdvertiseServices, serviceName)
+
+				// Marshal the updated config back
+				updatedConfig, err := json.Marshal(config)
+				if err != nil {
+					return fmt.Errorf("failed to marshal updated config: %w", err)
+				}
+
+				secret.Data[fileName] = updatedConfig
+				updated = true
+				logger.Info("Added service to AdvertiseServices",
+					"secret", secret.Name,
+					"file", fileName,
+					"service", serviceName)
+			}
+		}
+
+		// Update the secret if any configs were modified
+		if updated {
+			if err := r.Update(ctx, &secret); err != nil {
+				return fmt.Errorf("failed to update config secret %s: %w", secret.Name, err)
+			}
+			logger.Info("Updated ingress proxy config secret", "secret", secret.Name)
+		}
+	}
+
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -44,18 +44,6 @@ spec:
       containers:
       - name: manager
         env:
-        # OAuth Configuration
-        - name: TAILSCALE_CLIENT_ID
-          valueFrom:
-            secretKeyRef:
-              name: tailscale-oauth
-              key: client-id
-        - name: TAILSCALE_CLIENT_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: tailscale-oauth
-              key: client-secret
-        
         # Operator Settings
         - name: OPERATOR_NAMESPACE
           value: "tailscale-gateway-system"
@@ -96,6 +84,10 @@ spec:
         - name: LEADER_ELECTION_ENABLED
           value: "true"
 ```
+
+:::note OAuth Configuration
+OAuth credentials are configured per-tailnet via TailscaleTailnet resources, not as global environment variables. Each TailscaleTailnet resource specifies its own OAuth client ID and secret references. See the [TailscaleTailnet Configuration](#tailscaletailnet-configuration) section for details.
+:::
 
 ### ConfigMap Configuration
 
