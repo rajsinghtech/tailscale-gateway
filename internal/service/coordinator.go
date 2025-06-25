@@ -5,6 +5,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -730,6 +731,7 @@ func (sc *ServiceCoordinator) GenerateServiceName(targetBackend string) tailscal
 	hostname := strings.ToLower(targetBackend)
 	hostname = strings.ReplaceAll(hostname, ".", "-")
 	hostname = strings.ReplaceAll(hostname, "/", "-")
+	hostname = strings.ReplaceAll(hostname, ":", "-")
 	hostname = strings.Trim(hostname, "-")
 
 	serviceName := tailscale.ServiceName(fmt.Sprintf("svc:%s", hostname))
@@ -737,8 +739,9 @@ func (sc *ServiceCoordinator) GenerateServiceName(targetBackend string) tailscal
 	// Validate the generated service name
 	if err := serviceName.Validate(); err != nil {
 		sc.logger.Warnf("Generated invalid service name %s from backend %s: %v", serviceName, targetBackend, err)
-		// Return a safe fallback
-		return tailscale.ServiceName("svc:invalid-backend")
+		// Generate a safer fallback using hash
+		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(targetBackend)))
+		return tailscale.ServiceName(fmt.Sprintf("svc:backend-%s", hash[:8]))
 	}
 
 	return serviceName

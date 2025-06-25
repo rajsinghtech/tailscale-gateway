@@ -37,13 +37,11 @@ jobs:
 
     - name: Update chart for latest images
       run: |
-        # Update values.yaml to use latest tags for main branch
+        # Update values.yaml to use latest tags for main branch (both operator and extension server)
         sed -i 's/tag: ""/tag: "latest"/g' cmd/main/deploy/chart/values.yaml
         
-        # Update chart version to include commit SHA for main branch builds
-        COMMIT_SHA=$(git rev-parse --short HEAD)
-        CHART_VERSION="0.1.0-main-${COMMIT_SHA}"
-        sed -i "s/version: .*/version: ${CHART_VERSION}/" cmd/main/deploy/chart/Chart.yaml
+        # Use 0.0.0 as chart version for main branch builds (like envoy-gateway)
+        sed -i "s/version: .*/version: 0.0.0/" cmd/main/deploy/chart/Chart.yaml
         sed -i 's/appVersion: .*/appVersion: "latest"/' cmd/main/deploy/chart/Chart.yaml
 
     - name: Log in to GitHub Container Registry
@@ -52,13 +50,10 @@ jobs:
 
     - name: Package and push Helm chart (latest)
       run: |
-        COMMIT_SHA=$(git rev-parse --short HEAD)
-        CHART_VERSION="0.1.0-main-${COMMIT_SHA}"
-        
-        # Package chart with main branch version
-        helm package cmd/main/deploy/chart --version ${CHART_VERSION} --app-version latest
+        # Package chart with 0.0.0 version for main branch
+        helm package cmd/main/deploy/chart --version 0.0.0 --app-version latest
         
         # Push to OCI registry
-        helm push ${CHART_NAME}-${CHART_VERSION}.tgz oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
+        helm push ${CHART_NAME}-0.0.0.tgz oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/charts
         
-        echo "Published Helm chart: ${CHART_NAME}:${CHART_VERSION}"
+        echo "Published Helm chart: ${CHART_NAME}:0.0.0"

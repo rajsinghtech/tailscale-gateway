@@ -26,3 +26,5 @@ site/node_modules/
 site/build/
 site/.docusaurus/
 extension-server
+cover.out
+examples/0-oauth-secret.yaml

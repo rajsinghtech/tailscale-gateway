@@ -1,0 +1,21 @@
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleGateway
+metadata:
+  name: eg
+  namespace: default
+spec:
+  # Reference to the Envoy Gateway to integrate with
+  gatewayRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: eg
+    namespace: default
+  
+  # Configure tailnets and their service discovery
+  tailnets:
+  - name: test
+    tailscaleTailnetRef:
+      group: gateway.tailscale.com
+      kind: TailscaleTailnet
+      name: test-tailnet
+      namespace: default

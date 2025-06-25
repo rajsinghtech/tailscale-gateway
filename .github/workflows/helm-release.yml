@@ -46,7 +46,7 @@ jobs:
         sed -i "s/version: .*/version: ${{ steps.version.outputs.clean }}/" cmd/main/deploy/chart/Chart.yaml
         sed -i "s/appVersion: .*/appVersion: \"${{ steps.version.outputs.full }}\"/" cmd/main/deploy/chart/Chart.yaml
         
-        # Update default image tags in values.yaml
+        # Update default image tags in values.yaml for both operator and extension server
         sed -i "s/tag: \"\"/tag: \"${{ steps.version.outputs.full }}\"/g" cmd/main/deploy/chart/values.yaml
 
     - name: Log in to GitHub Container Registry

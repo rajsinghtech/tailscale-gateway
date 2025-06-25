@@ -4,9 +4,8 @@ metadata:
   name: test-tailnet
   namespace: default
 spec:
-  tailnet: "-"  # Use default tailnet
   oauthSecretName: tailscale-oauth
   oauthSecretNamespace: default
   tags:
-    - "tag:k8s-operator"
-    - "tag:test" 
+    - "tag:k8s"
+    - "tag:web"

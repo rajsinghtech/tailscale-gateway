@@ -617,7 +617,7 @@ func (r *TailscaleGatewayReconciler) reconcileBidirectionalServiceExposure(ctx c
 
 		// Process each endpoint for bidirectional exposure
 		for _, endpoint := range endpoints.Spec.Endpoints {
-			if endpoint.ExternalTarget != " " {
+			if endpoint.ExternalTarget != "" {
 				// Skip endpoints that already point to external targets
 				continue
 			}
