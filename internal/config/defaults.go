@@ -28,9 +28,8 @@ const (
 
 // Docker Images - Centralized image configuration
 const (
-	// Operator Images
-	DefaultOperatorImage        = "ghcr.io/rajsinghtech/tailscale-gateway-operator:latest"
-	DefaultExtensionServerImage = "ghcr.io/rajsinghtech/tailscale-gateway-extension-server:latest"
+	// Operator Images (extension server now integrated)
+	DefaultOperatorImage = "ghcr.io/rajsinghtech/tailscale-gateway-operator:latest"
 
 	// Tailscale Images
 	DefaultTailscaleImage = "tailscale/tailscale:stable"

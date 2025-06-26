@@ -409,8 +409,8 @@ kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator
 # Check generated routes
 kubectl get httproutes,tcproutes -A
 
-# Check extension server logs
-kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-extension-server
+# Check integrated extension server logs (within operator)
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator -c manager
 ```
 
 ## Related Resources

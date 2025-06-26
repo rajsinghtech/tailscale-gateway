@@ -1,0 +1,410 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: tailscaleservice.gateway.tailscale.com
+spec:
+  group: gateway.tailscale.com
+  names:
+    categories:
+    - tailscale-gateway
+    kind: TailscaleService
+    listKind: TailscaleServiceList
+    plural: tailscaleservice
+    singular: tailscaleservice
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - description: VIP service name
+      jsonPath: .status.vipServiceStatus.serviceName
+      name: VIP Service
+      type: string
+    - description: Total backends
+      jsonPath: .status.totalBackends
+      name: Backends
+      type: integer
+    - description: Healthy backends
+      jsonPath: .status.healthyBackends
+      name: Healthy
+      type: integer
+    - description: Service DNS name
+      jsonPath: .status.vipServiceStatus.dnsName
+      name: DNS Name
+      type: string
+    - description: Ready proxy replicas
+      jsonPath: .status.proxyStatus.readyReplicas
+      name: Ready Replicas
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: TailscaleService is the Schema for the tailscaleservice API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: TailscaleServiceSpec defines the desired state of TailscaleService
+            properties:
+              backends:
+                description: Backends defines the backend services for this VIP service
+                items:
+                  description: BackendSpec defines a backend service for the VIP service
+                  properties:
+                    address:
+                      description: |-
+                        Address for external backends
+                        Format: "hostname:port" or "ip:port"
+                      type: string
+                    priority:
+                      default: 0
+                      description: Priority for failover (0 = highest priority)
+                      format: int32
+                      minimum: 0
+                      type: integer
+                    service:
+                      description: |-
+                        Service reference for kubernetes backends
+                        Format: "service-name.namespace.svc.cluster.local:port"
+                      type: string
+                    tailscaleService:
+                      description: |-
+                        TailscaleService reference for tailscale backends
+                        Format: "service-name" (in same namespace) or "service-name.namespace"
+                      type: string
+                    type:
+                      description: 'Type of backend: kubernetes, external, or tailscale'
+                      enum:
+                      - kubernetes
+                      - external
+                      - tailscale
+                      type: string
+                    weight:
+                      default: 1
+                      description: Weight for load balancing (1-100)
+                      format: int32
+                      maximum: 100
+                      minimum: 1
+                      type: integer
+                  required:
+                  - type
+                  type: object
+                type: array
+              proxy:
+                description: Proxy configuration for creating Tailscale proxy infrastructure
+                properties:
+                  connectionType:
+                    default: bidirectional
+                    description: 'Connection type: ingress, egress, or bidirectional'
+                    enum:
+                    - ingress
+                    - egress
+                    - bidirectional
+                    type: string
+                  image:
+                    default: tailscale/tailscale:latest
+                    description: Image for the Tailscale proxy container
+                    type: string
+                  replicas:
+                    default: 2
+                    description: Number of proxy replicas
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  tags:
+                    description: Tags for the proxy machines (in addition to VIP service
+                      tags)
+                    items:
+                      type: string
+                    type: array
+                type: object
+              tailnet:
+                description: Tailnet to connect to (required if proxy is specified)
+                type: string
+              vipService:
+                description: VIPService configuration for the Tailscale VIP service
+                properties:
+                  autoApprove:
+                    default: true
+                    description: AutoApprove indicates whether endpoints should be
+                      auto-approved for hosting this service
+                    type: boolean
+                  comment:
+                    description: Comment for service documentation
+                    type: string
+                  name:
+                    description: |-
+                      Name of the VIP service (e.g., "svc:web-service")
+                      If not specified, defaults to "svc:<TailscaleService-name>"
+                    pattern: ^svc:[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    type: string
+                  ports:
+                    description: |-
+                      Ports the service should expose
+                      Format: ["tcp:80", "udp:53", "tcp:443"]
+                    items:
+                      type: string
+                    minItems: 1
+                    type: array
+                  tags:
+                    description: Tags for the VIP service (used in ACL policies)
+                    items:
+                      type: string
+                    minItems: 1
+                    type: array
+                required:
+                - ports
+                - tags
+                type: object
+            required:
+            - vipService
+            type: object
+          status:
+            description: TailscaleServiceStatus defines the observed state of TailscaleService
+            properties:
+              backendStatus:
+                description: BackendStatus provides status of configured backends
+                items:
+                  description: BackendStatus provides status of a configured backend
+                  properties:
+                    healthCheckError:
+                      description: HealthCheckError contains the last health check
+                        error
+                      type: string
+                    healthy:
+                      description: Healthy indicates if the backend is healthy
+                      type: boolean
+                    lastHealthCheck:
+                      description: LastHealthCheck when health was last checked
+                      format: date-time
+                      type: string
+                    priority:
+                      description: Priority is the effective priority for failover
+                      format: int32
+                      type: integer
+                    target:
+                      description: Target is the backend target (service, address,
+                        or tailscaleService)
+                      type: string
+                    type:
+                      description: Type of backend
+                      type: string
+                    weight:
+                      description: Weight is the effective weight for load balancing
+                      format: int32
+                      type: integer
+                  required:
+                  - healthy
+                  - priority
+                  - target
+                  - type
+                  - weight
+                  type: object
+                type: array
+              conditions:
+                description: Conditions represent the current state of the TailscaleService
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              healthyBackends:
+                description: HealthyBackends is the number of healthy backends
+                type: integer
+              lastUpdate:
+                description: LastUpdate indicates when the service status was last
+                  updated
+                format: date-time
+                type: string
+              proxyStatus:
+                description: ProxyStatus provides status of the proxy infrastructure
+                properties:
+                  createdAt:
+                    description: CreatedAt when the proxy infrastructure was created
+                    format: date-time
+                    type: string
+                  devices:
+                    description: Devices are the Tailscale devices created by the
+                      proxy
+                    items:
+                      description: ProxyDevice represents a Tailscale device created
+                        by the proxy
+                      properties:
+                        connected:
+                          description: Connected indicates if the device is connected
+                            to the tailnet
+                          type: boolean
+                        hostname:
+                          description: Hostname is the Tailscale hostname assigned
+                            to device
+                          type: string
+                        lastSeen:
+                          description: LastSeen when the device was last seen online
+                          format: date-time
+                          type: string
+                        nodeID:
+                          description: NodeID is the Tailscale node ID
+                          type: string
+                        podName:
+                          description: PodName is the Kubernetes pod backing this
+                            device
+                          type: string
+                        tailscaleIP:
+                          description: TailscaleIP is the Tailscale IP address
+                          type: string
+                      required:
+                      - connected
+                      - hostname
+                      type: object
+                    type: array
+                  readyReplicas:
+                    description: ReadyReplicas is the number of ready replicas
+                    format: int32
+                    type: integer
+                  replicas:
+                    description: Replicas is the desired number of replicas
+                    format: int32
+                    type: integer
+                  serviceName:
+                    description: ServiceName is the name of the Kubernetes service
+                      for the proxy
+                    type: string
+                  statefulSetName:
+                    description: StatefulSetName is the name of the created StatefulSet
+                    type: string
+                required:
+                - readyReplicas
+                - replicas
+                - statefulSetName
+                type: object
+              totalBackends:
+                description: TotalBackends is the total number of backends
+                type: integer
+              vipServiceStatus:
+                description: VIPServiceStatus provides status of the created VIP service
+                properties:
+                  addresses:
+                    description: Addresses are the allocated VIP addresses (IPv4 and
+                      IPv6)
+                    items:
+                      type: string
+                    type: array
+                  backendCount:
+                    description: BackendCount is the number of registered backends
+                    type: integer
+                  created:
+                    description: Created indicates whether the VIP service was successfully
+                      created
+                    type: boolean
+                  dnsName:
+                    description: DNSName is the DNS name for the service
+                    type: string
+                  healthyBackendCount:
+                    description: HealthyBackendCount is the number of healthy backends
+                    type: integer
+                  lastRegistration:
+                    description: LastRegistration when backends were last registered
+                    format: date-time
+                    type: string
+                  registrationErrors:
+                    description: RegistrationErrors tracks errors in VIP service management
+                    items:
+                      type: string
+                    type: array
+                  serviceName:
+                    description: ServiceName is the actual name of the created VIP
+                      service
+                    type: string
+                  serviceTags:
+                    description: ServiceTags are the actual tags applied to the VIP
+                      service
+                    items:
+                      type: string
+                    type: array
+                required:
+                - backendCount
+                - created
+                - healthyBackendCount
+                - serviceName
+                type: object
+            required:
+            - healthyBackends
+            - totalBackends
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

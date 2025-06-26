@@ -9,7 +9,6 @@ rules:
   resources:
   - configmaps
   - secrets
-  - serviceaccounts
   - services
   verbs:
   - create
@@ -30,7 +29,6 @@ rules:
 - apiGroups:
   - apps
   resources:
-  - deployments
   - statefulsets
   verbs:
   - create
@@ -41,7 +39,6 @@ rules:
   - update
   - watch
 - apiGroups:
-  - gateway.envoyproxy.io
   - gateway.networking.k8s.io
   resources:
   - gateways
@@ -50,23 +47,10 @@ rules:
   - list
   - watch
 - apiGroups:
-  - gateway.networking.k8s.io
-  resources:
-  - httproutes
-  verbs:
-  - create
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
   - gateway.tailscale.com
   resources:
-  - tailscaleendpoints
   - tailscalegateways
-  - tailscaleroutepolicies
-  - tailscaleservices
+  - tailscaleservice
   - tailscaletailnets
   verbs:
   - create
@@ -79,35 +63,18 @@ rules:
 - apiGroups:
   - gateway.tailscale.com
   resources:
-  - tailscaleendpoints/finalizers
   - tailscalegateways/finalizers
-  - tailscaleroutepolicies/finalizers
-  - tailscaleservices/finalizers
+  - tailscaleservice/finalizers
   - tailscaletailnets/finalizers
   verbs:
   - update
 - apiGroups:
   - gateway.tailscale.com
   resources:
-  - tailscaleendpoints/status
   - tailscalegateways/status
-  - tailscaleroutepolicies/status
-  - tailscaleservices/status
+  - tailscaleservice/status
   - tailscaletailnets/status
   verbs:
   - get
   - patch
   - update
-- apiGroups:
-  - rbac.authorization.k8s.io
-  resources:
-  - rolebindings
-  - roles
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch

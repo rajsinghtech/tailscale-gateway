@@ -103,42 +103,8 @@ priorityClassName: ""
 # Image pull secrets
 imagePullSecrets: []
 
-# Extension Server configuration
+# Extension Server configuration (integrated into main operator)
+# The extension server is now part of the main operator binary
 extensionServer:
-  # Enable the extension server deployment
-  enabled: true
-  
-  # Replica count for the extension server deployment
-  replicaCount: 1
-  
-  # Image configuration - uses the same base image as operator with different entrypoint
-  image:
-    repository: ghcr.io/rajsinghtech/tailscale-gateway-extension-server
-    pullPolicy: IfNotPresent
-    # Overrides the image tag whose default is the chart appVersion.
-    tag: ""
-  
-  # gRPC and probe port configuration
+  # gRPC port for extension server (runs within main operator)
   grpcPort: 5005
-  healthProbePort: 8081
-  metricsPort: 8080
-  
-  # Resources for the extension server pod
-  resources:
-    limits:
-      cpu: 500m
-      memory: 128Mi
-    requests:
-      cpu: 100m
-      memory: 64Mi
-  
-  # Service configuration
-  service:
-    type: ClusterIP
-    ports:
-      grpc: 5005
-      metrics: 8080
-  
-  # RBAC configuration for extension server
-  rbac:
-    create: true 

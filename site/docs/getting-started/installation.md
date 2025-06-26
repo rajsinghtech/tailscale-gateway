@@ -123,7 +123,7 @@ make docker-build
 
 # Load images into kind (if using kind)
 kind load docker-image tailscale-gateway:latest
-kind load docker-image tailscale-gateway-extension-server:latest
+# Extension server is now integrated into the main operator image
 
 # Deploy to cluster
 make deploy
@@ -201,12 +201,9 @@ operator:
       cpu: 10m
       memory: 64Mi
 
-# Extension server configuration
+# Extension server configuration (integrated into main operator)
 extensionServer:
-  image:
-    repository: ghcr.io/rajsinghtech/tailscale-gateway-extension-server
-    tag: latest
-  replicas: 2
+  enabled: true
   grpcPort: 5005
   resources:
     limits:
@@ -291,8 +288,8 @@ kubectl get pods -n tailscale-gateway-system
 # Check operator logs
 kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator
 
-# Check extension server logs
-kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-extension-server
+# Check integrated extension server logs (within operator)
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator -c manager
 ```
 
 ### Verify CRDs

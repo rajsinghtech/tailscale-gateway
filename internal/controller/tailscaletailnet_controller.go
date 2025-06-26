@@ -47,8 +47,6 @@ type TailscaleTailnetReconciler struct {
 	Logger   *zap.SugaredLogger
 	Recorder record.EventRecorder
 
-	// Metrics for tracking reconciliation performance
-	metrics *ReconcilerMetrics
 }
 
 //+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscaletailnets,verbs=get;list;watch;create;update;patch;delete

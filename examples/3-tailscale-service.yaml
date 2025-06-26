@@ -1,0 +1,29 @@
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleService
+metadata:
+  name: backend
+  namespace: default
+spec:
+  # VIP service configuration
+  vipService:
+    name: "svc:backend"
+    ports: ["tcp:3000"]
+    tags: ["tag:test"]
+    comment: "Web service for test applications"
+  
+  # Backend services
+  backends:
+    - type: kubernetes
+      service: "backend.default.svc.cluster.local:3000"
+      weight: 100
+      priority: 0
+
+  # Optional: Create proxy infrastructure
+  proxy:
+    replicas: 2
+    connectionType: "ingress"
+    image: "tailscale/tailscale:latest"
+    tags: ["tag:web"]
+  
+  # Tailnet to connect to (required if proxy is specified)
+  tailnet: "test-tailnet"

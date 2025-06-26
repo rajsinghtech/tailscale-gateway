@@ -424,8 +424,8 @@ curl -v http://100.64.0.10:8080/health
 # Verify backendRef configuration
 kubectl describe httproute api-route
 
-# Check extension server logs
-kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-extension-server
+# Check integrated extension server logs (within operator)
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator -c manager
 ```
 
 ## Related Resources

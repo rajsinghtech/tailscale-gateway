@@ -18,9 +18,8 @@ type OperatorConfig struct {
 	GRPCPort        int
 
 	// Images
-	OperatorImage        string
-	ExtensionServerImage string
-	TailscaleImage       string
+	OperatorImage  string
+	TailscaleImage string
 
 	// Intervals and Timeouts
 	SyncInterval        time.Duration
@@ -59,9 +58,8 @@ func NewOperatorConfig() *OperatorConfig {
 		GRPCPort:        DefaultGRPCPort,
 
 		// Images
-		OperatorImage:        DefaultOperatorImage,
-		ExtensionServerImage: DefaultExtensionServerImage,
-		TailscaleImage:       DefaultTailscaleImage,
+		OperatorImage:  DefaultOperatorImage,
+		TailscaleImage: DefaultTailscaleImage,
 
 		// Intervals and Timeouts
 		SyncInterval:        DefaultSyncInterval,
@@ -118,9 +116,6 @@ func (c *OperatorConfig) LoadFromEnvironment() error {
 		c.OperatorImage = image
 	}
 
-	if image := os.Getenv("EXTENSION_SERVER_IMAGE"); image != "" {
-		c.ExtensionServerImage = image
-	}
 
 	if image := os.Getenv("TAILSCALE_IMAGE"); image != "" {
 		c.TailscaleImage = image

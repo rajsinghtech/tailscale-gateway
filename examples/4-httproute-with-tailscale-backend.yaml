@@ -1,0 +1,23 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: backend-tailscale-service
+  namespace: default
+spec:
+  parentRefs:
+  - name: gateway
+    namespace: envoy-gateway-system
+  
+  hostnames:
+  - "tailscale.example.com"
+  
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - group: gateway.tailscale.com
+      kind: TailscaleService
+      name: backend
+      port: 3000

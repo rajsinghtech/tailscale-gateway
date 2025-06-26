@@ -40,6 +40,7 @@ spec:
         - --leader-elect
         {{- end }}
         - --log-level={{ .Values.logLevel }}
+        - --extension-grpc-port={{ .Values.extensionServer.grpcPort }}
         env:
         # Operator configuration
         - name: OPERATOR_NAMESPACE
@@ -49,6 +50,8 @@ spec:
           value: "{{ .Values.metrics.service.port }}"
         - name: HEALTH_PROBE_PORT
           value: "{{ .Values.healthProbe.service.port }}"
+        - name: EXTENSION_GRPC_PORT
+          value: "{{ .Values.extensionServer.grpcPort }}"
         # Feature flags
         - name: ENABLE_METRICS
           value: "{{ .Values.metrics.enabled }}"
@@ -85,6 +88,9 @@ spec:
           containerPort: {{ .Values.healthProbe.service.port }}
           protocol: TCP
         {{- end }}
+        - name: extension-grpc
+          containerPort: {{ .Values.extensionServer.grpcPort }}
+          protocol: TCP
         livenessProbe:
           httpGet:
             path: /healthz

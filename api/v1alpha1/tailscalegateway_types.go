@@ -132,15 +132,15 @@ type EgressRouteConfig struct {
 	Protocol string `json:"protocol"`
 }
 
-// ExtensionServerConfig configures the gRPC extension server deployment
+// ExtensionServerConfig configures the gRPC extension server (integrated into main operator)
 type ExtensionServerConfig struct {
-	// Image defines the container image for the Extension Server
-	// +kubebuilder:default="ghcr.io/rajsinghtech/tailscale-gateway-extension-server:latest"
+	// Image defines the container image for the Extension Server (deprecated - now integrated into main operator)
+	// +kubebuilder:default="ghcr.io/rajsinghtech/tailscale-gateway-operator:latest"
 	Image string `json:"image"`
 
-	// Replicas defines the number of Extension Server replicas
+	// Replicas defines the number of Extension Server replicas (deprecated - extension server now integrated)
 	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:default=2
+	// +kubebuilder:default=1
 	Replicas int32 `json:"replicas"`
 
 	// Resources defines resource requirements for Extension Server pods

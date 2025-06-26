@@ -52,7 +52,7 @@ spec:
         - name: HEALTH_PROBE_BIND_ADDRESS
           value: ":8081"
         
-        # Extension Server
+        # Extension Server (integrated)
         - name: EXTENSION_SERVER_ENABLED
           value: "true"
         - name: EXTENSION_SERVER_PORT
@@ -113,6 +113,7 @@ data:
       enabled: true
       port: 5005
       maxMessageSize: "1000M"
+      # Extension server runs integrated within the operator
       grpcOptions:
         maxReceiveMessageSize: 104857600  # 100MB
         maxSendMessageSize: 104857600     # 100MB

@@ -16,8 +16,10 @@ The integration follows this pattern:
                                 │                         │
                                 │                         │
                        ┌──────────────────┐               │
-                       │   Extension      │───────────────┘
-                       │     Server       │
+                       │ Tailscale Gateway│───────────────┘
+                       │ Operator with    │
+                       │ Integrated       │
+                       │ Extension Server │
                        └──────────────────┘
                                 │
                                 │
@@ -54,10 +56,11 @@ The extension server implements the Envoy Gateway Extension API with these hooks
 
 ## Configuration
 
-### 1. Deploy Extension Server
+### 1. Deploy Tailscale Gateway Operator (with integrated extension server)
 
 ```bash
-kubectl apply -f config/extension-server/deployment.yaml
+# Extension server is now integrated into the main operator
+kubectl apply -f config/manager/deployment.yaml
 ```
 
 ### 2. Configure Envoy Gateway
@@ -87,9 +90,10 @@ spec:
 
 ## Extension Server Configuration
 
-The extension server requires these environment variables:
+The integrated extension server is configured via environment variables in the operator:
 
-- `GRPC_PORT`: gRPC server port (default: 5005)
+- `EXTENSION_SERVER_ENABLED`: Enable extension server (default: true)
+- `EXTENSION_SERVER_PORT`: gRPC server port (default: 5005)
 - Plus standard Kubernetes service account permissions to read TailscaleEndpoints
 
 ## Envoy Gateway Configuration
@@ -106,7 +110,7 @@ extensionManager:
       - Translation    # Inject clusters
   service:
     fqdn:
-      hostname: tailscale-gateway-extension-server.tailscale-gateway-system.svc.cluster.local
+      hostname: tailscale-gateway-operator.tailscale-gateway-system.svc.cluster.local
       port: 5005
 ```
 
@@ -149,7 +153,8 @@ load_assignment:
 
 ### Extension Server Logs
 ```bash
-kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-extension-server
+# Extension server logs are integrated into the operator logs
+kubectl logs -n tailscale-gateway-system deployment/tailscale-gateway-operator -c manager
 ```
 
 ### Envoy Configuration Dump

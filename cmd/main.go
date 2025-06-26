@@ -19,11 +19,8 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/event"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gwapiv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
@@ -31,7 +28,7 @@ import (
 	gatewayv1alpha1 "github.com/rajsinghtech/tailscale-gateway/api/v1alpha1"
 	"github.com/rajsinghtech/tailscale-gateway/internal/config"
 	"github.com/rajsinghtech/tailscale-gateway/internal/controller"
-	"github.com/rajsinghtech/tailscale-gateway/internal/tailscale"
+	"github.com/rajsinghtech/tailscale-gateway/internal/proxy"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -114,16 +111,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create event channels for controller coordination
-	gatewayEventChan := make(chan event.GenericEvent, 100)
-	endpointsEventChan := make(chan event.GenericEvent, 100)
-	httpRouteEventChan := make(chan event.GenericEvent, 100)
-	tcpRouteEventChan := make(chan event.GenericEvent, 100)
-	udpRouteEventChan := make(chan event.GenericEvent, 100)
-	tlsRouteEventChan := make(chan event.GenericEvent, 100)
-	grpcRouteEventChan := make(chan event.GenericEvent, 100)
 
-	// Setup controllers with event coordination
+	// Setup controllers
 	if err = (&controller.TailscaleTailnetReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
@@ -134,93 +123,31 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Setup TailscaleEndpoints controller with event coordination
-	endpointsController := &controller.TailscaleEndpointsReconciler{
-		Client:                 mgr.GetClient(),
-		Scheme:                 mgr.GetScheme(),
-		TailscaleClientManager: tailscale.NewMultiTailnetManager(),
-		GatewayEventChan:       gatewayEventChan,
-		HTTPRouteEventChan:     httpRouteEventChan,
-		TCPRouteEventChan:      tcpRouteEventChan,
-		UDPRouteEventChan:      udpRouteEventChan,
-		TLSRouteEventChan:      tlsRouteEventChan,
-		GRPCRouteEventChan:     grpcRouteEventChan,
-	}
 
-	if err = ctrl.NewControllerManagedBy(mgr).
-		For(&gatewayv1alpha1.TailscaleEndpoints{}).
-		WatchesRawSource(source.Channel(endpointsEventChan, &handler.EnqueueRequestForObject{})).
-		Complete(endpointsController); err != nil {
-		setupLog.Error("unable to create controller", "controller", "TailscaleEndpoints", "error", err)
-		os.Exit(1)
-	}
-
-	// Setup TailscaleGateway controller with event coordination
-	gatewayController := &controller.TailscaleGatewayReconciler{
-		Client:             mgr.GetClient(),
-		Scheme:             mgr.GetScheme(),
-		Logger:             logger.Named("gateway-controller"),
-		Recorder:           mgr.GetEventRecorderFor("tailscale-gateway-controller"),
-		EndpointsEventChan: endpointsEventChan,
-		HTTPRouteEventChan: httpRouteEventChan,
-		TCPRouteEventChan:  tcpRouteEventChan,
-		UDPRouteEventChan:  udpRouteEventChan,
-		TLSRouteEventChan:  tlsRouteEventChan,
-		GRPCRouteEventChan: grpcRouteEventChan,
-		// Note: ServiceCoordinator and TailscaleClient will be initialized per-tailnet during reconciliation
-	}
-
-	if err = ctrl.NewControllerManagedBy(mgr).
-		For(&gatewayv1alpha1.TailscaleGateway{}).
-		Watches(&gwapiv1.HTTPRoute{}, handler.EnqueueRequestsFromMapFunc(gatewayController.MapHTTPRouteToTailscaleGateway)).
-		Watches(&gwapiv1alpha2.TCPRoute{}, handler.EnqueueRequestsFromMapFunc(gatewayController.MapTCPRouteToTailscaleGateway)).
-		Watches(&gwapiv1alpha2.UDPRoute{}, handler.EnqueueRequestsFromMapFunc(gatewayController.MapUDPRouteToTailscaleGateway)).
-		Watches(&gwapiv1alpha2.TLSRoute{}, handler.EnqueueRequestsFromMapFunc(gatewayController.MapTLSRouteToTailscaleGateway)).
-		Watches(&gwapiv1.GRPCRoute{}, handler.EnqueueRequestsFromMapFunc(gatewayController.MapGRPCRouteToTailscaleGateway)).
-		Watches(&gatewayv1alpha1.TailscaleTailnet{}, handler.EnqueueRequestsFromMapFunc(gatewayController.MapTailnetToTailscaleGateway)).
-		WatchesRawSource(source.Channel(gatewayEventChan, &handler.EnqueueRequestForObject{})).
-		Complete(gatewayController); err != nil {
+	// Setup TailscaleGateway controller (simplified)
+	if err = (&controller.TailscaleGatewayReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Logger:   logger.Named("gateway-controller"),
+		Recorder: mgr.GetEventRecorderFor("tailscale-gateway-controller"),
+	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error("unable to create controller", "controller", "TailscaleGateway", "error", err)
 		os.Exit(1)
 	}
 
-	// Setup TailscaleRoutePolicy controller with event coordination
-	routePolicyController := &controller.TailscaleRoutePolicyReconciler{
-		Client:             mgr.GetClient(),
-		Scheme:             mgr.GetScheme(),
-		Logger:             logger.Named("route-policy-controller"),
-		Recorder:           mgr.GetEventRecorderFor("tailscale-route-policy-controller"),
-		GatewayEventChan:   gatewayEventChan,
-		HTTPRouteEventChan: httpRouteEventChan,
-		TCPRouteEventChan:  tcpRouteEventChan,
-		UDPRouteEventChan:  udpRouteEventChan,
-		TLSRouteEventChan:  tlsRouteEventChan,
-		GRPCRouteEventChan: grpcRouteEventChan,
+
+
+	// Setup simplified TailscaleService controller (singular)
+	tailscaleServiceController := &controller.TailscaleServiceReconciler{
+		Client:       mgr.GetClient(),
+		Scheme:       mgr.GetScheme(),
+		TsClient:     nil, // Will be initialized when first needed
+		ManagerID:    "tailscale-gateway-operator",
+		ProxyBuilder: proxy.NewProxyBuilder(mgr.GetClient()),
 	}
 
-	if err = ctrl.NewControllerManagedBy(mgr).
-		For(&gatewayv1alpha1.TailscaleRoutePolicy{}).
-		Watches(&gwapiv1.Gateway{}, handler.EnqueueRequestsFromMapFunc(routePolicyController.MapGatewayToRoutePolicies)).
-		Watches(&gwapiv1.HTTPRoute{}, handler.EnqueueRequestsFromMapFunc(routePolicyController.MapHTTPRouteToRoutePolicies)).
-		Watches(&gatewayv1alpha1.TailscaleGateway{}, handler.EnqueueRequestsFromMapFunc(routePolicyController.MapTailscaleGatewayToRoutePolicies)).
-		WatchesRawSource(source.Channel(gatewayEventChan, &handler.EnqueueRequestForObject{})).
-		Complete(routePolicyController); err != nil {
-		setupLog.Error("unable to create controller", "controller", "TailscaleRoutePolicy", "error", err)
-		os.Exit(1)
-	}
-
-	// Setup TailscaleServices controller
-	servicesController := &controller.TailscaleServicesReconciler{
-		Client:                 mgr.GetClient(),
-		Scheme:                 mgr.GetScheme(),
-		Logger:                 logger.Named("services-controller"),
-		ServiceCoordinator:     nil, // Will be initialized with default settings
-		TailscaleClientManager: tailscale.NewMultiTailnetManager(),
-		EventChan:              nil, // Optional event channel for controller coordination
-	}
-
-	if err = servicesController.SetupWithManager(mgr); err != nil {
-		setupLog.Error("unable to create controller", "controller", "TailscaleServices", "error", err)
+	if err = tailscaleServiceController.SetupWithManager(mgr); err != nil {
+		setupLog.Error("unable to create controller", "controller", "TailscaleService", "error", err)
 		os.Exit(1)
 	}
 

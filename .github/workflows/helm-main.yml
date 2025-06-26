@@ -37,7 +37,7 @@ jobs:
 
     - name: Update chart for latest images
       run: |
-        # Update values.yaml to use latest tags for main branch (both operator and extension server)
+        # Update values.yaml to use latest tags for main branch
         sed -i 's/tag: ""/tag: "latest"/g' cmd/main/deploy/chart/values.yaml
         
         # Use 0.0.0-latest as chart version for main branch builds (like envoy-gateway)

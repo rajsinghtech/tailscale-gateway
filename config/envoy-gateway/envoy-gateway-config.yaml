@@ -23,7 +23,7 @@ data:
           - Translation
       service:
         fqdn:
-          hostname: tailscale-gateway-extension-server.default.svc.cluster.local
+          hostname: tailscale-gateway-operator-extension-server.tailscale-gateway-system.svc.cluster.local
           port: 5005
 ---
 apiVersion: gateway.networking.k8s.io/v1

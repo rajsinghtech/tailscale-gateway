@@ -69,7 +69,7 @@ spec:
                   Envoy Gateway xDS hooks for dynamic route injection.
                 properties:
                   image:
-                    default: ghcr.io/rajsinghtech/tailscale-gateway-extension-server:latest
+                    default: ghcr.io/rajsinghtech/tailscale-gateway-operator:latest
                     description: Image defines the container image for the Extension
                       Server
                     type: string

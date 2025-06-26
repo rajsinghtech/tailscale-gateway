@@ -219,15 +219,13 @@ kind-setup: ## Create kind cluster with Envoy Gateway and deploy local images fo
 	helm install my-gateway-helm oci://docker.io/envoyproxy/gateway-helm --version 0.0.0-latest -n envoy-gateway-system --create-namespace
 	@echo "Building and loading local images..."
 	$(MAKE) docker-build IMG=tailscale-gateway:latest
-	$(CONTAINER_TOOL) build -f cmd/extension-server/Dockerfile -t tailscale-gateway-extension-server:latest .
 	kind load docker-image tailscale-gateway:latest --name tailscale-gateway-dev
-	kind load docker-image tailscale-gateway-extension-server:latest --name tailscale-gateway-dev
 	@echo "Installing CRDs and deploying operator..."
 	kubectl apply -f config/crd/bases/
 	kubectl apply -f examples/0-oauth-secret.yaml
 	kubectl apply -f examples/1-tailnet.yaml -f examples/2-gateway.yaml -f examples/3-tailscalegateway.yaml -f examples/4-tailscaleservice.yaml
 	@echo "Deploying operator with local images..."
-	sed 's|ghcr.io/rajsinghtech/tailscale-gateway-operator:latest|tailscale-gateway:latest|g; s|ghcr.io/rajsinghtech/tailscale-gateway-extension-server:latest|tailscale-gateway-extension-server:latest|g' cmd/main/deploy/manifests/operator.yaml | kubectl apply -f -
+	sed 's|ghcr.io/rajsinghtech/tailscale-gateway-operator:latest|tailscale-gateway:latest|g' cmd/main/deploy/manifests/operator.yaml | kubectl apply -f -
 	@echo "✅ Kind cluster setup complete with local images"
 	@echo "Use 'kubectl get pods -n tailscale-gateway-system' to check operator status"
 

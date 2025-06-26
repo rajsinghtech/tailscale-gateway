@@ -31,7 +31,6 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/health/grpc_health_v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -105,11 +104,7 @@ func main() {
 	}))
 
 	// Create extension server
-	extensionServer, err := extension.NewTailscaleExtensionServer(kubeClient, structuredLogger)
-	if err != nil {
-		setupLog.Error("Failed to create extension server", "error", err)
-		os.Exit(1)
-	}
+	extensionServer := extension.NewTailscaleExtensionServer(kubeClient, structuredLogger)
 
 	// Setup metrics server (in a separate goroutine)
 	mgr, err := ctrl.NewManager(config, ctrl.Options{
@@ -147,9 +142,6 @@ func main() {
 	// Setup gRPC server
 	grpcServer := grpc.NewServer()
 	pb.RegisterEnvoyGatewayExtensionServer(grpcServer, extensionServer)
-
-	// Register extension server as health service (following AI Gateway pattern)
-	grpc_health_v1.RegisterHealthServer(grpcServer, extensionServer)
 
 	// Health checks are handled by controller-runtime manager
 
