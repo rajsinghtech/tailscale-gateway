@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/go-logr/zapr"
@@ -28,6 +29,7 @@ import (
 	gatewayv1alpha1 "github.com/rajsinghtech/tailscale-gateway/api/v1alpha1"
 	"github.com/rajsinghtech/tailscale-gateway/internal/config"
 	"github.com/rajsinghtech/tailscale-gateway/internal/controller"
+	"github.com/rajsinghtech/tailscale-gateway/internal/extension"
 	"github.com/rajsinghtech/tailscale-gateway/internal/proxy"
 	//+kubebuilder:scaffold:imports
 )
@@ -39,8 +41,8 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(gwapiv1.AddToScheme(scheme))
-	utilruntime.Must(gwapiv1alpha2.AddToScheme(scheme))
+	utilruntime.Must(gwapiv1.Install(scheme))
+	utilruntime.Must(gwapiv1alpha2.Install(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
@@ -50,12 +52,14 @@ func main() {
 
 	// Parse command line flags
 	var (
-		metricsAddr          = flag.String("metrics-bind-address", cfg.GetMetricsAddress(), "The address the metric endpoint binds to.")
-		probeAddr            = flag.String("health-probe-bind-address", cfg.GetHealthProbeAddress(), "The address the probe endpoint binds to.")
-		enableLeaderElection = flag.Bool("leader-elect", cfg.LeaderElection, "Enable leader election for controller manager.")
-		secureMetrics        = flag.Bool("metrics-secure", false, "If set the metrics endpoint is served securely")
-		enableHTTP2          = flag.Bool("enable-http2", false, "If set, HTTP/2 will be enabled for the metrics and webhook servers")
-		logLevel             = flag.String("log-level", cfg.LogLevel, "Log level (debug, info, warn, error)")
+		metricsAddr           = flag.String("metrics-bind-address", cfg.GetMetricsAddress(), "The address the metric endpoint binds to.")
+		probeAddr             = flag.String("health-probe-bind-address", cfg.GetHealthProbeAddress(), "The address the probe endpoint binds to.")
+		enableLeaderElection  = flag.Bool("leader-elect", cfg.LeaderElection, "Enable leader election for controller manager.")
+		secureMetrics         = flag.Bool("metrics-secure", false, "If set the metrics endpoint is served securely")
+		enableHTTP2           = flag.Bool("enable-http2", false, "If set, HTTP/2 will be enabled for the metrics and webhook servers")
+		logLevel              = flag.String("log-level", cfg.LogLevel, "Log level (debug, info, warn, error)")
+		extensionGrpcPort     = flag.Int("extension-grpc-port", 5005, "Port for the integrated extension server")
+		enableExtensionServer = flag.Bool("enable-extension-server", true, "Enable the integrated extension server")
 	)
 	flag.Parse()
 
@@ -161,6 +165,19 @@ func main() {
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		setupLog.Error("unable to set up ready check", "error", err)
 		os.Exit(1)
+	}
+
+	// Start integrated extension server if enabled
+	if *enableExtensionServer {
+		go func() {
+			extensionAddr := fmt.Sprintf(":%d", *extensionGrpcPort)
+			extensionLogger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+			setupLog.Info("starting integrated extension server", "address", extensionAddr)
+			
+			if err := extension.StartServer(extensionAddr, mgr.GetClient(), extensionLogger); err != nil {
+				setupLog.Error("extension server failed", "error", err)
+			}
+		}()
 	}
 
 	setupLog.Info("starting tailscale-gateway operator")

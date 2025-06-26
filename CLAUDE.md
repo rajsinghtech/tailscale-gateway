@@ -58,16 +58,22 @@ Update '/site' docs when making changes user facing changes to the app, never ca
 
 **Architecture Status**: Extension server is now fully integrated into the main operator process, providing the same functionality with simplified deployment and reduced operational complexity.
 
-## ✅ **CURRENT ARCHITECTURE: Simplified Single CRD Design (2025-06-26)**
+## ✅ **CURRENT ARCHITECTURE: TailscaleService-Centric with Integrated Extension Server (2025-06-26)**
 
-**Successfully simplified to a single TailscaleService CRD with integrated proxy builder architecture:**
+**Primary architecture centered on TailscaleService CRD with integrated extension server for Gateway API support:**
 
-### **TailscaleService CRD (Singular)**
+### **Core CRDs**
+1. **TailscaleService** (Service Management) - VIP service creation with optional proxy infrastructure
+2. **TailscaleTailnet** (Credentials) - OAuth credential and tailnet connection management
+3. **TailscaleGateway** (Gateway Scoping) - **Essential** for telling the extension server which Envoy Gateway instances to process
+
+### **TailscaleService CRD (Primary)**
 - **All-in-one resource** combining VIP service configuration and optional proxy infrastructure
 - **Direct VIP service specification** - no complex selectors needed
 - **Optional proxy creation** using production-grade ProxyBuilder
 - **Simple backend definitions** (kubernetes, external, tailscale types)
-- **Gateway API compatible** as backendRefs
+- **Gateway API compatible** as backendRefs in HTTPRoutes
+- **Self-contained** - can work independently or reference TailscaleTailnet for credentials
 
 ### **ProxyBuilder Architecture**
 Created `internal/proxy/builder.go` containing production-grade StatefulSet creation patterns:
@@ -97,12 +103,16 @@ proxySpec := &proxy.ProxySpec{
 err := proxyBuilder.CreateProxyInfrastructure(ctx, proxySpec)
 ```
 
-### **Extension Server**
-Integrated into the main operator process (simplified to handle only TailscaleService backends):
-- **Gateway API Compliance**: Supports TailscaleService as backendRefs in all route types
-- **Direct Integration**: No complex resource indexing or coordination
-- **Health-Aware Failover**: Priority-based load balancing
-- **Single Process**: Extension server runs within the main operator (no separate deployment needed)
+### **Integrated Extension Server with Multi-Protocol Support**
+✅ **Fully integrated into main operator process** with complete Gateway API support:
+- **Multi-Protocol Support**: Discovers TailscaleService backends in HTTPRoute, GRPCRoute, TCPRoute, UDPRoute, and TLSRoute
+- **Gateway-Scoped Processing**: Only processes routes that reference gateways with TailscaleGateway resources
+- **Real VIP Address Resolution**: Uses TailscaleService status and backend configurations instead of placeholder addresses
+- **Protocol-Aware Clustering**: Creates separate Envoy clusters for each protocol (http, grpc, tcp, udp, tls)
+- **Priority-based Load Balancing**: Supports weight/priority from backend specs across all protocols
+- **Health-Aware Failover**: Integrates with TailscaleService backend health status
+- **Command Line Flags**: `--extension-grpc-port=5005` and `--enable-extension-server=true`
+- **Multi-Tenant Support**: Different TailscaleGateway resources can scope different Gateway instances
 
 ## Project Overview
 
@@ -110,18 +120,24 @@ The Tailscale Gateway Operator combines the power of [Tailscale](https://tailsca
 
 ## Architecture Overview
 
-Simple unified architecture:
+**TailscaleService-centric architecture with supporting components:**
 
-1. **TailscaleService Controller**: Manages VIP services and optional proxy infrastructure
-2. **Extension Server**: Handles Gateway API route discovery and TailscaleService backends
-3. **ProxyBuilder**: Shared utility for production-grade proxy StatefulSet creation
+1. **TailscaleService Controller**: Primary controller managing VIP services and optional proxy infrastructure
+2. **TailscaleTailnet Controller**: OAuth credential and tailnet connection management
+3. **TailscaleGateway Controller**: Legacy multi-tailnet orchestration (deprecated)
+4. **Integrated Extension Server**: Gateway API integration running within main operator process
+5. **ProxyBuilder**: Shared utility for production-grade proxy StatefulSet creation
 
 ### **Current File Structure**
-- `api/v1alpha1/tailscaleservice_types.go` - Single simplified CRD
-- `internal/controller/tailscaleservice_controller.go` - Main controller using ProxyBuilder
-- `internal/proxy/builder.go` - Shared proxy creation utilities
-- `internal/extension/server.go` - Simplified extension server (284 lines)
-- `cmd/main.go` - Controller registration
+- `api/v1alpha1/tailscaleservice_types.go` - Primary CRD for service management
+- `api/v1alpha1/tailnettailscale_types.go` - OAuth credential management CRD
+- `api/v1alpha1/common_types.go` - Shared status and error types
+- `internal/controller/tailscaleservice_controller.go` - Primary controller using ProxyBuilder
+- `internal/controller/tailscaletailnet_controller.go` - Tailnet credential validation
+- `internal/controller/tailscalegateway_controller.go` - Legacy orchestration (to be deprecated)
+- `internal/proxy/builder.go` - Production-grade proxy creation utilities
+- `internal/extension/server.go` - Integrated extension server with real VIP resolution
+- `cmd/main.go` - All controller registration and extension server startup
 
 ## Development Commands
 
@@ -194,11 +210,126 @@ kind load docker-image tailscale-gateway:latest
 
 ## Architecture Benefits
 
-- ✅ **Dramatically Reduced Complexity**: Single CRD instead of multiple coordinating resources
+- ✅ **TailscaleService-Centric Design**: Primary CRD with supporting OAuth credential management
 - ✅ **Production-Ready Proxy Creation**: Shared ProxyBuilder with k8s-operator patterns
-- ✅ **Gateway API Compatible**: Direct TailscaleService backend support
-- ✅ **Maintainable**: Much simpler to understand and debug
-- ✅ **Build Success**: All compilation errors fixed
+- ✅ **Gateway API Compatible**: Direct TailscaleService backend support in HTTPRoutes
+- ✅ **Integrated Extension Server**: No separate deployment needed, real VIP address resolution
+- ✅ **Maintainable**: Clear CRD relationships and simplified architecture
+- ✅ **Build Success**: All compilation errors fixed, deprecated imports updated
+
+## ✅ **ARCHITECTURAL FIXES COMPLETED (2025-06-26)**
+
+**Successfully fixed all identified architectural issues:**
+
+### **Issues Fixed**
+
+1. ✅ **Extension Server Integration**: Fully integrated into main operator with command line flags
+2. ✅ **VIP Address Resolution**: Real endpoint resolution from TailscaleService status and backends  
+3. ✅ **Controller Registration**: All 3 controllers properly registered and working
+4. ✅ **Deprecated Imports**: Updated Gateway API imports to use Install() instead of AddToScheme()
+5. ✅ **Documentation Accuracy**: Updated CLAUDE.md to reflect actual multi-CRD architecture
+6. ✅ **Multi-Protocol Support**: Extension server now supports HTTPRoute, GRPCRoute, TCPRoute, UDPRoute, and TLSRoute
+
+### **Architectural Clarity Achieved**
+
+- **TailscaleService**: Primary CRD for VIP service management with optional proxy infrastructure
+- **TailscaleTailnet**: Supporting CRD for OAuth credential management  
+- **TailscaleGateway**: **Essential** CRD for gateway scoping - tells the extension server which Envoy Gateway instances to process
+- **Extension Server**: Integrated gRPC server on port 5005 with gateway-scoped processing
+- **ProxyBuilder**: Shared production-grade proxy infrastructure creation
+
+### **Command Line Usage**
+```bash
+# Start operator with integrated extension server
+./main --extension-grpc-port=5005 --enable-extension-server=true
+
+# Disable extension server if not using Gateway API
+./main --enable-extension-server=false
+```
+
+## ✅ **TAILSCALEGATEWAY ROLE CLARIFIED (2025-06-26)**
+
+**TailscaleGateway is essential for telling the operator which gateways to watch and process:**
+
+### **Why TailscaleGateway is Essential**
+
+Without TailscaleGateway resources, the extension server would process **every route in the cluster** (HTTP/GRPC/TCP/UDP/TLS) that has TailscaleService backends. TailscaleGateway provides:
+
+1. **Gateway Selection**: Tell the operator which specific Envoy Gateway instances to integrate with
+2. **Multi-Tenant Isolation**: Different teams can have separate gateway configurations
+3. **Environment Separation**: Production and staging can have isolated configurations
+4. **Selective Processing**: Only routes (HTTP/GRPC/TCP/UDP/TLS) that reference configured gateways get Tailscale integration
+
+### **TailscaleGateway Usage Pattern**
+```yaml
+apiVersion: gateway.tailscale.com/v1alpha1
+kind: TailscaleGateway
+metadata:
+  name: prod-gateway-config
+  namespace: production
+spec:
+  gatewayRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: envoy-gateway
+    namespace: gateway-system
+  tailnets:
+  - name: prod-tailnet
+    tailscaleTailnetRef:
+      name: prod-tailnet-credentials
+```
+
+### **Multi-Protocol Route Examples**
+
+**HTTPRoute with TailscaleService backend:**
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+spec:
+  rules:
+  - backendRefs:
+    - group: gateway.tailscale.com
+      kind: TailscaleService
+      name: web-service
+```
+
+**TCPRoute with TailscaleService backend:**
+```yaml
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TCPRoute
+spec:
+  rules:
+  - backendRefs:
+    - group: gateway.tailscale.com
+      kind: TailscaleService
+      name: database-service
+```
+
+**UDPRoute with TailscaleService backend:**
+```yaml
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: UDPRoute
+spec:
+  rules:
+  - backendRefs:
+    - group: gateway.tailscale.com
+      kind: TailscaleService
+      name: dns-service
+```
+
+### **How Gateway Scoping Works**
+
+1. **Extension Server Discovery**: Extension server watches all TailscaleGateway resources
+2. **Gateway Registry**: Maintains a registry of which Gateway instances should be processed
+3. **Route Filtering**: Only processes routes (HTTP/GRPC/TCP/UDP/TLS) that reference registered gateways
+4. **Scoped Processing**: `Route → parentRefs → Gateway → TailscaleGateway → Process TailscaleService backends`
+
+### **Backward Compatibility**
+
+- **No TailscaleGateway resources**: Extension server processes all routes (HTTP/GRPC/TCP/UDP/TLS) with TailscaleService backends
+- **With TailscaleGateway resources**: Extension server only processes routes for registered gateways
+
+This ensures existing deployments continue working while new deployments get proper gateway scoping.
 
 # important-instruction-reminders
 Do what has been asked; nothing more, nothing less.

@@ -4,7 +4,6 @@
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
@@ -134,25 +133,8 @@ type EgressRouteConfig struct {
 
 // ExtensionServerConfig configures the gRPC extension server (integrated into main operator)
 type ExtensionServerConfig struct {
-	// Image defines the container image for the Extension Server (deprecated - now integrated into main operator)
-	// +kubebuilder:default="ghcr.io/rajsinghtech/tailscale-gateway-operator:latest"
-	Image string `json:"image"`
-
-	// Replicas defines the number of Extension Server replicas (deprecated - extension server now integrated)
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:default=1
-	Replicas int32 `json:"replicas"`
-
-	// Resources defines resource requirements for Extension Server pods
-	// +optional
-	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
-
-	// ServiceAccountName defines the ServiceAccount for Extension Server pods
-	// +optional
-	ServiceAccountName string `json:"serviceAccountName,omitempty"`
-
 	// Port is the port number for the gRPC extension server.
-	// Defaults to 5005.
+	// +kubebuilder:default=5005
 	// +optional
 	Port *int32 `json:"port,omitempty"`
 

@@ -47,13 +47,9 @@ operator:
     tag: latest
   replicaCount: 1
 
-# Extension server configuration  
+# Extension server configuration (integrated into main operator)
 extensionServer:
-  enabled: true
-  image:
-    repository: ghcr.io/rajsinghtech/tailscale-gateway-extension-server
-    tag: latest
-  replicaCount: 1
+  grpcPort: 5005
 
 # OAuth configuration
 oauth:
@@ -80,8 +76,7 @@ helm install tailscale-gateway-operator oci://ghcr.io/rajsinghtech/charts/tailsc
 |-----------|-------------|---------|
 | `operator.image.repository` | Operator image repository | `ghcr.io/rajsinghtech/tailscale-gateway` |
 | `operator.image.tag` | Operator image tag | `""` (uses chart appVersion) |
-| `extensionServer.enabled` | Enable extension server | `true` |
-| `extensionServer.image.repository` | Extension server image repository | `ghcr.io/rajsinghtech/tailscale-gateway-extension-server` |
+| `extensionServer.grpcPort` | gRPC port for integrated extension server | `5005` |
 | `oauth.existingSecret` | Name of existing OAuth secret | `""` |
 | `rbac.create` | Create RBAC resources | `true` |
 | `serviceAccount.create` | Create service account | `true` |

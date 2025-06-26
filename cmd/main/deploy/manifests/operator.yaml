@@ -1,3 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tailscale-gateway-system
+---
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -68,87 +73,11 @@ spec:
                   ExtensionServer configures the gRPC extension server that implements
                   Envoy Gateway xDS hooks for dynamic route injection.
                 properties:
-                  image:
-                    default: ghcr.io/rajsinghtech/tailscale-gateway-extension-server:latest
-                    description: Image defines the container image for the Extension
-                      Server
-                    type: string
                   port:
-                    description: |-
-                      Port is the port number for the gRPC extension server.
-                      Defaults to 5005.
+                    default: 5005
+                    description: Port is the port number for the gRPC extension server.
                     format: int32
                     type: integer
-                  replicas:
-                    default: 2
-                    description: Replicas defines the number of Extension Server replicas
-                    format: int32
-                    minimum: 1
-                    type: integer
-                  resources:
-                    description: Resources defines resource requirements for Extension
-                      Server pods
-                    properties:
-                      claims:
-                        description: |-
-                          Claims lists the names of resources, defined in spec.resourceClaims,
-                          that are used by this container.
-
-                          This is an alpha field and requires enabling the
-                          DynamicResourceAllocation feature gate.
-
-                          This field is immutable. It can only be set for containers.
-                        items:
-                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
-                          properties:
-                            name:
-                              description: |-
-                                Name must match the name of one entry in pod.spec.resourceClaims of
-                                the Pod where this field is used. It makes that resource available
-                                inside a container.
-                              type: string
-                            request:
-                              description: |-
-                                Request is the name chosen for a request in the referenced claim.
-                                If empty, everything from the claim is made available, otherwise
-                                only the result of this request.
-                              type: string
-                          required:
-                          - name
-                          type: object
-                        type: array
-                        x-kubernetes-list-map-keys:
-                        - name
-                        x-kubernetes-list-type: map
-                      limits:
-                        additionalProperties:
-                          anyOf:
-                          - type: integer
-                          - type: string
-                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                          x-kubernetes-int-or-string: true
-                        description: |-
-                          Limits describes the maximum amount of compute resources allowed.
-                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
-                        type: object
-                      requests:
-                        additionalProperties:
-                          anyOf:
-                          - type: integer
-                          - type: string
-                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                          x-kubernetes-int-or-string: true
-                        description: |-
-                          Requests describes the minimum amount of compute resources required.
-                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
-                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
-                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
-                        type: object
-                    type: object
-                  serviceAccountName:
-                    description: ServiceAccountName defines the ServiceAccount for
-                      Extension Server pods
-                    type: string
                   tls:
                     description: TLS configures TLS settings for the extension server.
                     properties:
@@ -201,9 +130,6 @@ spec:
                           Should only be used for development/testing.
                         type: boolean
                     type: object
-                required:
-                - image
-                - replicas
                 type: object
               gatewayRef:
                 description: |-
@@ -1650,6 +1576,8 @@ spec:
     storage: true
     subresources:
       status: {}
+
+---
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -2060,6 +1988,8 @@ spec:
     storage: true
     subresources:
       status: {}
+
+---
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -2717,3 +2647,138 @@ spec:
     storage: true
     subresources:
       status: {}
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tailscale-gateway-operator
+  namespace: tailscale-gateway-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tailscale-gateway-operator-role
+rules:
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+- apiGroups: [""]
+  resources: ["secrets", "services", "configmaps", "serviceaccounts"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["gateway.tailscale.com"]
+  resources: ["tailscaletailnets", "tailscalegateways", "tailscaleroutepolicies", "tailscaleendpoints", "tailscaleservices"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["gateway.tailscale.com"]
+  resources: ["tailscaletailnets/finalizers", "tailscalegateways/finalizers", "tailscaleroutepolicies/finalizers", "tailscaleendpoints/finalizers", "tailscaleservices/finalizers"]
+  verbs: ["update"]
+- apiGroups: ["gateway.tailscale.com"]
+  resources: ["tailscaletailnets/status", "tailscalegateways/status", "tailscaleroutepolicies/status", "tailscaleendpoints/status", "tailscaleservices/status"]
+  verbs: ["get", "patch", "update"]
+- apiGroups: ["gateway.networking.k8s.io"]
+  resources: ["gateways", "httproutes", "grpcroutes", "tcproutes", "tlsroutes", "udproutes"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["gateway.networking.k8s.io"]
+  resources: ["gateways/status", "httproutes/status", "grpcroutes/status", "tcproutes/status", "tlsroutes/status", "udproutes/status"]
+  verbs: ["get", "patch", "update"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["roles", "rolebindings"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tailscale-gateway-operator-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tailscale-gateway-operator-role
+subjects:
+- kind: ServiceAccount
+  name: tailscale-gateway-operator
+  namespace: tailscale-gateway-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tailscale-gateway-operator
+  namespace: tailscale-gateway-system
+  labels:
+    app.kubernetes.io/name: tailscale-gateway-operator
+    app.kubernetes.io/component: operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tailscale-gateway-operator
+      app.kubernetes.io/component: operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tailscale-gateway-operator
+        app.kubernetes.io/component: operator
+    spec:
+      serviceAccountName: tailscale-gateway-operator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      containers:
+      - name: manager
+        image: ghcr.io/rajsinghtech/tailscale-gateway-operator:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        - --health-probe-bind-address=:8081
+        - --metrics-bind-address=:8080
+        - --leader-elect
+        - --log-level=info
+        env:
+        - name: OPERATOR_NAMESPACE
+          value: tailscale-gateway-system
+        - name: PROXY_IMAGE
+          value: tailscale/tailscale:stable
+        ports:
+        - name: metrics
+          containerPort: 8080
+          protocol: TCP
+        - name: health
+          containerPort: 8081
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 500m
+            memory: 128Mi
+          requests:
+            cpu: 10m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - mountPath: /tmp
+          name: temp
+      volumes:
+      - name: temp
+        emptyDir: {}
