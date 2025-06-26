@@ -162,6 +162,7 @@ func parseAPIError(resp *http.Response) error {
 type Client interface {
 	// Device operations
 	Devices(ctx context.Context) ([]tailscaleclient.Device, error)
+	DeleteDevice(ctx context.Context, deviceID string) error
 	// Auth key operations
 	CreateKey(ctx context.Context, caps tailscaleclient.KeyCapabilities) (*tailscaleclient.Key, error)
 	DeleteKey(ctx context.Context, id string) error
@@ -264,6 +265,11 @@ func NewClientFromSecretFiles(ctx context.Context, tailnet, apiBaseURL, clientID
 // Devices returns all devices in the tailnet
 func (c *clientImpl) Devices(ctx context.Context) ([]tailscaleclient.Device, error) {
 	return c.Client.Devices().List(ctx)
+}
+
+// DeleteDevice deletes a device from the tailnet by device ID
+func (c *clientImpl) DeleteDevice(ctx context.Context, deviceID string) error {
+	return c.Client.Devices().Delete(ctx, deviceID)
 }
 
 // CreateKey creates a new auth key with the specified capabilities
@@ -582,6 +588,7 @@ func validatePortSpec(portSpec string) error {
 // MockClient provides a mock implementation for testing
 type MockClient struct {
 	DevicesFunc                  func(ctx context.Context) ([]tailscaleclient.Device, error)
+	DeleteDeviceFunc             func(ctx context.Context, deviceID string) error
 	CreateKeyFunc                func(ctx context.Context, caps tailscaleclient.KeyCapabilities) (*tailscaleclient.Key, error)
 	DeleteKeyFunc                func(ctx context.Context, id string) error
 	DiscoverTailnetFunc          func(ctx context.Context) (*TailnetMetadata, error)
@@ -598,6 +605,13 @@ func (m *MockClient) Devices(ctx context.Context) ([]tailscaleclient.Device, err
 		return m.DevicesFunc(ctx)
 	}
 	return nil, fmt.Errorf("not implemented")
+}
+
+func (m *MockClient) DeleteDevice(ctx context.Context, deviceID string) error {
+	if m.DeleteDeviceFunc != nil {
+		return m.DeleteDeviceFunc(ctx, deviceID)
+	}
+	return fmt.Errorf("not implemented")
 }
 
 func (m *MockClient) CreateKey(ctx context.Context, caps tailscaleclient.KeyCapabilities) (*tailscaleclient.Key, error) {

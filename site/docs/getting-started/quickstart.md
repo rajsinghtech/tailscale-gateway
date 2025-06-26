@@ -195,8 +195,6 @@ Now that you have a working setup:
 
 - **[Explore Examples](../examples/basic-usage)** - More real-world configurations
 - **[Configure Multi-Protocol Services](../examples/multi-protocol)** - TCP, UDP, gRPC routing
-- **[Set Up Monitoring](../operations/monitoring)** - Observability and metrics
-- **[Production Deployment](../operations/production)** - Best practices for production
 
 ## Troubleshooting
 
@@ -217,7 +215,7 @@ If something isn't working:
    kubectl get gateways,httproutes -A
    ```
 
-4. **Review the [Troubleshooting Guide](../operations/troubleshooting)** for common issues
+4. **Check resource status** for any error conditions
 
 ## Need Help?
 

@@ -13,8 +13,7 @@ spec:
   vipService:
     name: "svc:auto-web-service"
     ports:
-      - "tcp:80"
-      - "tcp:443"
+      - "tcp:3000"
     tags:
       - "tag:test"
     comment: "Auto-provisioned web service"
@@ -37,14 +36,13 @@ spec:
     # Proxy configuration
     proxy:
       replicas: 3
-      connectionType: bidirectional
+      connectionType: ingress
     
     # Ports to serve
     ports:
-      - port: 80
+      - port: 3000
         protocol: TCP
-      - port: 443
-        protocol: TCP
+        externalTarget: "backend.default.svc.cluster.local:3000"
     
     # Labels to apply (must match selector above)
     labels:

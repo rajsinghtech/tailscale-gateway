@@ -733,6 +733,10 @@ type TailscaleDevice struct {
 	// Tags are the Tailscale tags applied to this device
 	// +optional
 	Tags []string `json:"tags,omitempty"`
+
+	// AuthKeyID is the ID of the auth key used to create this device (for cleanup)
+	// +optional
+	AuthKeyID string `json:"authKeyID,omitempty"`
 }
 
 // StatefulSetInfo provides information about created StatefulSets

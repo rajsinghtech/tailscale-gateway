@@ -1096,6 +1096,49 @@ if len(pg.Status.Devices) != desiredReplicas {
 
 **Recommendation:** The Tailscale Gateway Operator is feature-complete and production-ready. No significant implementation gaps exist.
 
+## ✅ **IMPLEMENTED: Official Tailscale k8s-operator Service Advertisement Patterns (2025-06-26)**
+
+**Successfully implemented proper ingress service advertisement following exact patterns from `../tailscale/cmd/k8s-operator/svc-for-pg.go`:**
+
+### **Key Implementation Features**
+
+1. **VIP Service Creation**: 
+   - Uses `tailscale.ServiceName("svc:" + hostname)` pattern
+   - Sets `Ports: []string{"do-not-validate"}` following official pattern
+   - Includes proper owner annotations for multi-operator coordination
+
+2. **AdvertiseServices Configuration**:
+   - Updates all config secrets for TailscaleEndpoints
+   - Adds/removes service names from `conf.AdvertiseServices` array
+   - Follows exact `maybeUpdateAdvertiseServicesConfig` pattern from official operator
+
+3. **Ingress Service ConfigMap**:
+   - Creates ingress services configuration for backend routing
+   - Maps Tailscale Service IPs to backend services
+   - Uses `ingressservices.Configs` structure pattern
+
+4. **Integration with Reconciliation**:
+   - `handleIngressServiceAdvertisement()` orchestrates the complete flow
+   - Called during reconciliation for ingress connections
+   - Non-blocking errors to prevent reconciliation failures
+
+### **Functions Added**
+- `createVIPServiceForIngress()`: Creates Tailscale VIP services
+- `maybeUpdateAdvertiseServicesConfig()`: Updates AdvertiseServices in config secrets
+- `createIngressServiceConfigMap()`: Creates backend routing configuration
+- `handleIngressServiceAdvertisement()`: Orchestrates complete advertisement flow
+- `generateServiceHostname()`, `generateOwnerAnnotations()`, `ownersAreSetAndEqual()`: Helper functions
+
+### **Configuration Pattern**
+```go
+// Initialize AdvertiseServices as empty array for ingress connections
+if connectionType == "ingress" {
+    baseConfig["AdvertiseServices"] = []string{}
+}
+```
+
+**Status**: ✅ COMPLETE - Ingress services now properly advertised following official Tailscale k8s-operator patterns
+
 ## ✅ **COMPLETED: TailscaleEndpoints CRD Refactoring (2025-06-25)**
 
 **Successfully refactored TailscaleEndpoints to focus on StatefulSet/proxy infrastructure management:**

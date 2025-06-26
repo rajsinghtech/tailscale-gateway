@@ -71,7 +71,7 @@ type TailscaleRoutePolicyReconciler struct {
 //+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscalegateways,verbs=get;list;watch
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch
-//+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+//+kubebuilder:rbac:groups="",resources=events,verbs=create;get;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -433,59 +433,48 @@ func (r *TailscaleRoutePolicyReconciler) notifyGatewayController(ctx context.Con
 	case <-ctx.Done():
 		return
 	default:
-		logger.V(1).Info("Gateway event channel full, dropping notification", "object", obj.GetName())
+		// Critical: Channel is full - this could lead to missed reconciliation events
+		logger.Error(nil, "Gateway event channel full, dropping critical notification - this may cause inconsistent state",
+			"object", obj.GetName(), "namespace", obj.GetNamespace(),
+			"action", "investigate_channel_buffer_size_or_consumer_performance")
 	}
 }
 
 // notifyRouteControllers sends events to all route controllers when policies are applied
 func (r *TailscaleRoutePolicyReconciler) notifyRouteControllers(ctx context.Context, obj client.Object) {
 	logger := log.FromContext(ctx)
+	droppedNotifications := 0
 
-	if r.HTTPRouteEventChan != nil {
+	// Helper function to send notification with proper error handling
+	sendNotification := func(ch chan event.GenericEvent, routeType string) {
+		if ch == nil {
+			return
+		}
 		select {
-		case r.HTTPRouteEventChan <- event.GenericEvent{Object: obj}:
-			logger.V(1).Info("Notified HTTPRoute controller", "object", obj.GetName(), "namespace", obj.GetNamespace())
+		case ch <- event.GenericEvent{Object: obj}:
+			logger.V(1).Info("Notified route controller", "routeType", routeType, "object", obj.GetName(), "namespace", obj.GetNamespace())
 		case <-ctx.Done():
 			return
 		default:
-			logger.V(1).Info("HTTPRoute event channel full, dropping notification", "object", obj.GetName())
+			logger.Error(nil, "Route controller event channel full, dropping critical notification",
+				"routeType", routeType, "object", obj.GetName(), "namespace", obj.GetNamespace(),
+				"action", "investigate_channel_buffer_size_or_consumer_performance")
+			droppedNotifications++
 		}
 	}
 
-	if r.TCPRouteEventChan != nil {
-		select {
-		case r.TCPRouteEventChan <- event.GenericEvent{Object: obj}:
-		case <-ctx.Done():
-			return
-		default:
-		}
-	}
+	// Send notifications to all route controllers
+	sendNotification(r.HTTPRouteEventChan, "HTTPRoute")
+	sendNotification(r.TCPRouteEventChan, "TCPRoute")
+	sendNotification(r.UDPRouteEventChan, "UDPRoute")
+	sendNotification(r.TLSRouteEventChan, "TLSRoute")
+	sendNotification(r.GRPCRouteEventChan, "GRPCRoute")
 
-	if r.UDPRouteEventChan != nil {
-		select {
-		case r.UDPRouteEventChan <- event.GenericEvent{Object: obj}:
-		case <-ctx.Done():
-			return
-		default:
-		}
-	}
-
-	if r.TLSRouteEventChan != nil {
-		select {
-		case r.TLSRouteEventChan <- event.GenericEvent{Object: obj}:
-		case <-ctx.Done():
-			return
-		default:
-		}
-	}
-
-	if r.GRPCRouteEventChan != nil {
-		select {
-		case r.GRPCRouteEventChan <- event.GenericEvent{Object: obj}:
-		case <-ctx.Done():
-			return
-		default:
-		}
+	// Log summary if any notifications were dropped
+	if droppedNotifications > 0 {
+		logger.Error(nil, "Multiple route controller notifications dropped",
+			"droppedCount", droppedNotifications, "object", obj.GetName(), "namespace", obj.GetNamespace(),
+			"action", "check_event_channel_buffer_sizes_and_consumer_performance")
 	}
 }
 

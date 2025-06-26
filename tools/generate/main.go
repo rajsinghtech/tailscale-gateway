@@ -265,19 +265,19 @@ rules:
   resources: ["events"]
   verbs: ["create", "patch"]
 - apiGroups: [""]
-  resources: ["secrets", "services", "configmaps"]
+  resources: ["secrets", "services", "configmaps", "serviceaccounts"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 - apiGroups: ["apps"]
   resources: ["deployments", "statefulsets"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 - apiGroups: ["gateway.tailscale.com"]
-  resources: ["tailscaletailnets", "tailscalegateways", "tailscaleroutepolicies"]
+  resources: ["tailscaletailnets", "tailscalegateways", "tailscaleroutepolicies", "tailscaleendpoints", "tailscaleservices"]
   verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
 - apiGroups: ["gateway.tailscale.com"]
-  resources: ["tailscaletailnets/finalizers", "tailscalegateways/finalizers", "tailscaleroutepolicies/finalizers"]
+  resources: ["tailscaletailnets/finalizers", "tailscalegateways/finalizers", "tailscaleroutepolicies/finalizers", "tailscaleendpoints/finalizers", "tailscaleservices/finalizers"]
   verbs: ["update"]
 - apiGroups: ["gateway.tailscale.com"]
-  resources: ["tailscaletailnets/status", "tailscalegateways/status", "tailscaleroutepolicies/status"]
+  resources: ["tailscaletailnets/status", "tailscalegateways/status", "tailscaleroutepolicies/status", "tailscaleendpoints/status", "tailscaleservices/status"]
   verbs: ["get", "patch", "update"]
 - apiGroups: ["gateway.networking.k8s.io"]
   resources: ["gateways", "httproutes", "grpcroutes", "tcproutes", "tlsroutes", "udproutes"]
@@ -287,6 +287,9 @@ rules:
   verbs: ["get", "patch", "update"]
 - apiGroups: ["coordination.k8s.io"]
   resources: ["leases"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["roles", "rolebindings"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]`,
 		// ClusterRoleBinding
 		`apiVersion: rbac.authorization.k8s.io/v1
@@ -330,7 +333,7 @@ spec:
         fsGroup: 65532
       containers:
       - name: manager
-        image: ghcr.io/rajsinghtech/tailscale-gateway-operator:v0.1.0
+        image: ghcr.io/rajsinghtech/tailscale-gateway-operator:latest
         imagePullPolicy: IfNotPresent
         args:
         - --health-probe-bind-address=:8081

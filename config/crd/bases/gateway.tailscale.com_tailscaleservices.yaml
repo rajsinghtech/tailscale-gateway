@@ -87,6 +87,11 @@ spec:
                       description: PortTemplate defines port configuration for auto-created
                         endpoints
                       properties:
+                        externalTarget:
+                          description: |-
+                            ExternalTarget defines the backend service this port should route to
+                            Format: "service-name.namespace.svc.cluster.local:port" or "hostname:port"
+                          type: string
                         port:
                           description: Port number
                           format: int32

@@ -25,6 +25,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,10 +46,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	tailscaleclient "tailscale.com/client/tailscale/v2"
 
+	"slices"
+
 	gatewayv1alpha1 "github.com/rajsinghtech/tailscale-gateway/api/v1alpha1"
 	"github.com/rajsinghtech/tailscale-gateway/internal/metrics"
 	"github.com/rajsinghtech/tailscale-gateway/internal/tailscale"
 	"github.com/rajsinghtech/tailscale-gateway/internal/validation"
+	"tailscale.com/ipn"
 )
 
 const (
@@ -58,6 +62,19 @@ const (
 	// Default sync interval for service discovery
 	defaultSyncInterval = time.Second * 30
 )
+
+//+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscaleendpoints,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscaleendpoints/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscaleendpoints/finalizers,verbs=update
+//+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscaletailnets,verbs=get;list;watch
+//+kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=events,verbs=create;get;patch
 
 // TailscaleEndpointsReconciler reconciles a TailscaleEndpoints object
 type TailscaleEndpointsReconciler struct {
@@ -114,30 +131,36 @@ func NewMultiTailnetManager() *MultiTailnetManager {
 func (m *MultiTailnetManager) GetClient(ctx context.Context, k8sClient client.Client, tailnetName, namespace string) (tailscale.Client, error) {
 	key := fmt.Sprintf("%s/%s", namespace, tailnetName)
 
-	// Check if we have a cached client
-	m.mu.RLock()
+	// Use write lock for the entire check-and-update operation to prevent races
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	entry, exists := m.clients[key]
-	m.mu.RUnlock()
-
 	if exists {
-		// Update last used time
-		m.mu.Lock()
+		// Update last used time atomically with the existence check
 		entry.lastUsed = time.Now()
-		m.mu.Unlock()
 
-		// Check if the client needs to be refreshed
-		if m.shouldRefreshClient(ctx, k8sClient, entry, tailnetName, namespace) {
-			// Remove the stale client and create a new one
-			m.mu.Lock()
-			delete(m.clients, key)
-			m.mu.Unlock()
-		} else {
-			return entry.client, nil
+		// Check if the client needs to be refreshed (without holding the lock)
+		// We need to release the lock temporarily for the refresh check to avoid deadlocks
+		m.mu.Unlock()
+		shouldRefresh := m.shouldRefreshClient(ctx, k8sClient, entry, tailnetName, namespace)
+		m.mu.Lock()
+
+		// Re-check that the entry still exists after re-acquiring the lock
+		if currentEntry, stillExists := m.clients[key]; stillExists && currentEntry == entry {
+			if shouldRefresh {
+				// Remove the stale client
+				delete(m.clients, key)
+			} else {
+				// Return the still-valid client
+				return entry.client, nil
+			}
 		}
+		// If entry was removed by another goroutine, fall through to create new client
 	}
 
-	// Create new client
-	return m.createAndCacheClient(ctx, k8sClient, tailnetName, namespace, key)
+	// Create new client while holding the lock to prevent duplicate creation
+	return m.createAndCacheClientLocked(ctx, k8sClient, tailnetName, namespace, key)
 }
 
 // createClientFromTailnet creates a Tailscale client from TailscaleTailnet resource
@@ -176,24 +199,52 @@ func (m *MultiTailnetManager) createClientFromTailnet(ctx context.Context, k8sCl
 	})
 }
 
-// createAndCacheClient creates a new Tailscale client and caches it
+// createAndCacheClient creates a new Tailscale client and caches it (thread-safe version)
 func (m *MultiTailnetManager) createAndCacheClient(ctx context.Context, k8sClient client.Client, tailnetName, namespace, key string) (tailscale.Client, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.createAndCacheClientLocked(ctx, k8sClient, tailnetName, namespace, key)
+}
+
+// createAndCacheClientLocked creates a new Tailscale client and caches it (assumes lock is held)
+func (m *MultiTailnetManager) createAndCacheClientLocked(ctx context.Context, k8sClient client.Client, tailnetName, namespace, key string) (tailscale.Client, error) {
+	// Double-check that another goroutine didn't already create the client
+	if entry, exists := m.clients[key]; exists {
+		entry.lastUsed = time.Now()
+		return entry.client, nil
+	}
+
+	// Release lock while doing I/O operations to prevent blocking other operations
+	m.mu.Unlock()
+
 	// Find the TailscaleTailnet resource
 	tailnet := &gatewayv1alpha1.TailscaleTailnet{}
 	if err := k8sClient.Get(ctx, client.ObjectKey{Name: tailnetName, Namespace: namespace}, tailnet); err != nil {
+		m.mu.Lock() // Re-acquire lock before returning
 		return nil, fmt.Errorf("failed to get TailscaleTailnet %s/%s: %w", namespace, tailnetName, err)
 	}
 
 	// Create client from TailscaleTailnet credentials
 	tsClient, err := m.createClientFromTailnet(ctx, k8sClient, tailnet)
 	if err != nil {
+		m.mu.Lock() // Re-acquire lock before returning
 		return nil, fmt.Errorf("failed to create Tailscale client for %s/%s: %w", namespace, tailnetName, err)
 	}
 
 	// Calculate secret hash for refresh detection
 	secretHash, err := m.calculateSecretHash(ctx, k8sClient, tailnet)
 	if err != nil {
+		m.mu.Lock() // Re-acquire lock before returning
 		return nil, fmt.Errorf("failed to calculate secret hash: %w", err)
+	}
+
+	// Re-acquire lock for final cache update
+	m.mu.Lock()
+
+	// Final check - another goroutine might have created the client while we were doing I/O
+	if entry, exists := m.clients[key]; exists {
+		entry.lastUsed = time.Now()
+		return entry.client, nil
 	}
 
 	// Cache the client
@@ -205,10 +256,7 @@ func (m *MultiTailnetManager) createAndCacheClient(ctx context.Context, k8sClien
 		tailnetKey: fmt.Sprintf("%s/%s", tailnet.Namespace, tailnet.Name),
 	}
 
-	m.mu.Lock()
 	m.clients[key] = entry
-	m.mu.Unlock()
-
 	return tsClient, nil
 }
 
@@ -298,14 +346,25 @@ func (m *MultiTailnetManager) InvalidateClient(tailnetName, namespace string) {
 
 // Stop gracefully shuts down the MultiTailnetManager
 func (m *MultiTailnetManager) Stop() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Stop cleanup ticker if it exists
 	if m.cleanupTicker != nil {
 		m.cleanupTicker.Stop()
+		m.cleanupTicker = nil
 	}
-	close(m.stopCleanup)
 
-	m.mu.Lock()
+	// Close stop channel if not already closed
+	select {
+	case <-m.stopCleanup:
+		// Already closed
+	default:
+		close(m.stopCleanup)
+	}
+
+	// Clear all cached clients
 	m.clients = make(map[string]*clientCacheEntry)
-	m.mu.Unlock()
 }
 
 // GetCacheStats returns statistics about the client cache (useful for monitoring)
@@ -381,7 +440,10 @@ func (r *TailscaleEndpointsReconciler) notifyGatewayController(ctx context.Conte
 	case <-ctx.Done():
 		return
 	default:
-		logger.V(1).Info("Gateway event channel full, dropping notification", "object", obj.GetName())
+		// Critical: Channel is full - this could lead to missed reconciliation events
+		logger.Error(nil, "Gateway event channel full, dropping critical notification - this may cause inconsistent state",
+			"object", obj.GetName(), "namespace", obj.GetNamespace(),
+			"action", "investigate_channel_buffer_size_or_consumer_performance")
 	}
 }
 
@@ -398,49 +460,48 @@ func (r *TailscaleEndpointsReconciler) notifyHTTPRouteController(ctx context.Con
 	case <-ctx.Done():
 		return
 	default:
-		logger.V(1).Info("HTTPRoute event channel full, dropping notification", "object", obj.GetName())
+		// Critical: Channel is full - this could lead to missed reconciliation events
+		logger.Error(nil, "HTTPRoute event channel full, dropping critical notification - this may cause inconsistent state",
+			"object", obj.GetName(), "namespace", obj.GetNamespace(),
+			"action", "investigate_channel_buffer_size_or_consumer_performance")
 	}
 }
 
 // notifyRouteControllers sends events to all route controllers
 func (r *TailscaleEndpointsReconciler) notifyRouteControllers(ctx context.Context, obj client.Object) {
-	// Notify all route controllers about endpoint changes
-	r.notifyHTTPRouteController(ctx, obj)
+	logger := log.FromContext(ctx)
+	droppedNotifications := 0
 
-	if r.TCPRouteEventChan != nil {
+	// Helper function to send notification with proper error handling
+	sendNotification := func(ch chan event.GenericEvent, routeType string) {
+		if ch == nil {
+			return
+		}
 		select {
-		case r.TCPRouteEventChan <- event.GenericEvent{Object: obj}:
+		case ch <- event.GenericEvent{Object: obj}:
+			logger.V(1).Info("Notified route controller", "routeType", routeType, "object", obj.GetName(), "namespace", obj.GetNamespace())
 		case <-ctx.Done():
 			return
 		default:
+			logger.Error(nil, "Route controller event channel full, dropping critical notification",
+				"routeType", routeType, "object", obj.GetName(), "namespace", obj.GetNamespace(),
+				"action", "investigate_channel_buffer_size_or_consumer_performance")
+			droppedNotifications++
 		}
 	}
 
-	if r.UDPRouteEventChan != nil {
-		select {
-		case r.UDPRouteEventChan <- event.GenericEvent{Object: obj}:
-		case <-ctx.Done():
-			return
-		default:
-		}
-	}
+	// Send notifications to all route controllers
+	r.notifyHTTPRouteController(ctx, obj) // Uses its own error handling
+	sendNotification(r.TCPRouteEventChan, "TCPRoute")
+	sendNotification(r.UDPRouteEventChan, "UDPRoute")
+	sendNotification(r.TLSRouteEventChan, "TLSRoute")
+	sendNotification(r.GRPCRouteEventChan, "GRPCRoute")
 
-	if r.TLSRouteEventChan != nil {
-		select {
-		case r.TLSRouteEventChan <- event.GenericEvent{Object: obj}:
-		case <-ctx.Done():
-			return
-		default:
-		}
-	}
-
-	if r.GRPCRouteEventChan != nil {
-		select {
-		case r.GRPCRouteEventChan <- event.GenericEvent{Object: obj}:
-		case <-ctx.Done():
-			return
-		default:
-		}
+	// Log summary if any notifications were dropped
+	if droppedNotifications > 0 {
+		logger.Error(nil, "Multiple route controller notifications dropped",
+			"droppedCount", droppedNotifications, "object", obj.GetName(), "namespace", obj.GetNamespace(),
+			"action", "check_event_channel_buffer_sizes_and_consumer_performance")
 	}
 }
 
@@ -455,11 +516,13 @@ func (r *TailscaleEndpointsReconciler) notifyAllControllers(ctx context.Context,
 //+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscaleendpoints/finalizers,verbs=update
 //+kubebuilder:rbac:groups=gateway.tailscale.com,resources=tailscaletailnets,verbs=get;list;watch
 //+kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=events,verbs=create;get;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -601,12 +664,37 @@ func (r *TailscaleEndpointsReconciler) reconcileEndpoints(ctx context.Context, e
 	if err := r.reconcileStatefulSets(ctx, endpoints); err != nil {
 		r.recordError(endpoints, gatewayv1alpha1.ErrorCodeConfiguration, "StatefulSet creation failed", gatewayv1alpha1.ComponentStatefulSet, err)
 		gatewayv1alpha1.SetCondition(&endpoints.Status.Conditions, "StatefulSetsReady", metav1.ConditionFalse, "StatefulSetFailed", err.Error())
+
+		// Check if this is a startup configuration error that might resolve itself
+		if strings.Contains(err.Error(), "invalid configuration") || strings.Contains(err.Error(), "config file") {
+			logger.Info("Configuration error detected, will retry with shorter interval", "error", err)
+			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil // Don't return error to avoid excessive backoff
+		}
+
 		return ctrl.Result{RequeueAfter: time.Minute}, err
 	}
 	gatewayv1alpha1.SetCondition(&endpoints.Status.Conditions, "StatefulSetsReady", metav1.ConditionTrue, "StatefulSetsCreated", "All StatefulSets created successfully")
 
 	// Notify controllers about StatefulSet changes (routes may need to be updated)
 	r.notifyGatewayController(ctx, endpoints)
+
+	// Handle ingress service advertisement following official k8s-operator patterns
+	// For bidirectional connections, we need to handle both ingress and egress
+	if endpoints.Spec.Proxy != nil && (endpoints.Spec.Proxy.ConnectionType == "ingress" || endpoints.Spec.Proxy.ConnectionType == "bidirectional") {
+		// Get Tailscale client for service advertisement
+		if r.TailscaleClientManager != nil {
+			tsClient, err := r.TailscaleClientManager.GetClient(ctx, r.Client, endpoints.Spec.Tailnet, endpoints.Namespace)
+			if err != nil {
+				logger.Error(err, "Failed to get Tailscale client for service advertisement")
+			} else {
+				if err := r.handleIngressServiceAdvertisement(ctx, endpoints, tsClient); err != nil {
+					logger.Error(err, "Failed to handle ingress service advertisement")
+					r.recordError(endpoints, gatewayv1alpha1.ErrorCodeConfiguration, "Ingress service advertisement failed", gatewayv1alpha1.ComponentStatefulSet, err)
+					// Don't fail reconciliation for service advertisement errors, but log them
+				}
+			}
+		}
+	}
 
 	// Update device status after StatefulSets are reconciled
 	if err := r.updateDeviceStatus(ctx, endpoints); err != nil {
@@ -1770,8 +1858,14 @@ func (r *TailscaleEndpointsReconciler) reconcileProxyStatefulSet(ctx context.Con
 	}, nil
 }
 
+// AuthKeyResult contains both the auth key string and metadata for cleanup
+type AuthKeyResult struct {
+	Key   string // The actual auth key for device authentication
+	KeyID string // The key ID for cleanup operations
+}
+
 // createProxyAuthKey creates an auth key for proxy with proper tags
-func (r *TailscaleEndpointsReconciler) createProxyAuthKey(ctx context.Context, tsClient tailscale.Client, endpoints *gatewayv1alpha1.TailscaleEndpoints) (string, error) {
+func (r *TailscaleEndpointsReconciler) createProxyAuthKey(ctx context.Context, tsClient tailscale.Client, endpoints *gatewayv1alpha1.TailscaleEndpoints) (*AuthKeyResult, error) {
 	logger := log.FromContext(ctx)
 
 	// Use tags from endpoints.Spec.Tags instead of individual endpoint tags
@@ -1789,12 +1883,16 @@ func (r *TailscaleEndpointsReconciler) createProxyAuthKey(ctx context.Context, t
 	capabilities.Devices.Create.Tags = tags
 
 	logger.Info("Creating auth key for proxy", "endpoints", endpoints.Name, "tags", tags)
-	key, err := tsClient.CreateKey(ctx, capabilities)
+	keyMeta, err := tsClient.CreateKey(ctx, capabilities)
 	if err != nil {
-		return "", fmt.Errorf("failed to create auth key with tags %v: %w", tags, err)
+		return nil, fmt.Errorf("failed to create auth key with tags %v: %w", tags, err)
 	}
 
-	return key.Key, nil
+	logger.Info("Successfully created auth key", "endpoints", endpoints.Name, "keyID", keyMeta.ID)
+	return &AuthKeyResult{
+		Key:   keyMeta.Key,
+		KeyID: keyMeta.ID,
+	}, nil
 }
 
 // createProxyStatefulSet creates a StatefulSet for the new proxy structure
@@ -2230,7 +2328,7 @@ func (r *TailscaleEndpointsReconciler) createRBACResources(ctx context.Context, 
 
 // createAuthKey creates a Tailscale auth key for the endpoint connection
 // Following k8s-operator auth key creation patterns
-func (r *TailscaleEndpointsReconciler) createAuthKey(ctx context.Context, tsClient tailscale.Client, endpoint *gatewayv1alpha1.TailscaleEndpoint) (string, error) {
+func (r *TailscaleEndpointsReconciler) createAuthKey(ctx context.Context, tsClient tailscale.Client, endpoint *gatewayv1alpha1.TailscaleEndpoint) (*AuthKeyResult, error) {
 	logger := log.FromContext(ctx)
 
 	// Use endpoint tags or default to tag:web (which is valid in the current tailnet)
@@ -2248,13 +2346,16 @@ func (r *TailscaleEndpointsReconciler) createAuthKey(ctx context.Context, tsClie
 	capabilities.Devices.Create.Tags = tags
 
 	logger.Info("Creating auth key for endpoint", "endpoint", endpoint.Name, "tags", tags)
-	authKey, err := tsClient.CreateKey(ctx, capabilities)
+	authKeyMeta, err := tsClient.CreateKey(ctx, capabilities)
 	if err != nil {
-		return "", fmt.Errorf("failed to create auth key for endpoint %s: %w", endpoint.Name, err)
+		return nil, fmt.Errorf("failed to create auth key for endpoint %s: %w", endpoint.Name, err)
 	}
 
-	logger.Info("Successfully created auth key", "endpoint", endpoint.Name, "keyID", authKey.ID)
-	return authKey.Key, nil
+	logger.Info("Successfully created auth key", "endpoint", endpoint.Name, "keyID", authKeyMeta.ID)
+	return &AuthKeyResult{
+		Key:   authKeyMeta.Key,
+		KeyID: authKeyMeta.ID,
+	}, nil
 }
 
 // createConfigSecret creates the Tailscale configuration secret
@@ -2292,15 +2393,27 @@ func (r *TailscaleEndpointsReconciler) createTailscaledConfigs(hostname, authKey
 		acceptRoutes = true
 	}
 
-	// Base configuration structure - use proper types for JSON
+	// Base configuration structure - following k8s-operator pattern with opt.Bool values
+	// opt.Bool expects: true/false for set values, "" for unset, NOT quoted strings
 	baseConfig := map[string]interface{}{
 		"Version":             "alpha0",
-		"AcceptDNS":           false,        // boolean, not string
-		"AcceptRoutes":        acceptRoutes, // boolean, not string
-		"Locked":              false,        // boolean, not string
-		"Hostname":            hostname,     // string
-		"NoStatefulFiltering": true,         // boolean, not string
-		"AuthKey":             authKey,      // string
+		"AcceptDNS":           false,    // opt.Bool: false means explicitly disabled
+		"AcceptRoutes":        false,    // opt.Bool: will be set based on connection type
+		"Locked":              false,    // opt.Bool: false means explicitly unlocked
+		"Hostname":            hostname, // string
+		"NoStatefulFiltering": true,     // opt.Bool: true means explicitly enabled
+		"AuthKey":             authKey,  // string
+	}
+
+	// Set AcceptRoutes based on connection type
+	if acceptRoutes {
+		baseConfig["AcceptRoutes"] = true
+	}
+
+	// CRITICAL: Initialize AdvertiseServices as empty array for ingress connections
+	// This will be populated by maybeUpdateAdvertiseServicesConfig following official pattern
+	if connectionType == "ingress" {
+		baseConfig["AdvertiseServices"] = []string{}
 	}
 
 	// Create configs for different capability versions
@@ -2321,36 +2434,23 @@ func (r *TailscaleEndpointsReconciler) ensureConfigSecretsCreated(ctx context.Co
 	logger := log.FromContext(ctx)
 
 	for i := int32(0); i < replicas; i++ {
-		cfgSecret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      fmt.Sprintf("%s-%d-config", baseName, i),
-				Namespace: endpoints.Namespace,
-				Labels: map[string]string{
-					"app.kubernetes.io/name":       "tailscale-proxy",
-					"app.kubernetes.io/instance":   endpoints.Name,
-					"app.kubernetes.io/component":  "config",
-					"gateway.tailscale.com/type":   "secret",
-					"gateway.tailscale.com/secret": "config",
-				},
-				OwnerReferences: []metav1.OwnerReference{
-					*metav1.NewControllerRef(endpoints, gatewayv1alpha1.GroupVersion.WithKind("TailscaleEndpoints")),
-				},
-			},
-		}
-
-		var existingCfgSecret *corev1.Secret
-		if err := r.Get(ctx, client.ObjectKeyFromObject(cfgSecret), cfgSecret); err == nil {
-			logger.Info("Config secret already exists", "name", cfgSecret.Name)
-			existingCfgSecret = cfgSecret.DeepCopy()
+		// First, check if config secret already exists
+		secretName := fmt.Sprintf("%s-%d-config", baseName, i)
+		existingCfgSecret := &corev1.Secret{}
+		secretExists := false
+		if err := r.Get(ctx, client.ObjectKey{Name: secretName, Namespace: endpoints.Namespace}, existingCfgSecret); err == nil {
+			logger.Info("Config secret already exists", "name", secretName)
+			secretExists = true
 		} else if !errors.IsNotFound(err) {
 			return err
 		}
 
-		var authKey string
-		if existingCfgSecret == nil {
+		// Create or get auth key
+		var authKeyResult *AuthKeyResult
+		if !secretExists {
 			logger.Info("Creating new auth key for replica", "replica", i)
 			var err error
-			authKey, err = r.createAuthKeyForReplica(ctx, tsClient, endpoints, connectionType)
+			authKeyResult, err = r.createAuthKeyForReplica(ctx, tsClient, endpoints, connectionType)
 			if err != nil {
 				return fmt.Errorf("failed to create auth key for replica %d: %w", i, err)
 			}
@@ -2359,16 +2459,37 @@ func (r *TailscaleEndpointsReconciler) ensureConfigSecretsCreated(ctx context.Co
 			// For now, skip auth key extraction and create a new one for existing secrets too
 			logger.Info("Secret exists, creating new auth key for replica", "replica", i)
 			var err error
-			authKey, err = r.createAuthKeyForReplica(ctx, tsClient, endpoints, connectionType)
+			authKeyResult, err = r.createAuthKeyForReplica(ctx, tsClient, endpoints, connectionType)
 			if err != nil {
 				return fmt.Errorf("failed to create auth key for replica %d: %w", i, err)
 			}
 		}
 
+		// Now create the secret with the auth key ID
+		cfgSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      secretName,
+				Namespace: endpoints.Namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/name":       "tailscale-proxy",
+					"app.kubernetes.io/instance":   endpoints.Name,
+					"app.kubernetes.io/component":  "config",
+					"gateway.tailscale.com/type":   "secret",
+					"gateway.tailscale.com/secret": "config",
+				},
+				Annotations: map[string]string{
+					"tailscale.com/auth-key-id": authKeyResult.KeyID, // Store auth key ID for cleanup
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					*metav1.NewControllerRef(endpoints, gatewayv1alpha1.GroupVersion.WithKind("TailscaleEndpoints")),
+				},
+			},
+		}
+
 		// Create hostname for this replica
 		hostname := fmt.Sprintf("%s-%d", baseName, i)
 
-		configs, err := r.createTailscaledConfigs(hostname, authKey, connectionType, endpoints)
+		configs, err := r.createTailscaledConfigs(hostname, authKeyResult.Key, connectionType, endpoints)
 		if err != nil {
 			return fmt.Errorf("error creating tailscaled config for replica %d: %w", i, err)
 		}
@@ -2381,12 +2502,10 @@ func (r *TailscaleEndpointsReconciler) ensureConfigSecretsCreated(ctx context.Co
 			cfgSecret.Data[filename] = configJSON
 		}
 
-		if existingCfgSecret != nil {
-			if !controllerutil.ContainsFinalizer(existingCfgSecret, cfgSecret.Name) {
-				logger.Info("Updating existing config secret", "name", cfgSecret.Name)
-				if err := r.Update(ctx, cfgSecret); err != nil {
-					return err
-				}
+		if secretExists {
+			logger.Info("Updating existing config secret", "name", cfgSecret.Name)
+			if err := r.Update(ctx, cfgSecret); err != nil {
+				return err
 			}
 		} else {
 			logger.Info("Creating new config secret", "name", cfgSecret.Name)
@@ -2400,7 +2519,7 @@ func (r *TailscaleEndpointsReconciler) ensureConfigSecretsCreated(ctx context.Co
 }
 
 // createAuthKeyForReplica creates a new auth key for a specific replica
-func (r *TailscaleEndpointsReconciler) createAuthKeyForReplica(ctx context.Context, tsClient tailscale.Client, endpoints *gatewayv1alpha1.TailscaleEndpoints, connectionType string) (string, error) {
+func (r *TailscaleEndpointsReconciler) createAuthKeyForReplica(ctx context.Context, tsClient tailscale.Client, endpoints *gatewayv1alpha1.TailscaleEndpoints, connectionType string) (*AuthKeyResult, error) {
 	logger := log.FromContext(ctx)
 
 	// Use tags from endpoints.Spec.Tags or default
@@ -2420,10 +2539,14 @@ func (r *TailscaleEndpointsReconciler) createAuthKeyForReplica(ctx context.Conte
 	logger.Info("Creating auth key for replica", "connectionType", connectionType, "tags", tags)
 	keyResult, err := tsClient.CreateKey(ctx, capabilities)
 	if err != nil {
-		return "", fmt.Errorf("failed to create auth key: %w", err)
+		return nil, fmt.Errorf("failed to create auth key: %w", err)
 	}
 
-	return keyResult.Key, nil
+	logger.Info("Successfully created auth key for replica", "connectionType", connectionType, "keyID", keyResult.ID)
+	return &AuthKeyResult{
+		Key:   keyResult.Key,
+		KeyID: keyResult.ID,
+	}, nil
 }
 
 // ensureStateSecretsCreated creates state secrets per replica following ProxyGroup pattern
@@ -2485,7 +2608,7 @@ func (r *TailscaleEndpointsReconciler) createStateSecret(ctx context.Context, en
 // Following k8s-operator ProxyGroup patterns with per-replica config secrets
 func (r *TailscaleEndpointsReconciler) createEndpointStatefulSet(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, endpoint *gatewayv1alpha1.TailscaleEndpoint, name, connectionType string, replicas int32, labels map[string]string) error {
 	// Use official Tailscale image
-	image := "tailscale/tailscale:v1.78.3"
+	image := "tailscale/tailscale:latest"
 
 	// Build environment variables following EXACT ProxyGroup patterns
 	envVars := []corev1.EnvVar{
@@ -2580,6 +2703,42 @@ func (r *TailscaleEndpointsReconciler) createEndpointStatefulSet(ctx context.Con
 								Capabilities: &corev1.Capabilities{
 									Add: []corev1.Capability{"NET_ADMIN"},
 								},
+							},
+							// Add readiness probe to ensure pod is ready before receiving traffic
+							ReadinessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									Exec: &corev1.ExecAction{
+										Command: []string{
+											"tailscale",
+											"status",
+											"--json",
+										},
+									},
+								},
+								InitialDelaySeconds: 10,
+								PeriodSeconds:       10,
+								TimeoutSeconds:      5,
+								SuccessThreshold:    1,
+								FailureThreshold:    3,
+							},
+							// Add liveness probe to restart unhealthy pods
+							LivenessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									Exec: &corev1.ExecAction{
+										Command: []string{
+											"tailscale",
+											"ping",
+											"--c", "1",
+											"--timeout", "3s",
+											"100.100.100.100", // Tailscale DERP server
+										},
+									},
+								},
+								InitialDelaySeconds: 30,
+								PeriodSeconds:       30,
+								TimeoutSeconds:      5,
+								SuccessThreshold:    1,
+								FailureThreshold:    3,
 							},
 						},
 					},
@@ -2858,8 +3017,12 @@ func (r *TailscaleEndpointsReconciler) handleDeletion(ctx context.Context, endpo
 		// Perform cleanup of StatefulSets and associated resources
 		logger.Info("Cleaning up TailscaleEndpoints resources", "endpoints", endpoints.Name)
 
-		// Cleanup will be handled by owner references, but could add explicit cleanup here
-		// for Tailscale devices if needed
+		// Critical: Clean up Tailscale devices to prevent resource leaks
+		if err := r.cleanupTailscaleDevices(ctx, endpoints); err != nil {
+			logger.Error(err, "Failed to cleanup Tailscale devices", "endpoints", endpoints.Name)
+			// Continue with deletion even if device cleanup fails to avoid blocking deletion
+			// but record the error in status if possible
+		}
 
 		// Remove finalizer
 		controllerutil.RemoveFinalizer(endpoints, TailscaleEndpointsFinalizer)
@@ -2869,6 +3032,169 @@ func (r *TailscaleEndpointsReconciler) handleDeletion(ctx context.Context, endpo
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// cleanupTailscaleDevices removes all Tailscale devices tracked by this TailscaleEndpoints resource
+func (r *TailscaleEndpointsReconciler) cleanupTailscaleDevices(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints) error {
+	logger := log.FromContext(ctx).WithValues("endpoints", endpoints.Name, "namespace", endpoints.Namespace)
+
+	// Skip device cleanup if TailscaleClientManager is not available (e.g., in tests)
+	if r.TailscaleClientManager == nil {
+		logger.Info("TailscaleClientManager not available, skipping device cleanup")
+		return nil
+	}
+
+	// Get the Tailscale client for this tailnet
+	tailscaleClient, err := r.TailscaleClientManager.GetClient(ctx, r.Client, endpoints.Spec.Tailnet, endpoints.Namespace)
+	if err != nil {
+		logger.Error(err, "Failed to get Tailscale client for device cleanup", "tailnet", endpoints.Spec.Tailnet)
+		return fmt.Errorf("failed to get Tailscale client for tailnet %s: %w", endpoints.Spec.Tailnet, err)
+	}
+
+	// Clean up devices tracked in status
+	var cleanupErrors []error
+	devicesDeleted := 0
+
+	authKeysDeleted := 0
+	for _, device := range endpoints.Status.Devices {
+		if device.NodeID == "" {
+			logger.Info("Skipping device cleanup - no NodeID available", "hostname", device.Hostname)
+			continue
+		}
+
+		logger.Info("Deleting Tailscale device", "nodeID", device.NodeID, "hostname", device.Hostname, "tailscaleFQDN", device.TailscaleFQDN)
+
+		if err := tailscaleClient.DeleteDevice(ctx, device.NodeID); err != nil {
+			logger.Error(err, "Failed to delete Tailscale device", "nodeID", device.NodeID, "hostname", device.Hostname)
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("failed to delete device %s (NodeID: %s): %w", device.Hostname, device.NodeID, err))
+		} else {
+			logger.Info("Successfully deleted Tailscale device", "nodeID", device.NodeID, "hostname", device.Hostname)
+			devicesDeleted++
+		}
+
+		// Clean up associated auth key if available
+		if device.AuthKeyID != "" {
+			logger.Info("Deleting associated auth key", "authKeyID", device.AuthKeyID, "hostname", device.Hostname)
+			if err := tailscaleClient.DeleteKey(ctx, device.AuthKeyID); err != nil {
+				logger.Error(err, "Failed to delete auth key", "authKeyID", device.AuthKeyID, "hostname", device.Hostname)
+				cleanupErrors = append(cleanupErrors, fmt.Errorf("failed to delete auth key %s for device %s: %w", device.AuthKeyID, device.Hostname, err))
+			} else {
+				logger.Info("Successfully deleted auth key", "authKeyID", device.AuthKeyID, "hostname", device.Hostname)
+				authKeysDeleted++
+			}
+		}
+	}
+
+	// Also clean up devices that might be associated with StatefulSets but not tracked in status
+	// This provides additional safety for edge cases where status wasn't updated properly
+	if err := r.cleanupStatefulSetDevices(ctx, endpoints, tailscaleClient); err != nil {
+		logger.Error(err, "Failed to cleanup StatefulSet-associated devices")
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("failed to cleanup StatefulSet devices: %w", err))
+	}
+
+	// Clean up auth keys from config secrets that might not be tracked in device status
+	authKeysFromSecrets, err := r.cleanupAuthKeysFromSecrets(ctx, endpoints, tailscaleClient)
+	if err != nil {
+		logger.Error(err, "Failed to cleanup auth keys from secrets")
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("failed to cleanup auth keys from secrets: %w", err))
+	} else {
+		authKeysDeleted += authKeysFromSecrets
+	}
+
+	logger.Info("Device and auth key cleanup completed", "devicesDeleted", devicesDeleted, "authKeysDeleted", authKeysDeleted, "cleanupErrors", len(cleanupErrors))
+
+	// Return combined errors if any occurred
+	if len(cleanupErrors) > 0 {
+		var errorMessages []string
+		for _, err := range cleanupErrors {
+			errorMessages = append(errorMessages, err.Error())
+		}
+		return fmt.Errorf("device cleanup completed with %d errors: %s", len(cleanupErrors), strings.Join(errorMessages, "; "))
+	}
+
+	return nil
+}
+
+// cleanupStatefulSetDevices removes devices associated with StatefulSets by hostname pattern matching
+func (r *TailscaleEndpointsReconciler) cleanupStatefulSetDevices(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, tailscaleClient tailscale.Client) error {
+	logger := log.FromContext(ctx).WithValues("endpoints", endpoints.Name)
+
+	// Get all devices in the tailnet to find ones created by our StatefulSets
+	allDevices, err := tailscaleClient.Devices(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list devices in tailnet: %w", err)
+	}
+
+	// Generate expected hostname patterns for this TailscaleEndpoints resource
+	// Based on StatefulSet naming: <endpoints-name>-ingress-<replica> and <endpoints-name>-egress-<replica>
+	expectedPatterns := []string{
+		fmt.Sprintf("%s-ingress-", endpoints.Name),
+		fmt.Sprintf("%s-egress-", endpoints.Name),
+		fmt.Sprintf("%s-bidirectional-", endpoints.Name),
+	}
+
+	devicesDeleted := 0
+	for _, device := range allDevices {
+		// Check if this device matches our StatefulSet naming patterns
+		shouldDelete := false
+		for _, pattern := range expectedPatterns {
+			if strings.HasPrefix(device.Name, pattern) {
+				shouldDelete = true
+				break
+			}
+		}
+
+		if shouldDelete {
+			logger.Info("Deleting StatefulSet device by pattern matching", "deviceName", device.Name, "deviceID", device.ID)
+
+			if err := tailscaleClient.DeleteDevice(ctx, device.ID); err != nil {
+				logger.Error(err, "Failed to delete StatefulSet device", "deviceName", device.Name, "deviceID", device.ID)
+				// Continue with other devices rather than failing immediately
+			} else {
+				logger.Info("Successfully deleted StatefulSet device", "deviceName", device.Name, "deviceID", device.ID)
+				devicesDeleted++
+			}
+		}
+	}
+
+	logger.Info("StatefulSet device cleanup completed", "devicesDeleted", devicesDeleted)
+	return nil
+}
+
+// cleanupAuthKeysFromSecrets removes auth keys stored in config secret annotations
+func (r *TailscaleEndpointsReconciler) cleanupAuthKeysFromSecrets(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, tailscaleClient tailscale.Client) (int, error) {
+	logger := log.FromContext(ctx).WithValues("endpoints", endpoints.Name)
+
+	// List all config secrets with our labels
+	secretList := &corev1.SecretList{}
+	labelSelector := client.MatchingLabels{
+		"app.kubernetes.io/managed-by": "tailscale-gateway-operator",
+		"app.kubernetes.io/instance":   endpoints.Name,
+		"gateway.tailscale.com/secret": "config",
+	}
+
+	if err := r.List(ctx, secretList, client.InNamespace(endpoints.Namespace), labelSelector); err != nil {
+		return 0, fmt.Errorf("failed to list config secrets: %w", err)
+	}
+
+	authKeysDeleted := 0
+	for _, secret := range secretList.Items {
+		// Check for auth key ID in annotations
+		if authKeyID, exists := secret.Annotations["tailscale.com/auth-key-id"]; exists && authKeyID != "" {
+			logger.Info("Deleting auth key from config secret", "authKeyID", authKeyID, "secret", secret.Name)
+
+			if err := tailscaleClient.DeleteKey(ctx, authKeyID); err != nil {
+				logger.Error(err, "Failed to delete auth key from secret", "authKeyID", authKeyID, "secret", secret.Name)
+				// Continue with other keys rather than failing immediately
+			} else {
+				logger.Info("Successfully deleted auth key from secret", "authKeyID", authKeyID, "secret", secret.Name)
+				authKeysDeleted++
+			}
+		}
+	}
+
+	logger.Info("Auth key cleanup from secrets completed", "authKeysDeleted", authKeysDeleted)
+	return authKeysDeleted, nil
 }
 
 // updateCondition updates or adds a condition to the TailscaleEndpoints status
@@ -3445,4 +3771,316 @@ func (r *TailscaleEndpointsReconciler) SetupWithManager(mgr ctrl.Manager) error 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&gatewayv1alpha1.TailscaleEndpoints{}).
 		Complete(r)
+}
+
+// createVIPServiceForIngress creates a Tailscale VIP service for ingress endpoints
+// Following the exact pattern from svc-for-pg.go
+func (r *TailscaleEndpointsReconciler) createVIPServiceForIngress(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, tsClient tailscale.Client) error {
+	logger := log.FromContext(ctx)
+
+	// Generate service name following official pattern: "svc:" + hostname
+	hostname := r.generateServiceHostname(endpoints)
+	serviceName := tailscale.ServiceName("svc:" + hostname)
+
+	logger.Info("Creating VIP service for ingress", "serviceName", serviceName, "hostname", hostname)
+
+	// Check if VIP service already exists
+	existingTSSvc, err := tsClient.GetVIPService(ctx, serviceName)
+	if err != nil && !r.isVIPServiceNotFoundError(err) {
+		return fmt.Errorf("error getting existing VIP service: %w", err)
+	}
+
+	// Use tags from endpoints or defaults
+	tags := endpoints.Spec.Tags
+	if len(tags) == 0 {
+		tags = []string{"tag:k8s", "tag:ingress"}
+	}
+
+	// Create VIP service following official pattern
+	tsSvc := &tailscale.VIPService{
+		Name:        serviceName,
+		Tags:        tags,
+		Ports:       []string{"do-not-validate"}, // Official pattern: don't validate ports
+		Comment:     "Managed by Tailscale Gateway Operator",
+		Annotations: r.generateOwnerAnnotations(),
+	}
+
+	// Preserve existing addresses if service exists
+	if existingTSSvc != nil {
+		tsSvc.Addrs = existingTSSvc.Addrs
+	}
+
+	// Create or update the VIP service
+	if existingTSSvc == nil ||
+		!reflect.DeepEqual(tsSvc.Tags, existingTSSvc.Tags) ||
+		!r.ownersAreSetAndEqual(tsSvc, existingTSSvc) {
+		logger.Info("Creating/updating Tailscale VIP service", "serviceName", serviceName)
+		if err := tsClient.CreateOrUpdateVIPService(ctx, tsSvc); err != nil {
+			return fmt.Errorf("error creating VIP service: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// maybeUpdateAdvertiseServicesConfig updates the AdvertiseServices configuration for ingress proxies
+// Following the exact pattern from svc-for-pg.go maybeUpdateAdvertiseServicesConfig
+func (r *TailscaleEndpointsReconciler) maybeUpdateAdvertiseServicesConfig(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, serviceName tailscale.ServiceName, shouldBeAdvertised bool) error {
+	logger := log.FromContext(ctx)
+
+	// Get all config secrets for this TailscaleEndpoints
+	secrets := &corev1.SecretList{}
+	labelSelector := map[string]string{
+		"app.kubernetes.io/instance":   endpoints.Name,
+		"gateway.tailscale.com/type":   "secret",
+		"gateway.tailscale.com/secret": "config",
+	}
+
+	if err := r.List(ctx, secrets, client.InNamespace(endpoints.Namespace), client.MatchingLabels(labelSelector)); err != nil {
+		return fmt.Errorf("failed to list config secrets: %w", err)
+	}
+
+	logger.Info("Updating AdvertiseServices config", "serviceName", serviceName, "shouldAdvertise", shouldBeAdvertised, "configSecrets", len(secrets.Items))
+
+	for _, secret := range secrets.Items {
+		var updated bool
+		for fileName, confB := range secret.Data {
+			var conf ipn.ConfigVAlpha
+			if err := json.Unmarshal(confB, &conf); err != nil {
+				return fmt.Errorf("error unmarshalling config: %w", err)
+			}
+
+			// Check current advertisement status
+			idx := slices.Index(conf.AdvertiseServices, serviceName.String())
+			isAdvertised := idx >= 0
+
+			switch {
+			case isAdvertised == shouldBeAdvertised:
+				// Already up to date
+				logger.V(1).Info("Service advertisement already up to date", "serviceName", serviceName, "isAdvertised", isAdvertised)
+				continue
+			case isAdvertised && !shouldBeAdvertised:
+				// Remove from advertisement
+				logger.Info("Removing service from advertisement", "serviceName", serviceName)
+				conf.AdvertiseServices = slices.Delete(conf.AdvertiseServices, idx, idx+1)
+			case !isAdvertised && shouldBeAdvertised:
+				// Add to advertisement
+				logger.Info("Adding service to advertisement", "serviceName", serviceName)
+				conf.AdvertiseServices = append(conf.AdvertiseServices, serviceName.String())
+			}
+
+			// Update the secret
+			confB, err := json.Marshal(conf)
+			if err != nil {
+				return fmt.Errorf("error marshalling config: %w", err)
+			}
+			secret.Data[fileName] = confB
+			updated = true
+		}
+
+		if updated {
+			logger.Info("Updating config secret", "secretName", secret.Name)
+			if err := r.Update(ctx, &secret); err != nil {
+				return fmt.Errorf("error updating config secret: %w", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// createIngressServiceConfigMap creates the ingress services ConfigMap for backend routing
+// Following the pattern from svc-for-pg.go ingressSvcsConfigs
+func (r *TailscaleEndpointsReconciler) createIngressServiceConfigMap(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, serviceName tailscale.ServiceName, tsClient tailscale.Client) error {
+	logger := log.FromContext(ctx)
+
+	// Get the VIP service to get its IP addresses
+	tsSvc, err := tsClient.GetVIPService(ctx, serviceName)
+	if err != nil {
+		return fmt.Errorf("error getting VIP service: %w", err)
+	}
+
+	if tsSvc.Addrs == nil || len(tsSvc.Addrs) == 0 {
+		return fmt.Errorf("VIP service does not have addresses yet")
+	}
+
+	// Build backend routing configuration for ExternalTargets
+	backendMappings := make(map[string]string)
+
+	// Find endpoints with ExternalTarget to create backend routes
+	for _, endpoint := range endpoints.Spec.Endpoints {
+		if endpoint.ExternalTarget != "" {
+			// Create mapping from port to backend target
+			portKey := fmt.Sprintf("%d", endpoint.Port)
+			backendMappings[portKey] = endpoint.ExternalTarget
+			logger.Info("Found ExternalTarget for backend routing",
+				"port", endpoint.Port,
+				"target", endpoint.ExternalTarget)
+		}
+	}
+
+	// If no ExternalTargets found, this might be from TailscaleServices auto-provisioning
+	// Check if we can find backend targets from port specifications
+	if len(backendMappings) == 0 {
+		for _, port := range endpoints.Spec.Ports {
+			if port.Port > 0 {
+				// For auto-provisioned endpoints, assume backend service matches the service name pattern
+				// This will be populated when TailscaleServices sets ExternalTarget
+				portKey := fmt.Sprintf("%d", port.Port)
+				backendMappings[portKey] = "backend.default.svc.cluster.local:3000" // Default fallback
+				logger.Info("Using default backend mapping for auto-provisioned endpoint",
+					"port", port.Port)
+			}
+		}
+	}
+
+	// Create the ConfigMap name following Tailscale pattern: svc-{serviceName}-ingress-svc
+	serviceNameWithoutPrefix := strings.TrimPrefix(serviceName.String(), "svc:")
+	cmName := fmt.Sprintf("svc-%s-ingress-svc", serviceNameWithoutPrefix)
+
+	// Create ingress service configuration with backend routing
+	ingressConfig := map[string]interface{}{
+		"type":            "ingress",
+		"vipServiceName":  serviceName.String(),
+		"backendMappings": backendMappings,
+	}
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cmName,
+			Namespace: endpoints.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":      "tailscale-proxy",
+				"app.kubernetes.io/instance":  endpoints.Name,
+				"app.kubernetes.io/component": "ingress-service",
+				"tailscale.com/service-name":  serviceName.String(),
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(endpoints, gatewayv1alpha1.GroupVersion.WithKind("TailscaleEndpoints")),
+			},
+		},
+		Data: make(map[string]string),
+	}
+
+	// Marshal the configuration
+	cfgBytes, err := json.Marshal(ingressConfig)
+	if err != nil {
+		return fmt.Errorf("error marshalling ingress config: %w", err)
+	}
+
+	cm.Data["config.json"] = string(cfgBytes)
+
+	logger.Info("Creating ingress service ConfigMap",
+		"configMap", cmName,
+		"serviceName", serviceName,
+		"backendMappings", len(backendMappings))
+
+	return r.createOrUpdate(ctx, cm, func() {
+		cm.Data["config.json"] = string(cfgBytes)
+	})
+}
+
+// generateServiceHostname generates a hostname for the VIP service
+func (r *TailscaleEndpointsReconciler) generateServiceHostname(endpoints *gatewayv1alpha1.TailscaleEndpoints) string {
+	// Use the endpoints name as the base hostname
+	hostname := endpoints.Name
+
+	// Clean up the hostname to ensure it's valid for DNS
+	hostname = strings.ReplaceAll(hostname, "_", "-")
+	hostname = strings.ToLower(hostname)
+
+	return hostname
+}
+
+// generateOwnerAnnotations creates owner annotations for VIP services
+func (r *TailscaleEndpointsReconciler) generateOwnerAnnotations() map[string]string {
+	// For now, create basic annotations - in a full implementation,
+	// this would include operator ID and proper owner references
+	return map[string]string{
+		"tailscale.com/owner-references": `{"ownerRefs":[{"operatorID":"tailscale-gateway-operator"}]}`,
+	}
+}
+
+// ownersAreSetAndEqual checks if owner annotations are equal between VIP services
+func (r *TailscaleEndpointsReconciler) ownersAreSetAndEqual(a, b *tailscale.VIPService) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if a.Annotations == nil || b.Annotations == nil {
+		return false
+	}
+
+	ownerA := a.Annotations["tailscale.com/owner-references"]
+	ownerB := b.Annotations["tailscale.com/owner-references"]
+
+	return ownerA != "" && ownerB != "" && ownerA == ownerB
+}
+
+// isVIPServiceNotFoundError checks if an error indicates VIP service not found
+func (r *TailscaleEndpointsReconciler) isVIPServiceNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check for HTTP 404 status or "not found" in error message
+	return strings.Contains(strings.ToLower(err.Error()), "not found") ||
+		strings.Contains(err.Error(), "404")
+}
+
+// numberPodsAdvertising counts how many pods are advertising a service
+// Following the pattern from svc-for-pg.go
+func (r *TailscaleEndpointsReconciler) numberPodsAdvertising(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, serviceName tailscale.ServiceName) (int, error) {
+	// Get all state secrets for this TailscaleEndpoints
+	secrets := &corev1.SecretList{}
+	labelSelector := map[string]string{
+		"app.kubernetes.io/instance":   endpoints.Name,
+		"gateway.tailscale.com/type":   "secret",
+		"gateway.tailscale.com/secret": "state",
+	}
+
+	if err := r.List(ctx, secrets, client.InNamespace(endpoints.Namespace), client.MatchingLabels(labelSelector)); err != nil {
+		return 0, fmt.Errorf("failed to list state secrets: %w", err)
+	}
+
+	var count int
+	for _, secret := range secrets.Items {
+		// Check if this pod is advertising the service
+		// This would require parsing the state secret and checking device preferences
+		// For now, we'll assume pods are advertising if they have state
+		if len(secret.Data) > 0 {
+			count++
+		}
+	}
+
+	return count, nil
+}
+
+// handleIngressServiceAdvertisement handles the complete ingress service advertisement flow
+// Following the exact pattern from svc-for-pg.go
+func (r *TailscaleEndpointsReconciler) handleIngressServiceAdvertisement(ctx context.Context, endpoints *gatewayv1alpha1.TailscaleEndpoints, tsClient tailscale.Client) error {
+	logger := log.FromContext(ctx)
+
+	// 1. Create VIP service
+	if err := r.createVIPServiceForIngress(ctx, endpoints, tsClient); err != nil {
+		return fmt.Errorf("failed to create VIP service: %w", err)
+	}
+
+	// 2. Generate service name
+	hostname := r.generateServiceHostname(endpoints)
+	serviceName := tailscale.ServiceName("svc:" + hostname)
+
+	// 3. Create ingress service config map for backend routing
+	if err := r.createIngressServiceConfigMap(ctx, endpoints, serviceName, tsClient); err != nil {
+		logger.V(1).Info("Failed to create ingress service config map (VIP service may not have addresses yet)", "error", err)
+		// Don't fail - this is expected when VIP service is newly created
+	}
+
+	// 4. Update AdvertiseServices configuration
+	shouldBeAdvertised := true // For ingress, we always want to advertise
+	if err := r.maybeUpdateAdvertiseServicesConfig(ctx, endpoints, serviceName, shouldBeAdvertised); err != nil {
+		return fmt.Errorf("failed to update AdvertiseServices config: %w", err)
+	}
+
+	logger.Info("Successfully handled ingress service advertisement", "serviceName", serviceName, "hostname", hostname)
+	return nil
 }

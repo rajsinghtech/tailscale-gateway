@@ -259,6 +259,11 @@ type PortTemplate struct {
 	// +kubebuilder:default="TCP"
 	// +optional
 	Protocol string `json:"protocol,omitempty"`
+
+	// ExternalTarget defines the backend service this port should route to
+	// Format: "service-name.namespace.svc.cluster.local:port" or "hostname:port"
+	// +optional
+	ExternalTarget string `json:"externalTarget,omitempty"`
 }
 
 // TailscaleServicesStatus defines the observed state of TailscaleServices

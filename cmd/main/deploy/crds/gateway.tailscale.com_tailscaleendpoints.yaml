@@ -915,6 +915,10 @@ spec:
                     TailscaleDevice represents a Tailscale machine/device created by the operator
                     Similar to the ProxyGroup device status in the official Tailscale k8s-operator
                   properties:
+                    authKeyID:
+                      description: AuthKeyID is the ID of the auth key used to create
+                        this device (for cleanup)
+                      type: string
                     connected:
                       description: Connected indicates if the device is currently
                         connected to the tailnet

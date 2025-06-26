@@ -124,9 +124,9 @@ func (r *TailscaleServicesReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// Reconcile the service
 	result, err := r.reconcileService(ctx, &service)
 
-	// Update status
-	if statusErr := r.Status().Update(ctx, &service); statusErr != nil {
-		logger.Error(statusErr, "Failed to update status")
+	// Update status with retry logic
+	if statusErr := r.updateStatusWithRetry(ctx, &service); statusErr != nil {
+		logger.Error(statusErr, "Failed to update status after retries")
 		if err == nil {
 			err = statusErr
 		}
@@ -142,8 +142,13 @@ func (r *TailscaleServicesReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			Message:     fmt.Sprintf("TailscaleServices %s reconciled", service.Name),
 			RelatedName: service.Name,
 		}:
+		case <-ctx.Done():
+			// Context cancelled - graceful exit
 		default:
-			// Non-blocking send
+			// Critical: Channel is full - this could lead to missed coordination events
+			logger.Error(nil, "TailscaleServices event channel full, dropping critical coordination event",
+				"service", service.Name, "namespace", service.Namespace,
+				"action", "investigate_event_channel_buffer_size_or_consumer_performance")
 		}
 	}
 
@@ -370,6 +375,16 @@ func (r *TailscaleServicesReconciler) reconcileVIPService(ctx context.Context, s
 	// Build service metadata from TailscaleServices
 	metadata := r.buildServiceMetadata(ctx, service)
 
+	// Debug: Log VIPService configuration
+	if service.Spec.VIPService != nil {
+		logger.Info("VIPService configuration found",
+			"name", service.Spec.VIPService.Name,
+			"ports", service.Spec.VIPService.Ports,
+			"tags", service.Spec.VIPService.Tags)
+	} else {
+		logger.Info("No VIPService configuration found in TailscaleServices spec")
+	}
+
 	// Use ServiceCoordinator to ensure VIP service
 	// routeName identifies this consumer, serviceName is the target backend
 	registration, err := r.ServiceCoordinator.EnsureServiceWithMetadata(
@@ -525,6 +540,44 @@ func (r *TailscaleServicesReconciler) reconcileDelete(ctx context.Context, servi
 	return ctrl.Result{}, nil
 }
 
+// updateStatusWithRetry updates the status with retry logic to handle resource version conflicts
+func (r *TailscaleServicesReconciler) updateStatusWithRetry(ctx context.Context, service *gatewayv1alpha1.TailscaleServices) error {
+	logger := log.FromContext(ctx)
+
+	// Try up to 3 times to update status
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			// Get the latest version of the resource before retrying
+			latest := &gatewayv1alpha1.TailscaleServices{}
+			if err := r.Get(ctx, types.NamespacedName{
+				Name:      service.Name,
+				Namespace: service.Namespace,
+			}, latest); err != nil {
+				return fmt.Errorf("failed to get latest resource for status update: %w", err)
+			}
+
+			// Merge the status from our service into the latest version
+			latest.Status = service.Status
+			service = latest
+		}
+
+		// Attempt to update status
+		if err := r.Status().Update(ctx, service); err != nil {
+			if errors.IsConflict(err) && attempt < 2 {
+				logger.Info("Status update conflict, retrying", "attempt", attempt+1)
+				time.Sleep(time.Millisecond * 100 * time.Duration(attempt+1)) // Exponential backoff
+				continue
+			}
+			return err
+		}
+
+		// Success
+		return nil
+	}
+
+	return fmt.Errorf("failed to update status after 3 attempts")
+}
+
 // mapTailscaleEndpointsToTailscaleServices maps TailscaleEndpoints changes to TailscaleServices
 func (r *TailscaleServicesReconciler) mapTailscaleEndpointsToTailscaleServices(ctx context.Context, obj client.Object) []reconcile.Request {
 	endpoint, ok := obj.(*gatewayv1alpha1.TailscaleEndpoints)
@@ -614,18 +667,38 @@ func (r *TailscaleServicesReconciler) autoProvisionTailscaleEndpoint(ctx context
 		}
 	}
 
-	// Convert PortTemplate to PortMapping
+	// Convert PortTemplate to PortMapping and TailscaleEndpoint (if ExternalTarget specified)
 	for _, portTemplate := range template.Ports {
 		protocol := portTemplate.Protocol
 		if protocol == "" {
 			protocol = "TCP"
 		}
 
+		// Create PortMapping for proxy StatefulSets
 		endpointSpec.Ports = append(endpointSpec.Ports, gatewayv1alpha1.PortMapping{
 			Port:     portTemplate.Port,
 			Protocol: protocol,
 			Name:     fmt.Sprintf("port-%d", portTemplate.Port),
 		})
+
+		// Create TailscaleEndpoint if ExternalTarget is specified
+		if portTemplate.ExternalTarget != "" {
+			// Create a placeholder endpoint that will be configured by the TailscaleEndpoints controller
+			endpointSpec.Endpoints = append(endpointSpec.Endpoints, gatewayv1alpha1.TailscaleEndpoint{
+				Name:           fmt.Sprintf("backend-%d", portTemplate.Port),
+				TailscaleIP:    "0.0.0.0", // Will be discovered/set by the controller
+				TailscaleFQDN:  fmt.Sprintf("backend-%d.%s", portTemplate.Port, template.Tailnet),
+				Port:           portTemplate.Port,
+				Protocol:       strings.ToUpper(protocol), // TailscaleEndpoint expects uppercase
+				ExternalTarget: portTemplate.ExternalTarget,
+				Tags:           template.Tags,
+			})
+
+			logger.Info("Created TailscaleEndpoint for ExternalTarget",
+				"service", service.Name,
+				"port", portTemplate.Port,
+				"externalTarget", portTemplate.ExternalTarget)
+		}
 	}
 
 	// Create labels that match the selector
@@ -984,20 +1057,54 @@ func (r *TailscaleServicesReconciler) reconcileProxyAdvertiseServices(ctx contex
 		serviceName = "svc:" + serviceName
 	}
 
+	// Check if we've updated configs recently to avoid constant updates
+	// But allow initial updates when AdvertiseServices is empty
+	lastUpdate := service.Status.LastUpdate
+	if lastUpdate != nil && time.Since(lastUpdate.Time) < 30*time.Second {
+		// Only rate limit if we have some selected endpoints and they might already be configured
+		if len(service.Status.SelectedEndpoints) > 0 {
+			// Check if any ingress configs already have this service advertised
+			hasAdvertisedService := false
+			for _, selectedEndpoint := range service.Status.SelectedEndpoints {
+				if hasService, _ := r.checkIfServiceAlreadyAdvertised(ctx, selectedEndpoint.Name, selectedEndpoint.Namespace, serviceName); hasService {
+					hasAdvertisedService = true
+					break
+				}
+			}
+
+			if hasAdvertisedService {
+				logger.Info("Skipping AdvertiseServices update - too recent and already configured", "serviceName", serviceName, "lastUpdate", lastUpdate.Time)
+				return nil
+			}
+		}
+	}
+
 	logger.Info("Updating proxy AdvertiseServices configuration", "serviceName", serviceName)
 
 	// Update ingress proxy configurations for each selected endpoint
+	configsUpdated := false
 	for _, selectedEndpoint := range service.Status.SelectedEndpoints {
-		if err := r.updateEndpointIngressConfigs(ctx, selectedEndpoint.Name, selectedEndpoint.Namespace, serviceName); err != nil {
+		updated, err := r.updateEndpointIngressConfigs(ctx, selectedEndpoint.Name, selectedEndpoint.Namespace, serviceName)
+		if err != nil {
 			return fmt.Errorf("failed to update configs for endpoint %s/%s: %w", selectedEndpoint.Namespace, selectedEndpoint.Name, err)
 		}
+		if updated {
+			configsUpdated = true
+		}
+	}
+
+	if configsUpdated {
+		logger.Info("AdvertiseServices configuration updated, allowing time for pods to stabilize")
+	} else {
+		logger.Info("No AdvertiseServices configuration changes needed")
 	}
 
 	return nil
 }
 
 // updateEndpointIngressConfigs updates the ingress proxy configs for a specific TailscaleEndpoints
-func (r *TailscaleServicesReconciler) updateEndpointIngressConfigs(ctx context.Context, endpointName, namespace, serviceName string) error {
+// Returns (updated, error) where updated indicates if any configs were actually changed
+func (r *TailscaleServicesReconciler) updateEndpointIngressConfigs(ctx context.Context, endpointName, namespace, serviceName string) (bool, error) {
 	logger := log.FromContext(ctx)
 
 	// List all config secrets for ingress proxies of this endpoint
@@ -1008,8 +1115,11 @@ func (r *TailscaleServicesReconciler) updateEndpointIngressConfigs(ctx context.C
 	}
 
 	if err := r.List(ctx, secretList, client.InNamespace(namespace), client.MatchingLabels(selector)); err != nil {
-		return fmt.Errorf("failed to list ingress config secrets: %w", err)
+		return false, fmt.Errorf("failed to list ingress config secrets: %w", err)
 	}
+
+	// Track if any configs were actually updated
+	anyConfigsUpdated := false
 
 	// Update each config secret (only ingress proxies should advertise services)
 	for _, secret := range secretList.Items {
@@ -1022,7 +1132,7 @@ func (r *TailscaleServicesReconciler) updateEndpointIngressConfigs(ctx context.C
 			continue // Skip egress proxy configs
 		}
 
-		updated := false
+		secretUpdated := false
 		for fileName, configData := range secret.Data {
 			if !strings.HasPrefix(fileName, "cap-") || !strings.HasSuffix(fileName, ".hujson") {
 				continue // Skip non-capability config files
@@ -1051,12 +1161,17 @@ func (r *TailscaleServicesReconciler) updateEndpointIngressConfigs(ctx context.C
 				// Marshal the updated config back
 				updatedConfig, err := json.Marshal(config)
 				if err != nil {
-					return fmt.Errorf("failed to marshal updated config: %w", err)
+					return false, fmt.Errorf("failed to marshal updated config: %w", err)
 				}
 
 				secret.Data[fileName] = updatedConfig
-				updated = true
+				secretUpdated = true
 				logger.Info("Added service to AdvertiseServices",
+					"secret", secret.Name,
+					"file", fileName,
+					"service", serviceName)
+			} else {
+				logger.Info("Service already advertised, skipping update",
 					"secret", secret.Name,
 					"file", fileName,
 					"service", serviceName)
@@ -1064,15 +1179,63 @@ func (r *TailscaleServicesReconciler) updateEndpointIngressConfigs(ctx context.C
 		}
 
 		// Update the secret if any configs were modified
-		if updated {
+		if secretUpdated {
 			if err := r.Update(ctx, &secret); err != nil {
-				return fmt.Errorf("failed to update config secret %s: %w", secret.Name, err)
+				return false, fmt.Errorf("failed to update config secret %s: %w", secret.Name, err)
 			}
 			logger.Info("Updated ingress proxy config secret", "secret", secret.Name)
+			anyConfigsUpdated = true
 		}
 	}
 
-	return nil
+	return anyConfigsUpdated, nil
+}
+
+// checkIfServiceAlreadyAdvertised checks if a service is already in AdvertiseServices for an endpoint
+func (r *TailscaleServicesReconciler) checkIfServiceAlreadyAdvertised(ctx context.Context, endpointName, namespace, serviceName string) (bool, error) {
+	// List all config secrets for ingress proxies of this endpoint
+	secretList := &corev1.SecretList{}
+	selector := map[string]string{
+		"app.kubernetes.io/instance":  endpointName,
+		"app.kubernetes.io/component": "config",
+	}
+
+	if err := r.List(ctx, secretList, client.InNamespace(namespace), client.MatchingLabels(selector)); err != nil {
+		return false, fmt.Errorf("failed to list ingress config secrets: %w", err)
+	}
+
+	// Check each config secret for ingress proxies
+	for _, secret := range secretList.Items {
+		if !strings.HasSuffix(secret.Name, "-config") {
+			continue // Skip non-config secrets
+		}
+
+		// Only check ingress proxy configs (not egress)
+		if !strings.Contains(secret.Name, "-ingress-") {
+			continue // Skip egress proxy configs
+		}
+
+		for fileName, configData := range secret.Data {
+			if !strings.HasPrefix(fileName, "cap-") || !strings.HasSuffix(fileName, ".hujson") {
+				continue // Skip non-capability config files
+			}
+
+			// Parse the existing config
+			var config ipn.ConfigVAlpha
+			if err := json.Unmarshal(configData, &config); err != nil {
+				continue // Skip configs that can't be parsed
+			}
+
+			// Check if service is already advertised
+			for _, advertised := range config.AdvertiseServices {
+				if advertised == serviceName {
+					return true, nil
+				}
+			}
+		}
+	}
+
+	return false, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

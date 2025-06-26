@@ -13,7 +13,7 @@ spec:
   
   # Configure tailnets and their service discovery
   tailnets:
-  - name: test
+  - name: test-tailnet
     tailscaleTailnetRef:
       group: gateway.tailscale.com
       kind: TailscaleTailnet

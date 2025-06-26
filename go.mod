@@ -22,6 +22,7 @@ require (
 	github.com/google/go-cmp v0.7.0
 	google.golang.org/grpc v1.73.0
 	google.golang.org/protobuf v1.36.6
+	tailscale.com v1.84.2
 	tailscale.com/client/tailscale/v2 v2.0.0-20250616154411-35b8e02bd63e
 )
 
@@ -60,7 +61,6 @@ require (
 	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/common v0.60.1 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
-	github.com/rogpeppe/go-internal v1.13.1 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/tailscale/hujson v0.0.0-20221223112325-20486734a56a // indirect
 	github.com/x448/float16 v0.8.4 // indirect
@@ -87,5 +87,4 @@ require (
 	sigs.k8s.io/json v0.0.0-20241010143419-9aa6b5e7a4b3 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.2 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
-	tailscale.com v1.84.2 // indirect
 )

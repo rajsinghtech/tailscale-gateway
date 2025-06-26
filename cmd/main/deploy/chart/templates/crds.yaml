@@ -918,6 +918,10 @@ spec:
                     TailscaleDevice represents a Tailscale machine/device created by the operator
                     Similar to the ProxyGroup device status in the official Tailscale k8s-operator
                   properties:
+                    authKeyID:
+                      description: AuthKeyID is the ID of the auth key used to create
+                        this device (for cleanup)
+                      type: string
                     connected:
                       description: Connected indicates if the device is currently
                         connected to the tailnet
@@ -4678,6 +4682,11 @@ spec:
                       description: PortTemplate defines port configuration for auto-created
                         endpoints
                       properties:
+                        externalTarget:
+                          description: |-
+                            ExternalTarget defines the backend service this port should route to
+                            Format: "service-name.namespace.svc.cluster.local:port" or "hostname:port"
+                          type: string
                         port:
                           description: Port number
                           format: int32

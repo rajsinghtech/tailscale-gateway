@@ -350,12 +350,23 @@ func (sc *ServiceCoordinator) extractPortsFromMetadata(metadata *ServiceMetadata
 	defaultPorts := []string{"tcp:80", "tcp:443"}
 
 	if metadata == nil {
+		sc.logger.Debugf("No metadata provided, using default ports: %v", defaultPorts)
 		return defaultPorts
 	}
 
 	// Extract ports from TailscaleServices (highest priority)
 	if metadata.TailscaleServices != nil && metadata.TailscaleServices.Spec.VIPService != nil && len(metadata.TailscaleServices.Spec.VIPService.Ports) > 0 {
 		ports = append(ports, metadata.TailscaleServices.Spec.VIPService.Ports...)
+		sc.logger.Infof("Extracted ports from TailscaleServices.Spec.VIPService: %v", ports)
+	} else {
+		// Log debug information about why we didn't extract ports
+		if metadata.TailscaleServices == nil {
+			sc.logger.Debugf("metadata.TailscaleServices is nil")
+		} else if metadata.TailscaleServices.Spec.VIPService == nil {
+			sc.logger.Debugf("metadata.TailscaleServices.Spec.VIPService is nil")
+		} else {
+			sc.logger.Debugf("metadata.TailscaleServices.Spec.VIPService.Ports is empty, length: %d", len(metadata.TailscaleServices.Spec.VIPService.Ports))
+		}
 	}
 
 	// Extract ports from Kubernetes Service
@@ -391,9 +402,14 @@ func (sc *ServiceCoordinator) extractPortsFromMetadata(metadata *ServiceMetadata
 	// If no ports found, use defaults
 	if len(ports) == 0 {
 		ports = defaultPorts
+		sc.logger.Infof("No ports extracted from metadata, using default ports: %v", ports)
+	} else {
+		sc.logger.Infof("Final extracted ports: %v", ports)
 	}
 
-	return removeDuplicateStrings(ports)
+	finalPorts := removeDuplicateStrings(ports)
+	sc.logger.Infof("Returning final ports (after deduplication): %v", finalPorts)
+	return finalPorts
 }
 
 // createNewServiceWithMetadata creates a new VIP service with dynamic configuration
