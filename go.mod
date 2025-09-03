@@ -2,7 +2,7 @@ module github.com/rajsinghtech/tailscale-gateway
 
 go 1.24.0
 
-toolchain go1.24.4
+toolchain go1.25.1
 
 require (
 	github.com/go-logr/logr v1.4.2 // indirect
