@@ -16,7 +16,7 @@ require (
 )
 
 require (
-	github.com/envoyproxy/gateway v1.2.4
+	github.com/envoyproxy/gateway v1.5.1
 	github.com/envoyproxy/go-control-plane/envoy v1.32.4
 	github.com/go-logr/zapr v1.3.0
 	google.golang.org/grpc v1.73.0
