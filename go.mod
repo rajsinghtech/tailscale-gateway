@@ -7,7 +7,7 @@ toolchain go1.24.4
 require (
 	github.com/go-logr/logr v1.4.2 // indirect
 	go.uber.org/zap v1.27.0
-	golang.org/x/oauth2 v0.30.0
+	golang.org/x/oauth2 v0.31.0
 	k8s.io/api v0.32.0
 	k8s.io/apimachinery v0.32.0
 	k8s.io/client-go v0.32.0
@@ -21,7 +21,7 @@ require (
 	github.com/go-logr/zapr v1.3.0
 	google.golang.org/grpc v1.73.0
 	google.golang.org/protobuf v1.36.6
-	tailscale.com/client/tailscale/v2 v2.0.0-20250616154411-35b8e02bd63e
+	tailscale.com/client/tailscale/v2 v2.0.0-20250925170215-115deaf34058
 )
 
 require (
